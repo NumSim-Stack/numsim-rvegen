@@ -1,0 +1,29 @@
+{
+  "_comment": "Dense 3D RVE — spheres in a unit cube, ~10% volume fraction. Three.js HTML output: drag to rotate, scroll to zoom in your browser.",
+
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 17,
+
+  "distributions": {
+    "uniform_x":      { "type": "uniform_real", "a": 0.10, "b": 0.90 },
+    "uniform_y":      { "type": "uniform_real", "a": 0.10, "b": 0.90 },
+    "uniform_z":      { "type": "uniform_real", "a": 0.10, "b": 0.90 },
+    "uniform_radius": { "type": "uniform_real", "a": 0.06, "b": 0.10 }
+  },
+
+  "shapes": [
+    { "type": "sphere_input",
+      "pos_x_dist":  "uniform_x",
+      "pos_y_dist":  "uniform_y",
+      "pos_z_dist":  "uniform_z",
+      "radius_dist": "uniform_radius" }
+  ],
+
+  "generator":   { "type": "only_inside",     "max_attempts": 500000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.10 },
+
+  "postprocess": [
+    { "type": "three_js",
+      "output_path": "dense_spheres_3d.html" }
+  ]
+}

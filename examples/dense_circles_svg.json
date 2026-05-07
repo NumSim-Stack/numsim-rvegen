@@ -1,0 +1,27 @@
+{
+  "_comment": "Dense 2D RVE — 30% volume fraction of mixed-radius circles in a unit box. only_inside generator + precise dispatch packs more circles than AABB-only would. SVG output for visualization.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 11,
+
+  "distributions": {
+    "uniform_x":      { "type": "uniform_real", "a": 0.06, "b": 0.94 },
+    "uniform_y":      { "type": "uniform_real", "a": 0.06, "b": 0.94 },
+    "uniform_radius": { "type": "uniform_real", "a": 0.03, "b": 0.06 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",
+      "pos_x_dist":  "uniform_x",
+      "pos_y_dist":  "uniform_y",
+      "radius_dist": "uniform_radius" }
+  ],
+
+  "generator":   { "type": "only_inside",      "max_attempts": 500000 },
+  "termination": { "type": "volume_fraction",  "target_fraction": 0.30 },
+
+  "postprocess": [
+    { "type": "svg", "canvas_width": 800.0,
+      "output_path": "dense_circles.svg" }
+  ]
+}

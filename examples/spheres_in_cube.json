@@ -1,0 +1,29 @@
+{
+  "_comment": "3D RVE: spheres packed into a unit cube, terminated by volume fraction. The voxel writer outputs a 32^3 phase-id grid suitable for FFT homogenization.",
+
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 2026,
+
+  "distributions": {
+    "uniform_x":      { "type": "uniform_real", "a": 0.1, "b": 0.9 },
+    "uniform_y":      { "type": "uniform_real", "a": 0.1, "b": 0.9 },
+    "uniform_z":      { "type": "uniform_real", "a": 0.1, "b": 0.9 },
+    "uniform_radius": { "type": "uniform_real", "a": 0.06, "b": 0.10 }
+  },
+
+  "shapes": [
+    { "type": "sphere_input",
+      "pos_x_dist":  "uniform_x",
+      "pos_y_dist":  "uniform_y",
+      "pos_z_dist":  "uniform_z",
+      "radius_dist": "uniform_radius" }
+  ],
+
+  "generator":   { "type": "only_inside",    "max_attempts": 200000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.05 },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 32, "ny": 32, "nz": 32,
+      "output_path": "spheres_in_cube.vox" }
+  ]
+}

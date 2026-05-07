@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rvegen RVE</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f6f8; }
+  #hud { position: absolute; top: 10px; left: 12px; padding: 8px 12px;
+         background: rgba(255,255,255,0.85); border: 1px solid #ddd;
+         border-radius: 4px; font: 13px/1.4 -apple-system, sans-serif;
+         color: #333; pointer-events: none; }
+  #hud b { color: #111; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>rvegen RVE</b><br>
+  drag to rotate · scroll to zoom · shift+drag to pan
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three":           "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/":   "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const domain = [1, 1, 1];
+const shapes = [
+  { kind: 'sphere', x: 0.745457, y: 0.811092, z: 0.775387, r: 0.0672711, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.603806, y: 0.275601, z: 0.182395, r: 0.0764089, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.556334, y: 0.694053, z: 0.133018, r: 0.094397, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.318165, y: 0.490055, z: 0.272411, r: 0.0613725, color: 0xd62728 },
+  { kind: 'sphere', x: 0.100899, y: 0.402283, z: 0.339707, r: 0.0647625, color: 0x9467bd },
+  { kind: 'sphere', x: 0.360072, y: 0.137166, z: 0.519737, r: 0.0791053, color: 0x8c564b },
+  { kind: 'sphere', x: 0.514096, y: 0.632107, z: 0.337405, r: 0.076184, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.734949, y: 0.509994, z: 0.241213, r: 0.090336, color: 0x7f7f7f },
+  { kind: 'sphere', x: 0.753191, y: 0.870859, z: 0.278467, r: 0.0921964, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.140047, y: 0.710551, z: 0.467899, r: 0.0731075, color: 0x17becf },
+  { kind: 'sphere', x: 0.241973, y: 0.270479, z: 0.10791, r: 0.0932449, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.762554, y: 0.285093, z: 0.780113, r: 0.0969054, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.515842, y: 0.373301, z: 0.861815, r: 0.071532, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.865842, y: 0.280498, z: 0.147536, r: 0.0801095, color: 0xd62728 },
+  { kind: 'sphere', x: 0.461112, y: 0.881401, z: 0.3849, r: 0.0665861, color: 0x9467bd },
+  { kind: 'sphere', x: 0.680123, y: 0.619881, z: 0.414472, r: 0.0866861, color: 0x8c564b },
+  { kind: 'sphere', x: 0.867193, y: 0.365038, z: 0.519517, r: 0.0795478, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.471416, y: 0.283642, z: 0.597764, r: 0.0745993, color: 0x7f7f7f },
+  { kind: 'sphere', x: 0.205867, y: 0.501813, z: 0.471788, r: 0.0654701, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.871391, y: 0.543131, z: 0.579395, r: 0.0974159, color: 0x17becf },
+  { kind: 'sphere', x: 0.333528, y: 0.545256, z: 0.423727, r: 0.0660909, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.62852, y: 0.865659, z: 0.566464, r: 0.08641, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.1331, y: 0.692879, z: 0.17048, r: 0.0636381, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.605959, y: 0.354931, z: 0.666966, r: 0.060646, color: 0xd62728 },
+  { kind: 'sphere', x: 0.554279, y: 0.133933, z: 0.70621, r: 0.0772092, color: 0x9467bd },
+  { kind: 'sphere', x: 0.15267, y: 0.597171, z: 0.58859, r: 0.0677992, color: 0x8c564b },
+  { kind: 'sphere', x: 0.172572, y: 0.555204, z: 0.213038, r: 0.0746245, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.423192, y: 0.791341, z: 0.550358, r: 0.0740831, color: 0x7f7f7f },
+  { kind: 'sphere', x: 0.205988, y: 0.260088, z: 0.69687, r: 0.0698285, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.367005, y: 0.814745, z: 0.804925, r: 0.0618146, color: 0x17becf },
+  { kind: 'sphere', x: 0.286789, y: 0.445055, z: 0.103681, r: 0.0710721, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.772928, y: 0.593917, z: 0.753563, r: 0.0600775, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.288335, y: 0.570121, z: 0.715636, r: 0.0903624, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.874677, y: 0.837907, z: 0.592725, r: 0.0841301, color: 0xd62728 },
+  { kind: 'sphere', x: 0.136755, y: 0.557532, z: 0.894568, r: 0.083339, color: 0x9467bd },
+  { kind: 'sphere', x: 0.475809, y: 0.214327, z: 0.296483, r: 0.0929886, color: 0x8c564b },
+  { kind: 'sphere', x: 0.690743, y: 0.178161, z: 0.646979, r: 0.071114, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.558353, y: 0.541246, z: 0.692537, r: 0.0984511, color: 0x7f7f7f },
+  { kind: 'sphere', x: 0.629557, y: 0.469264, z: 0.431825, r: 0.064228, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.288931, y: 0.730648, z: 0.411289, r: 0.078848, color: 0x17becf },
+  { kind: 'sphere', x: 0.712445, y: 0.115266, z: 0.787397, r: 0.0682788, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.101212, y: 0.680497, z: 0.759448, r: 0.0617795, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.26305, y: 0.204819, z: 0.316907, r: 0.088624, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.275741, y: 0.150034, z: 0.773852, r: 0.0764897, color: 0xd62728 },
+  { kind: 'sphere', x: 0.678195, y: 0.315551, z: 0.430472, r: 0.0956008, color: 0x9467bd },
+  { kind: 'sphere', x: 0.348465, y: 0.299477, z: 0.825016, r: 0.085128, color: 0x8c564b },
+  { kind: 'sphere', x: 0.514098, y: 0.438187, z: 0.518702, r: 0.0794275, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.106635, y: 0.215766, z: 0.436869, r: 0.0927971, color: 0x7f7f7f },
+];
+
+const [Lx, Ly, Lz] = domain;
+
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0xf4f6f8);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.01, 100);
+const max_dim = Math.max(Lx, Ly, Lz);
+camera.position.set(Lx*1.7, Ly*1.7, Lz*1.7);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Orbit camera around the box centre.
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(Lx*0.5, Ly*0.5, Lz*0.5);
+controls.update();
+
+// Lighting — directional + ambient for solid shading.
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const key = new THREE.DirectionalLight(0xffffff, 0.85);
+key.position.set(Lx*2, Ly*2.5, Lz*2);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+fill.position.set(-Lx, Ly*0.3, -Lz);
+scene.add(fill);
+
+// Domain box — wireframe only (the "transparent matrix").
+{
+  const geom = new THREE.BoxGeometry(Lx, Ly, Lz);
+  const edges = new THREE.EdgesGeometry(geom);
+  const line = new THREE.LineSegments(
+      edges, new THREE.LineBasicMaterial({ color: 0x444444, linewidth: 1.5 }));
+  line.position.set(Lx*0.5, Ly*0.5, Lz*0.5);
+  scene.add(line);
+}
+
+// Inclusions — solid colour with subtle shading.
+for (const s of shapes) {
+  let geom;
+  if (s.kind === 'sphere') {
+    geom = new THREE.SphereGeometry(s.r, 28, 20);
+  } else if (s.kind === 'box') {
+    geom = new THREE.BoxGeometry(s.w, s.h, s.d);
+  } else continue;
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: s.color, roughness: 0.55, metalness: 0.0,
+    transparent: false, opacity: 1.0
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.set(s.x, s.y, s.z);
+  scene.add(mesh);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+(function loop(){
+  requestAnimationFrame(loop);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>

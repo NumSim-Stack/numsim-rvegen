@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rvegen RVE</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f6f8; }
+  #hud { position: absolute; top: 10px; left: 12px; padding: 8px 12px;
+         background: rgba(255,255,255,0.85); border: 1px solid #ddd;
+         border-radius: 4px; font: 13px/1.4 -apple-system, sans-serif;
+         color: #333; pointer-events: none; }
+  #hud b { color: #111; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>rvegen RVE</b><br>
+  drag to rotate · scroll to zoom · shift+drag to pan
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three":           "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/":   "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const domain = [1, 1, 1];
+const shapes = [
+  { kind: 'sphere', x: 0.883556, y: 0.39099, z: 0.765062, r: 0.0522072, color: 0x1f77b4 },
+  { kind: 'box', x: 0.746625, y: 0.892657, z: 0.48931, w: 0.121248, h: 0.103804, d: 0.0744911, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.711498, y: 0.294032, z: 0.755578, r: 0.0759784, color: 0x2ca02c },
+  { kind: 'box', x: 0.493709, y: 0.51894, z: 0.802322, w: 0.107146, h: 0.0922493, d: 0.075545, color: 0xd62728 },
+  { kind: 'sphere', x: 0.761243, y: 0.17469, z: 0.111665, r: 0.0792748, color: 0x9467bd },
+  { kind: 'box', x: 0.896791, y: 0.172439, z: 0.54907, w: 0.157481, h: 0.133545, d: 0.111675, color: 0x8c564b },
+  { kind: 'sphere', x: 0.5929, y: 0.7747, z: 0.647932, r: 0.0690961, color: 0xe377c2 },
+  { kind: 'box', x: 0.104588, y: 0.840515, z: 0.752934, w: 0.141456, h: 0.10209, d: 0.0981594, color: 0x7f7f7f },
+  { kind: 'box', x: 0.586962, y: 0.373222, z: 0.241797, w: 0.10387, h: 0.114783, d: 0.0987707, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.348784, y: 0.847744, z: 0.197239, r: 0.057819, color: 0x17becf },
+  { kind: 'sphere', x: 0.689052, y: 0.256105, z: 0.341602, r: 0.0653561, color: 0x1f77b4 },
+  { kind: 'box', x: 0.225625, y: 0.271983, z: 0.553081, w: 0.125452, h: 0.121054, d: 0.116365, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.207393, y: 0.614946, z: 0.776044, r: 0.0834326, color: 0x2ca02c },
+  { kind: 'box', x: 0.846076, y: 0.812551, z: 0.281268, w: 0.157363, h: 0.0991321, d: 0.0788361, color: 0xd62728 },
+  { kind: 'sphere', x: 0.382179, y: 0.895545, z: 0.749108, r: 0.0534042, color: 0x9467bd },
+  { kind: 'box', x: 0.357357, y: 0.22213, z: 0.128126, w: 0.122366, h: 0.124528, d: 0.094203, color: 0x8c564b },
+  { kind: 'sphere', x: 0.733793, y: 0.658079, z: 0.387748, r: 0.0547003, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.890157, y: 0.69842, z: 0.601997, r: 0.0802371, color: 0x7f7f7f },
+  { kind: 'box', x: 0.886877, y: 0.584248, z: 0.197854, w: 0.107683, h: 0.122959, d: 0.116677, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.367212, y: 0.577385, z: 0.308829, r: 0.0861791, color: 0x17becf },
+  { kind: 'sphere', x: 0.325007, y: 0.640301, z: 0.51881, r: 0.0652385, color: 0x1f77b4 },
+  { kind: 'box', x: 0.756001, y: 0.375177, z: 0.181591, w: 0.105761, h: 0.122094, d: 0.107672, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.783316, y: 0.803265, z: 0.706522, r: 0.0869858, color: 0x2ca02c },
+  { kind: 'box', x: 0.238369, y: 0.123177, z: 0.690921, w: 0.121042, h: 0.115083, d: 0.0785224, color: 0xd62728 },
+  { kind: 'sphere', x: 0.664977, y: 0.845648, z: 0.884184, r: 0.0553556, color: 0x9467bd },
+  { kind: 'box', x: 0.763492, y: 0.56079, z: 0.81175, w: 0.123071, h: 0.124231, d: 0.116802, color: 0x8c564b },
+  { kind: 'sphere', x: 0.266223, y: 0.67886, z: 0.19987, r: 0.0538126, color: 0xe377c2 },
+  { kind: 'box', x: 0.522741, y: 0.23278, z: 0.442136, w: 0.144534, h: 0.136686, d: 0.088123, color: 0x7f7f7f },
+  { kind: 'sphere', x: 0.483298, y: 0.187935, z: 0.221978, r: 0.0611182, color: 0xbcbd22 },
+  { kind: 'box', x: 0.475129, y: 0.540775, z: 0.559886, w: 0.11066, h: 0.0864288, d: 0.0931157, color: 0x17becf },
+  { kind: 'box', x: 0.550165, y: 0.843464, z: 0.122171, w: 0.121724, h: 0.128019, d: 0.101526, color: 0x1f77b4 },
+  { kind: 'box', x: 0.628738, y: 0.1174, z: 0.276339, w: 0.139218, h: 0.138653, d: 0.0913538, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.147699, y: 0.735912, z: 0.315223, r: 0.0584826, color: 0x2ca02c },
+  { kind: 'box', x: 0.883647, y: 0.55697, z: 0.496916, w: 0.139303, h: 0.114086, d: 0.0869933, color: 0xd62728 },
+  { kind: 'sphere', x: 0.843938, y: 0.8315, z: 0.897439, r: 0.0803891, color: 0x9467bd },
+  { kind: 'box', x: 0.225601, y: 0.169759, z: 0.897349, w: 0.146784, h: 0.109193, d: 0.108906, color: 0x8c564b },
+  { kind: 'box', x: 0.868644, y: 0.250717, z: 0.286168, w: 0.146562, h: 0.133636, d: 0.0911948, color: 0xe377c2 },
+  { kind: 'box', x: 0.155554, y: 0.431834, z: 0.1246, w: 0.103379, h: 0.101848, d: 0.0926816, color: 0x7f7f7f },
+  { kind: 'box', x: 0.156855, y: 0.659498, z: 0.635438, w: 0.101804, h: 0.103403, d: 0.0721067, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.555453, y: 0.292591, z: 0.860075, r: 0.0608469, color: 0x17becf },
+  { kind: 'box', x: 0.732229, y: 0.579223, z: 0.520223, w: 0.105906, h: 0.0924524, d: 0.0805747, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.339018, y: 0.521514, z: 0.817608, r: 0.0748083, color: 0xff7f0e },
+  { kind: 'box', x: 0.489004, y: 0.83042, z: 0.505344, w: 0.156754, h: 0.0857359, d: 0.0903366, color: 0x2ca02c },
+  { kind: 'box', x: 0.512675, y: 0.400732, z: 0.751196, w: 0.110234, h: 0.105931, d: 0.117258, color: 0xd62728 },
+  { kind: 'sphere', x: 0.558258, y: 0.77787, z: 0.263119, r: 0.0753377, color: 0x9467bd },
+  { kind: 'box', x: 0.524328, y: 0.623865, z: 0.728379, w: 0.140492, h: 0.114791, d: 0.0779955, color: 0x8c564b },
+  { kind: 'sphere', x: 0.22152, y: 0.824935, z: 0.338271, r: 0.0503358, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.159734, y: 0.259409, z: 0.332859, r: 0.0529907, color: 0x7f7f7f },
+  { kind: 'sphere', x: 0.533453, y: 0.251264, z: 0.71024, r: 0.0836396, color: 0xbcbd22 },
+  { kind: 'box', x: 0.18431, y: 0.610946, z: 0.396822, w: 0.140828, h: 0.0922451, d: 0.0790608, color: 0x17becf },
+  { kind: 'box', x: 0.880528, y: 0.564033, z: 0.879131, w: 0.107609, h: 0.0988956, d: 0.0832887, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.470418, y: 0.799875, z: 0.716506, r: 0.0517397, color: 0xff7f0e },
+  { kind: 'box', x: 0.625469, y: 0.62644, z: 0.1887, w: 0.107946, h: 0.0906651, d: 0.114327, color: 0x2ca02c },
+  { kind: 'box', x: 0.701667, y: 0.115912, z: 0.790677, w: 0.155842, h: 0.105427, d: 0.0767901, color: 0xd62728 },
+  { kind: 'box', x: 0.509599, y: 0.444108, z: 0.4007, w: 0.130462, h: 0.118518, d: 0.0885898, color: 0x9467bd },
+  { kind: 'sphere', x: 0.401662, y: 0.354556, z: 0.366671, r: 0.0504198, color: 0x8c564b },
+  { kind: 'box', x: 0.842055, y: 0.503231, z: 0.360004, w: 0.158528, h: 0.0896452, d: 0.115812, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.884712, y: 0.264012, z: 0.166816, r: 0.0512923, color: 0x7f7f7f },
+  { kind: 'box', x: 0.372305, y: 0.688736, z: 0.848333, w: 0.159659, h: 0.13116, d: 0.0837101, color: 0xbcbd22 },
+  { kind: 'box', x: 0.170221, y: 0.443489, z: 0.621015, w: 0.109677, h: 0.108243, d: 0.108778, color: 0x17becf },
+  { kind: 'sphere', x: 0.693998, y: 0.233611, z: 0.618728, r: 0.0604862, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.284171, y: 0.462119, z: 0.370674, r: 0.0547023, color: 0xff7f0e },
+  { kind: 'box', x: 0.822378, y: 0.854477, z: 0.156382, w: 0.123678, h: 0.130299, d: 0.116462, color: 0x2ca02c },
+  { kind: 'box', x: 0.488316, y: 0.104432, z: 0.614683, w: 0.10639, h: 0.137764, d: 0.0717806, color: 0xd62728 },
+  { kind: 'sphere', x: 0.326962, y: 0.159388, z: 0.304438, r: 0.0673061, color: 0x9467bd },
+  { kind: 'box', x: 0.177782, y: 0.853823, z: 0.590309, w: 0.10038, h: 0.08375, d: 0.0966888, color: 0x8c564b },
+  { kind: 'sphere', x: 0.338588, y: 0.524113, z: 0.107965, r: 0.0651947, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.42558, y: 0.712699, z: 0.193196, r: 0.084669, color: 0x7f7f7f },
+  { kind: 'box', x: 0.489538, y: 0.292129, z: 0.58183, w: 0.151366, h: 0.112025, d: 0.0716846, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.708132, y: 0.442641, z: 0.642223, r: 0.0577771, color: 0x17becf },
+  { kind: 'box', x: 0.154128, y: 0.521601, z: 0.289731, w: 0.120868, h: 0.101948, d: 0.105206, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.2099, y: 0.274105, z: 0.722311, r: 0.0702183, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.441051, y: 0.688372, z: 0.404997, r: 0.0678153, color: 0x2ca02c },
+  { kind: 'box', x: 0.104276, y: 0.132474, z: 0.631649, w: 0.114633, h: 0.139006, d: 0.111797, color: 0xd62728 },
+  { kind: 'sphere', x: 0.283759, y: 0.868672, z: 0.832136, r: 0.0610224, color: 0x9467bd },
+  { kind: 'sphere', x: 0.62501, y: 0.89465, z: 0.652192, r: 0.053867, color: 0x8c564b },
+  { kind: 'sphere', x: 0.859007, y: 0.198383, z: 0.424198, r: 0.0628975, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.65468, y: 0.636408, z: 0.666837, r: 0.0637957, color: 0x7f7f7f },
+  { kind: 'box', x: 0.856992, y: 0.32778, z: 0.542062, w: 0.1273, h: 0.121927, d: 0.0974195, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.104051, y: 0.846671, z: 0.414128, r: 0.0834375, color: 0x17becf },
+  { kind: 'box', x: 0.846265, y: 0.331177, z: 0.426091, w: 0.148039, h: 0.10268, d: 0.0946227, color: 0x1f77b4 },
+  { kind: 'box', x: 0.734885, y: 0.672889, z: 0.177334, w: 0.102244, h: 0.105961, d: 0.0726522, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.201231, y: 0.118311, z: 0.339966, r: 0.0602294, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.313596, y: 0.806373, z: 0.566849, r: 0.0569068, color: 0xd62728 },
+  { kind: 'sphere', x: 0.765345, y: 0.756647, z: 0.565945, r: 0.0542344, color: 0x9467bd },
+  { kind: 'box', x: 0.632648, y: 0.502912, z: 0.867844, w: 0.128468, h: 0.114203, d: 0.0830907, color: 0x8c564b },
+  { kind: 'sphere', x: 0.482188, y: 0.330681, z: 0.17572, r: 0.0509244, color: 0xe377c2 },
+  { kind: 'box', x: 0.39001, y: 0.444502, z: 0.693058, w: 0.13385, h: 0.102269, d: 0.104494, color: 0x7f7f7f },
+  { kind: 'box', x: 0.1148, y: 0.43442, z: 0.483485, w: 0.113126, h: 0.0812763, d: 0.0887723, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.632185, y: 0.836947, z: 0.386605, r: 0.0623075, color: 0x17becf },
+  { kind: 'sphere', x: 0.273465, y: 0.893672, z: 0.46504, r: 0.0776416, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.448194, y: 0.84037, z: 0.857127, r: 0.073174, color: 0xff7f0e },
+  { kind: 'sphere', x: 0.322025, y: 0.284068, z: 0.302607, r: 0.0537634, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.881774, y: 0.139194, z: 0.697675, r: 0.0518292, color: 0xd62728 },
+  { kind: 'sphere', x: 0.497704, y: 0.10459, z: 0.828845, r: 0.0518268, color: 0x9467bd },
+  { kind: 'box', x: 0.370036, y: 0.277474, z: 0.713657, w: 0.137418, h: 0.118834, d: 0.0954649, color: 0x8c564b },
+  { kind: 'box', x: 0.338919, y: 0.441579, z: 0.542286, w: 0.117921, h: 0.121865, d: 0.0776416, color: 0xe377c2 },
+  { kind: 'sphere', x: 0.23716, y: 0.281355, z: 0.191739, r: 0.0544671, color: 0x7f7f7f },
+  { kind: 'box', x: 0.157975, y: 0.899561, z: 0.220556, w: 0.117071, h: 0.0875082, d: 0.117163, color: 0xbcbd22 },
+  { kind: 'sphere', x: 0.239626, y: 0.208617, z: 0.417537, r: 0.0518565, color: 0x17becf },
+  { kind: 'sphere', x: 0.608023, y: 0.555127, z: 0.381436, r: 0.0502534, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.120094, y: 0.15359, z: 0.121415, r: 0.0647321, color: 0xff7f0e },
+  { kind: 'box', x: 0.889861, y: 0.401863, z: 0.888928, w: 0.145209, h: 0.111803, d: 0.0829338, color: 0x2ca02c },
+  { kind: 'box', x: 0.314767, y: 0.786494, z: 0.6864, w: 0.101762, h: 0.0953021, d: 0.097619, color: 0xd62728 },
+  { kind: 'sphere', x: 0.490154, y: 0.434558, z: 0.539584, r: 0.0503151, color: 0x9467bd },
+  { kind: 'box', x: 0.66588, y: 0.378442, z: 0.422349, w: 0.106606, h: 0.100528, d: 0.0867177, color: 0x8c564b },
+  { kind: 'box', x: 0.837855, y: 0.840148, z: 0.363448, w: 0.147403, h: 0.0850908, d: 0.0823551, color: 0xe377c2 },
+  { kind: 'box', x: 0.34048, y: 0.307501, z: 0.815912, w: 0.118505, h: 0.122862, d: 0.0718339, color: 0x7f7f7f },
+  { kind: 'box', x: 0.291802, y: 0.143629, z: 0.542145, w: 0.107793, h: 0.126539, d: 0.100774, color: 0xbcbd22 },
+  { kind: 'box', x: 0.479461, y: 0.510156, z: 0.165487, w: 0.150288, h: 0.134923, d: 0.0997564, color: 0x17becf },
+  { kind: 'box', x: 0.709808, y: 0.260026, z: 0.484019, w: 0.102079, h: 0.0972189, d: 0.0799128, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.65954, y: 0.708059, z: 0.863775, r: 0.0692584, color: 0xff7f0e },
+  { kind: 'box', x: 0.227994, y: 0.316756, z: 0.874138, w: 0.106332, h: 0.0827307, d: 0.0927731, color: 0x2ca02c },
+  { kind: 'sphere', x: 0.157653, y: 0.710885, z: 0.147166, r: 0.053664, color: 0xd62728 },
+  { kind: 'sphere', x: 0.126259, y: 0.125021, z: 0.503281, r: 0.0587446, color: 0x9467bd },
+  { kind: 'box', x: 0.579554, y: 0.665413, z: 0.422891, w: 0.10886, h: 0.0858279, d: 0.105669, color: 0x8c564b },
+  { kind: 'sphere', x: 0.674014, y: 0.886115, z: 0.773335, r: 0.0586469, color: 0xe377c2 },
+  { kind: 'box', x: 0.758275, y: 0.424969, z: 0.87877, w: 0.100225, h: 0.0961996, d: 0.111165, color: 0x7f7f7f },
+  { kind: 'sphere', x: 0.898954, y: 0.551634, z: 0.729923, r: 0.0743169, color: 0xbcbd22 },
+  { kind: 'box', x: 0.832939, y: 0.413832, z: 0.640126, w: 0.106719, h: 0.119124, d: 0.0799588, color: 0x17becf },
+  { kind: 'sphere', x: 0.649906, y: 0.71491, z: 0.537542, r: 0.0610609, color: 0x1f77b4 },
+  { kind: 'sphere', x: 0.626697, y: 0.399331, z: 0.565613, r: 0.0599237, color: 0xff7f0e },
+  { kind: 'box', x: 0.130702, y: 0.58494, z: 0.107493, w: 0.14294, h: 0.110324, d: 0.101914, color: 0x2ca02c },
+];
+
+const [Lx, Ly, Lz] = domain;
+
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0xf4f6f8);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.01, 100);
+const max_dim = Math.max(Lx, Ly, Lz);
+camera.position.set(Lx*1.7, Ly*1.7, Lz*1.7);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Orbit camera around the box centre.
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(Lx*0.5, Ly*0.5, Lz*0.5);
+controls.update();
+
+// Lighting — directional + ambient for solid shading.
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const key = new THREE.DirectionalLight(0xffffff, 0.85);
+key.position.set(Lx*2, Ly*2.5, Lz*2);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+fill.position.set(-Lx, Ly*0.3, -Lz);
+scene.add(fill);
+
+// Domain box — wireframe only (the "transparent matrix").
+{
+  const geom = new THREE.BoxGeometry(Lx, Ly, Lz);
+  const edges = new THREE.EdgesGeometry(geom);
+  const line = new THREE.LineSegments(
+      edges, new THREE.LineBasicMaterial({ color: 0x444444, linewidth: 1.5 }));
+  line.position.set(Lx*0.5, Ly*0.5, Lz*0.5);
+  scene.add(line);
+}
+
+// Inclusions — solid colour with subtle shading.
+for (const s of shapes) {
+  let geom;
+  if (s.kind === 'sphere') {
+    geom = new THREE.SphereGeometry(s.r, 28, 20);
+  } else if (s.kind === 'box') {
+    geom = new THREE.BoxGeometry(s.w, s.h, s.d);
+  } else continue;
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: s.color, roughness: 0.55, metalness: 0.0,
+    transparent: false, opacity: 1.0
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.set(s.x, s.y, s.z);
+  scene.add(mesh);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+(function loop(){
+  requestAnimationFrame(loop);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>

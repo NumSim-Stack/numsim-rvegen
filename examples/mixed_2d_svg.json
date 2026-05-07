@@ -1,0 +1,38 @@
+{
+  "_comment": "Mixed circles + rectangles + ellipses, 25% volume fraction, only_inside generator. Shows the heterogeneous-shape capability with precise pairwise collision dispatch.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 42,
+
+  "distributions": {
+    "uniform_x":      { "type": "uniform_real", "a": 0.08, "b": 0.92 },
+    "uniform_y":      { "type": "uniform_real", "a": 0.08, "b": 0.92 },
+    "circle_r":       { "type": "uniform_real", "a": 0.03, "b": 0.06 },
+    "rect_w":         { "type": "uniform_real", "a": 0.06, "b": 0.10 },
+    "rect_h":         { "type": "uniform_real", "a": 0.04, "b": 0.07 },
+    "ellipse_a":      { "type": "uniform_real", "a": 0.05, "b": 0.08 },
+    "ellipse_b":      { "type": "uniform_real", "a": 0.025, "b": 0.04 },
+    "rotation":       { "type": "uniform_real", "a": 0.0,  "b": 3.14159 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",
+      "pos_x_dist": "uniform_x", "pos_y_dist": "uniform_y",
+      "radius_dist": "circle_r" },
+    { "type": "rectangle_input",
+      "pos_x_dist": "uniform_x", "pos_y_dist": "uniform_y",
+      "width_dist": "rect_w",   "height_dist": "rect_h" },
+    { "type": "ellipse_input",
+      "pos_x_dist": "uniform_x", "pos_y_dist": "uniform_y",
+      "radius_a_dist": "ellipse_a", "radius_b_dist": "ellipse_b",
+      "rotation_dist": "rotation" }
+  ],
+
+  "generator":   { "type": "only_inside",      "max_attempts": 500000 },
+  "termination": { "type": "volume_fraction",  "target_fraction": 0.25 },
+
+  "postprocess": [
+    { "type": "svg", "canvas_width": 800.0,
+      "output_path": "mixed_2d.svg" }
+  ]
+}

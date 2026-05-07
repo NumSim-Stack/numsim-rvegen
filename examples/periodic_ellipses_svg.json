@@ -1,0 +1,31 @@
+{
+  "_comment": "Periodic 2D RVE with rotated ellipses. Note how shapes near the boundary get visible wrap-copies on the opposite face — this is what FFT homogenization actually sees as the periodic unit cell.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 3,
+
+  "distributions": {
+    "any_x":          { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "any_y":          { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "radius_a":       { "type": "uniform_real", "a": 0.06, "b": 0.10 },
+    "radius_b":       { "type": "uniform_real", "a": 0.025, "b": 0.05 },
+    "rotation":       { "type": "uniform_real", "a": 0.0,  "b": 3.14159 }
+  },
+
+  "shapes": [
+    { "type": "ellipse_input",
+      "pos_x_dist":     "any_x",
+      "pos_y_dist":     "any_y",
+      "radius_a_dist":  "radius_a",
+      "radius_b_dist":  "radius_b",
+      "rotation_dist":  "rotation" }
+  ],
+
+  "generator":   { "type": "periodic",         "max_attempts": 500000 },
+  "termination": { "type": "volume_fraction",  "target_fraction": 0.20 },
+
+  "postprocess": [
+    { "type": "svg", "canvas_width": 800.0,
+      "output_path": "periodic_ellipses.svg" }
+  ]
+}

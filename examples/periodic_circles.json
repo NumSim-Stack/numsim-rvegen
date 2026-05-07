@@ -1,0 +1,27 @@
+{
+  "_comment": "Periodic 2D RVE: circles wrapping across box faces, written as a ParaView-readable VTK file. Canonical config for FFT-based homogenization.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 7,
+
+  "distributions": {
+    "any_x":          { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "any_y":          { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "uniform_radius": { "type": "uniform_real", "a": 0.05, "b": 0.10 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",
+      "pos_x_dist":  "any_x",
+      "pos_y_dist":  "any_y",
+      "radius_dist": "uniform_radius" }
+  ],
+
+  "generator":   { "type": "periodic",        "max_attempts": 200000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.20 },
+
+  "postprocess": [
+    { "type": "vtk_legacy", "nx": 64, "ny": 64, "nz": 1,
+      "output_path": "periodic_circles.vtk" }
+  ]
+}
