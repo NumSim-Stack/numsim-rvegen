@@ -15,7 +15,9 @@ namespace rvegen {
 
 // rvegen sphere: IS-A gte::Sphere3<T> (Hypersphere<3, T>) + IS-A shape_base.
 template <typename T = double>
-class sphere : public shape_base<T>, public gte::Sphere3<T> {
+class sphere
+    : public numsim_core::static_indexing<sphere<T>, shape_base<T>>,
+      public gte::Sphere3<T> {
 public:
   using value_type = T;
   using size_type = std::size_t;
@@ -90,6 +92,10 @@ public:
 
   [[nodiscard]] std::unique_ptr<shape_base<T>> clone() const override {
     return std::make_unique<sphere<T>>(*this);
+  }
+
+  [[nodiscard]] numsim_core::type_id shape_id() const noexcept override {
+    return sphere::m_id;
   }
 };
 

@@ -280,7 +280,7 @@ static void BM_dispatcher_table_bound(benchmark::State& s) {
   for (auto _ : s) {
     std::size_t hits = 0;
     for (std::size_t i = 0; i < v.size(); ++i) {
-      auto const bound = d.bind_lhs(typeid(*v[i]));
+      auto const bound = d.bind_lhs(*v[i]);
       for (std::size_t j = i + 1; j < v.size(); ++j) {
         if (bound(*v[i], *v[j])) ++hits;
       }
@@ -300,7 +300,7 @@ static void BM_two_stage_bound(benchmark::State& s) {
   for (auto _ : s) {
     std::size_t hits = 0;
     for (std::size_t i = 0; i < v.size(); ++i) {
-      auto const bound = d.bind_lhs(typeid(*v[i]));
+      auto const bound = d.bind_lhs(*v[i]);
       auto const* abb  = v[i]->bounding_box();
       for (std::size_t j = i + 1; j < v.size(); ++j) {
         if (!rvegen::aabb_overlap(*abb, *v[j]->bounding_box())) continue;

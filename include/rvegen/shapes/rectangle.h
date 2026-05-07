@@ -18,7 +18,9 @@ namespace rvegen {
 // (centre, width, height) and translates. Width / height / centre are
 // derived accessors.
 template <typename T = double>
-class rectangle : public shape_base<T>, public gte::AlignedBox<2, T> {
+class rectangle
+    : public numsim_core::static_indexing<rectangle<T>, shape_base<T>>,
+      public gte::AlignedBox<2, T> {
 public:
   using value_type = T;
   using size_type = std::size_t;
@@ -87,6 +89,10 @@ public:
 
   [[nodiscard]] std::unique_ptr<shape_base<T>> clone() const override {
     return std::make_unique<rectangle<T>>(*this);
+  }
+
+  [[nodiscard]] numsim_core::type_id shape_id() const noexcept override {
+    return rectangle::m_id;
   }
 };
 

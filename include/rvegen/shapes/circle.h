@@ -23,7 +23,9 @@ namespace rvegen {
 // a static `parameters()` schema, and a `(parameter_handler_t const&)`
 // ctor for JSON-driven construction.
 template <typename T = double>
-class circle : public shape_base<T>, public gte::Circle2<T> {
+class circle
+    : public numsim_core::static_indexing<circle<T>, shape_base<T>>,
+      public gte::Circle2<T> {
 public:
   using value_type = T;
   using size_type = std::size_t;
@@ -92,6 +94,10 @@ public:
 
   [[nodiscard]] std::unique_ptr<shape_base<T>> clone() const override {
     return std::make_unique<circle<T>>(*this);
+  }
+
+  [[nodiscard]] numsim_core::type_id shape_id() const noexcept override {
+    return circle::m_id;
   }
 };
 

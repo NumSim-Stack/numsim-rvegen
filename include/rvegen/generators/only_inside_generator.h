@@ -84,7 +84,7 @@ public:
       // behaviour as before.
       bool collides = false;
       auto const bound_dispatcher =
-          collision_dispatcher<value_type>::instance().bind_lhs(typeid(*candidate));
+          collision_dispatcher<value_type>::instance().bind_lhs(*candidate);
       for (auto const& other : accepted) {
         auto const* other_bb = other->bounding_box();
         if (!aabb_overlap(*cand_bb, *other_bb)) continue;       // stage 1

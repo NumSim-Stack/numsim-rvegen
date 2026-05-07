@@ -85,7 +85,7 @@ public:
       bool collides = false;
       auto check_member = [&](shape_base<value_type> const& m) {
         auto const bound =
-            collision_dispatcher<value_type>::instance().bind_lhs(typeid(m));
+            collision_dispatcher<value_type>::instance().bind_lhs(m);
         auto const* mbb = m.bounding_box();
         for (auto const& other : accepted) {
           if (!aabb_overlap(*mbb, *other->bounding_box())) continue;

@@ -3,6 +3,8 @@
 #include <array>
 #include <memory>
 
+#include <numsim-core/static_indexing.h>
+
 #include "bounding_box_base.h"
 
 namespace rvegen {
@@ -88,6 +90,14 @@ public:
   // explicit virtual. Each concrete shape returns a fresh unique_ptr with
   // the same geometric state and a freshly-computed bounding box.
   [[nodiscard]] virtual std::unique_ptr<shape_base<value_type>> clone() const = 0;
+
+  // Per-derived static type id (assigned by numsim_core::static_indexing).
+  // Concrete shapes pick up the id by inheriting via
+  //   static_indexing<concrete_shape<T>, shape_base<T>>
+  // and forwarding through `return m_id`. Used as the integer key in the
+  // collision dispatcher's 2D table — replaces RTTI-based type_index
+  // keying so the inner-loop lookup is O(1) array indexing.
+  [[nodiscard]] virtual numsim_core::type_id shape_id() const noexcept = 0;
 
   [[nodiscard]] bounding_box_base<value_type>* bounding_box() const noexcept {
     return _bounding_box.get();

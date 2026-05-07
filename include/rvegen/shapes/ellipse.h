@@ -22,7 +22,9 @@ namespace rvegen {
 // pair from a single rotation angle. is_inside reverse-rotates by dot
 // product against the stored axes (no Eigen needed at query time).
 template <typename T = double>
-class ellipse : public shape_base<T>, public gte::Ellipse2<T> {
+class ellipse
+    : public numsim_core::static_indexing<ellipse<T>, shape_base<T>>,
+      public gte::Ellipse2<T> {
 public:
   using value_type = T;
   using size_type = std::size_t;
@@ -120,6 +122,10 @@ public:
 
   [[nodiscard]] std::unique_ptr<shape_base<T>> clone() const override {
     return std::make_unique<ellipse<T>>(*this);
+  }
+
+  [[nodiscard]] numsim_core::type_id shape_id() const noexcept override {
+    return ellipse::m_id;
   }
 };
 
