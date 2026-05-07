@@ -1,0 +1,29 @@
+# Build directories
+build/
+build-*/
+out/
+
+# IDE / editor state
+CMakeLists.txt.user
+CMakeLists.txt.user.*
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# In-tree CMake artefacts (in case anyone accidentally configures in the
+# source tree instead of build/)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+_deps/
+Makefile
+
+# Compiled object / library artefacts
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
