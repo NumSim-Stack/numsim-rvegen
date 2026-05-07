@@ -1,0 +1,39 @@
+Performance baseline — captured before structural refactoring (Phase 1).
+
+Purpose: Phase 9 (concept-driven intersection dispatch) and Phase 10 (concepts
+migration) must be measured against this baseline. A regression here is a
+real perf bug, not an aesthetic concern.
+
+How to (re)capture:
+
+  cmake -S . -B build
+  cmake --build build
+  ./build/rvegen      # runs shape_benchmark(10), (100), (1000), (10000), (100000)
+                      # captures wall-clock + CPU time via boost::timer::cpu_timer
+
+Paste the relevant lines below under "Results" — keep one block per measurement
+session, dated and labelled with the git SHA / branch.
+
+================================================================================
+Results
+================================================================================
+
+[YYYY-MM-DD] post-Phase-0 (commit: <sha>)
+shape_benchmark(10):     <fill in>
+shape_benchmark(100):    <fill in>
+shape_benchmark(1000):   <fill in>
+shape_benchmark(10000):  <fill in>
+shape_benchmark(100000): <fill in>
+algo run (test_setup):   <fill in>
+algo run (main):         <fill in>
+
+
+[YYYY-MM-DD] post-Phase-9 (commit: <sha>)
+   ... compare line-by-line; expected: 3-10x improvement on the algo run
+       lines and shape_benchmark(>=1000) due to inlined dispatch and removal
+       of heap allocation in the hot loop.
+
+
+[YYYY-MM-DD] post-Phase-10 (commit: <sha>)
+   ... further modest improvement expected from monomorphic distribution
+       calls (engine injection, no virtual dispatch).
