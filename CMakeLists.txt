@@ -144,6 +144,10 @@ target_link_libraries(rvegen_post_process_smoke PRIVATE
 )
 add_test(NAME post_process_smoke COMMAND rvegen_post_process_smoke)
 
+add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
+target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
+add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console

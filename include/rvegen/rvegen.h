@@ -59,7 +59,15 @@
 #include "registry/register_inputs.h"
 #include "registry/register_collisions.h"
 #include "registry/register_post_processes.h"
+#include "registry/register_meshes.h"
 #include "registry/build.h"
+
+// visualization (boundary types between rvegen shapes and out-of-tree
+// renderers like Tessera's VTK viewport)
+#include "visualization/triangle_mesh.h"
+#include "visualization/mesh_dispatcher.h"
+#include "visualization/box_mesh.h"
+#include "visualization/sphere_mesh.h"
 
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
