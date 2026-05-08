@@ -89,8 +89,12 @@ target_link_libraries(rvegen_lib INTERFACE
 target_compile_features(rvegen_lib INTERFACE cxx_std_23)
 
 # ---------------------------------------------------------------------------
-# Tests.
+# Tests. Gated on BUILD_TESTING (CTest convention) so consumers that pull
+# rvegen via add_subdirectory (e.g. Tessera) can disable rvegen's tests
+# from registering into the parent CTest database with `set(BUILD_TESTING
+# OFF CACHE BOOL "" FORCE)` before add_subdirectory().
 # ---------------------------------------------------------------------------
+if(NOT DEFINED BUILD_TESTING OR BUILD_TESTING)
 enable_testing()
 
 add_executable(rvegen_new_tree_smoke tests/new_tree_smoke.cpp)
@@ -168,6 +172,8 @@ if(benchmark_FOUND)
   )
 endif()
 
+endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING
+
 # ---------------------------------------------------------------------------
 # rvegen CLI.
 #
@@ -188,6 +194,7 @@ install(TARGETS rvegen
 # its postprocess array — the CLI takes only the config path. Set
 # WORKING_DIRECTORY so those relative paths resolve into the build tree
 # rather than the source tree.
+if(NOT DEFINED BUILD_TESTING OR BUILD_TESTING)
 add_test(
     NAME cli_circles_example
     COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json
@@ -224,3 +231,5 @@ set_tests_properties(cli_circles_with_voxelize_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "post-process 'voxel' done"
 )
+
+endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
