@@ -114,13 +114,42 @@ void test_dispatcher_after_registration_matches_direct_call() {
   REQUIRE(via_disp_b.tris.size() == 12);
 }
 
-void test_dispatcher_2d_shape_returns_empty() {
-  // Circle is 2D — deliberately not registered. Dispatch must return empty
-  // without throwing (a thrown exception across a thread/renderer boundary
-  // would crash the GUI; empty-mesh sentinel lets the renderer skip silently).
+void test_dispatcher_2d_shape_returns_flat_mesh() {
+  // 2D shapes (circle / rectangle / ellipse) now get flat triangle-fan
+  // meshes in the z=0 plane so they render as filled polygons in a 3D
+  // viewport. The mesh has non-zero verts and tris; every vertex sits
+  // at z=0 (within rounding).
   rvegen::mesh_dispatcher<double>::instance().clear();
   rvegen::register_all_meshes<double>();
 
+  rvegen::circle<double> c{0.5, 0.5, 0.1};
+  auto m = rvegen::mesh_dispatcher<double>::instance()(c);
+  REQUIRE(!m.empty());
+  REQUIRE(m.verts.size() > 3);
+  REQUIRE(m.tris.size() > 1);
+  for (auto const& v : m.verts) {
+    REQUIRE(std::abs(v[2]) < 1e-12);   // flat in z=0
+  }
+
+  rvegen::rectangle<double> r{0.0, 0.0, 1.0, 0.5};
+  auto rm = rvegen::mesh_dispatcher<double>::instance()(r);
+  REQUIRE(rm.verts.size() == 4);
+  REQUIRE(rm.tris.size()  == 2);
+
+  rvegen::ellipse<double> e{0.0, 0.0, 0.3, 0.1, 0.5};
+  auto em = rvegen::mesh_dispatcher<double>::instance()(e);
+  REQUIRE(!em.empty());
+  for (auto const& v : em.verts) {
+    REQUIRE(std::abs(v[2]) < 1e-12);
+  }
+}
+
+void test_dispatcher_unregistered_id_returns_empty() {
+  // The empty-mesh sentinel for genuinely-unregistered ids still works —
+  // critical for forward-compat (a future shape type without a mesh
+  // registration should produce no actor, not crash the renderer).
+  rvegen::mesh_dispatcher<double>::instance().clear();
+  // Don't call register_all_meshes; nothing is registered.
   rvegen::circle<double> c{0.5, 0.5, 0.1};
   auto m = rvegen::mesh_dispatcher<double>::instance()(c);
   REQUIRE(m.empty());
@@ -199,7 +228,8 @@ int main() {
   test_sphere_mesh_direct();
   test_dispatcher_returns_empty_for_unregistered_shape();
   test_dispatcher_after_registration_matches_direct_call();
-  test_dispatcher_2d_shape_returns_empty();
+  test_dispatcher_2d_shape_returns_flat_mesh();
+  test_dispatcher_unregistered_id_returns_empty();
   test_sphere_mesh_voxelization_agrees_with_is_inside();
   test_register_shape_is_idempotent();
 
