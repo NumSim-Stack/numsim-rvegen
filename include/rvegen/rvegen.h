@@ -67,6 +67,9 @@
 #include "visualization/triangle_mesh.h"
 #include "visualization/mesh_dispatcher.h"
 #include "visualization/box_mesh.h"
+#include "visualization/circle_mesh.h"
+#include "visualization/ellipse_mesh.h"
+#include "visualization/rectangle_mesh.h"
 #include "visualization/sphere_mesh.h"
 
 // json (opt-in: pulls in nlohmann)
