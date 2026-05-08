@@ -48,10 +48,15 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<std::size_t>("nx").template add<numsim_core::is_required>();
-    s.template insert<std::size_t>("ny").template add<numsim_core::is_required>();
-    s.template insert<std::size_t>("nz").template add<numsim_core::is_required>();
-    s.template insert<std::string>("output_path").template add<numsim_core::is_required>();
+    s.template insert<std::size_t>("nx").template add<numsim_core::is_required>()
+        .min(1.0).units("cells").description("voxel-grid resolution along x");
+    s.template insert<std::size_t>("ny").template add<numsim_core::is_required>()
+        .min(1.0).units("cells").description("voxel-grid resolution along y");
+    s.template insert<std::size_t>("nz").template add<numsim_core::is_required>()
+        .min(1.0).units("cells")
+        .description("voxel-grid resolution along z (collapses to 1 for 2D RVEs)");
+    s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
+        .description("destination path for the legacy VTK file (.vtk)");
     return s;
   }
 

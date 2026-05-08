@@ -42,17 +42,23 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<std::string>("pos_x_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .description("name of a distribution sampled for the box centre x");
     s.template insert<std::string>("pos_y_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .description("name of a distribution sampled for the box centre y");
     s.template insert<std::string>("pos_z_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .description("name of a distribution sampled for the box centre z");
     s.template insert<std::string>("width_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .description("name of a distribution sampled for the box width");
     s.template insert<std::string>("height_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .description("name of a distribution sampled for the box height");
     s.template insert<std::string>("depth_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .description("name of a distribution sampled for the box depth");
     return s;
   }
 

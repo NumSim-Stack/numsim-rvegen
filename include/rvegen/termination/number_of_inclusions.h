@@ -36,7 +36,9 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<std::size_t>("target").template add<numsim_core::is_required>();
+    s.template insert<std::size_t>("target").template add<numsim_core::is_required>()
+        .min(1.0)
+        .description("number of inclusions (primaries) to place before stopping");
     return s;
   }
 

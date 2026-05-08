@@ -50,9 +50,12 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<value_type>("canvas_width")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .min(1.0).units("px")
+        .description("rendered SVG canvas width in CSS pixels (height derived from view)");
     s.template insert<std::string>("output_path")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .description("destination path for the 3D SVG file");
     return s;
   }
 
