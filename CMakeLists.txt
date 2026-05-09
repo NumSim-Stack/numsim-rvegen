@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(rvegen LANGUAGES CXX)
+project(rvegen
+    VERSION   0.1.0
+    LANGUAGES CXX
+    DESCRIPTION "RVE generator for FFT/FEM homogenization"
+    HOMEPAGE_URL "https://github.com/numsim-stack/rvegen"
+)
 
 include(FetchContent)
 
