@@ -31,10 +31,13 @@ constexpr int exit_config = 78;  // EX_CONFIG
 
 void print_usage(char const* argv0) {
   std::cerr
-      << "usage: " << argv0 << " <config.json>\n\n"
+      << "usage: " << argv0 << " <config.json> [--progress]\n\n"
       << "  config.json   JSON file describing the RVE generation pipeline.\n"
       << "                Each entry under \"postprocess\" carries its own\n"
-      << "                output_path; the CLI takes no other arguments.\n";
+      << "                output_path.\n\n"
+      << "  --progress    Emit live progress lines to stderr every 50\n"
+      << "                accepted shapes — \"[progress] placed=X / N | φ=…\".\n"
+      << "                Off by default so scripted output stays stable.\n";
 }
 
 int run(int argc, char** argv) {
@@ -105,7 +108,35 @@ int run(int argc, char** argv) {
       config.at("termination"), domain_box);
 
   // ---- 7. Run the pipeline ----------------------------------------------
-  auto shapes = generator->compute(inputs, *termination, domain_box);
+  // Install a progress hook that prints "[N/T] φ = X.XX" lines to stderr
+  // every emit_every accepted shapes. The hook is opt-in via the
+  // `--progress` flag (disabled by default to keep CLI output stable for
+  // scripting). Quiet runs go through the legacy single "generated N
+  // shapes" line at the end.
+  rvegen::progress_options progress_opts;
+  bool show_progress = false;
+  for (int i = 2; i < argc; ++i) {
+    if (std::string{argv[i]} == "--progress") show_progress = true;
+  }
+  if (show_progress) {
+    progress_opts.on_progress = [](rvegen::progress_info info) {
+      std::cerr << "[progress] placed=" << info.shapes_placed;
+      if (info.shapes_target > 0) {
+        std::cerr << " / " << info.shapes_target;
+      }
+      if (info.volume_fraction > 0.0) {
+        std::cerr << " | φ=" << info.volume_fraction;
+      }
+      std::cerr << '\n';
+    };
+    // 25 is a compromise: fires often enough to show progress on the
+    // small example RVEs (~10–50 shapes) while not spamming the
+    // terminal on a 1000-shape run. The user can re-tune via library
+    // API if they're embedding rvegen.
+    progress_opts.emit_every = 25;
+  }
+  auto shapes = generator->compute(inputs, *termination, domain_box,
+                                   progress_opts);
   std::cout << "rvegen: generated " << shapes.size() << " shape"
             << (shapes.size() == 1 ? "" : "s") << '\n';
 
