@@ -233,3 +233,29 @@ set_tests_properties(cli_circles_with_voxelize_example PROPERTIES
 )
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
+
+# ---------------------------------------------------------------------------
+# Doxygen API reference (opt-in).
+#
+# `cmake -DRVEGEN_BUILD_DOCS=ON` enables a `docs` target that builds
+# HTML API documentation from the public headers + README + the
+# extending.md contributor doc. Output: build/docs/html/index.html.
+#
+# Default OFF — most builds don't need it, and pulling in doxygen is a
+# non-trivial dependency on minimal CI images.
+# ---------------------------------------------------------------------------
+option(RVEGEN_BUILD_DOCS "Build Doxygen API reference" OFF)
+if(RVEGEN_BUILD_DOCS)
+  find_package(Doxygen REQUIRED)
+  configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/docs/Doxyfile.in
+    ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
+    @ONLY
+  )
+  add_custom_target(docs
+    COMMAND Doxygen::doxygen ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMENT "Generating API reference with Doxygen → build/docs/html/"
+    VERBATIM
+  )
+endif()
