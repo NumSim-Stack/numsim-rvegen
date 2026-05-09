@@ -34,21 +34,26 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<std::size_t>("max_attempts")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::description_label<"maximum placement attempts before giving up">>();
     return s;
   }
 
   [[nodiscard]] shape_vector
   compute(input_vector& inputs,
           termination_base<T> const& termination,
-          std::array<value_type, 3> const& /*domain_box — unused*/) override {
+          std::array<value_type, 3> const& domain_box,
+          progress_options const& opts = {}) override {
     shape_vector accepted;
     if (inputs.empty()) return accepted;
 
     std::size_t attempts = 0;
     std::size_t input_idx = 0;
+    std::size_t last_emit = 0;
 
     while (!termination(accepted) && attempts < _max_attempts) {
+      if (opts.cancel()) return accepted;
       ++attempts;
       auto& input = *inputs[input_idx];
       input_idx = (input_idx + 1) % inputs.size();
@@ -74,6 +79,13 @@ public:
       if (collides) continue;
 
       accepted.push_back(std::move(candidate));
+
+      if (accepted.size() - last_emit >= opts.emit_every) {
+        opts.on_progress({accepted.size(),
+                          termination.target_count(),
+                          current_volume_fraction(accepted, domain_box)});
+        last_emit = accepted.size();
+      }
     }
 
     return accepted;

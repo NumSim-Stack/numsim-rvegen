@@ -56,10 +56,20 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<std::size_t>("nx").template add<numsim_core::is_required>();
-    s.template insert<std::size_t>("ny").template add<numsim_core::is_required>();
-    s.template insert<std::size_t>("nz").template add<numsim_core::is_required>();
-    s.template insert<std::string>("output_path").template add<numsim_core::is_required>();
+    s.template insert<std::size_t>("nx").template add<numsim_core::is_required>()
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::unit_label<"cells">>()
+        .template add<numsim_core::description_label<"voxel-grid resolution along x">>();
+    s.template insert<std::size_t>("ny").template add<numsim_core::is_required>()
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::unit_label<"cells">>()
+        .template add<numsim_core::description_label<"voxel-grid resolution along y">>();
+    s.template insert<std::size_t>("nz").template add<numsim_core::is_required>()
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::unit_label<"cells">>()
+        .template add<numsim_core::description_label<"voxel-grid resolution along z (collapses to 1 for 2D RVEs)">>();
+    s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"destination path for the voxel-grid file">>();
     return s;
   }
 

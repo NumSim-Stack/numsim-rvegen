@@ -45,9 +45,16 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<T>("x").template add<numsim_core::is_required>();
-    s.template insert<T>("y").template add<numsim_core::is_required>();
-    s.template insert<T>("radius").template add<numsim_core::is_required>();
+    s.template insert<T>("x").template add<numsim_core::is_required>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"x-coordinate of the circle centre">>();
+    s.template insert<T>("y").template add<numsim_core::is_required>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"y-coordinate of the circle centre">>();
+    s.template insert<T>("radius").template add<numsim_core::is_required>()
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"circle radius (must be positive)">>();
     return s;
   }
 

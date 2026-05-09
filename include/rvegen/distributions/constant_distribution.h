@@ -34,7 +34,8 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<value_type>("value").template add<numsim_core::is_required>();
+    s.template insert<value_type>("value").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"the constant value the distribution always returns">>();
     return s;
   }
 

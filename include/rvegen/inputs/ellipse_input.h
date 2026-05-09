@@ -41,15 +41,20 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<std::string>("pos_x_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the ellipse centre x">>();
     s.template insert<std::string>("pos_y_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the ellipse centre y">>();
     s.template insert<std::string>("radius_a_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the ellipse semi-axis a">>();
     s.template insert<std::string>("radius_b_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the ellipse semi-axis b">>();
     s.template insert<std::string>("rotation_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the ellipse rotation (radians)">>();
     return s;
   }
 

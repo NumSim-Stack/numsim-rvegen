@@ -1,0 +1,55 @@
+# Doxygen configuration for rvegen.
+#
+# CMake configures this file (substituting @PROJECT_VERSION@ etc.) and emits
+# rvegen/build/docs/html/index.html when the docs target is built.
+#
+# Generation is opt-in: only fires if doxygen is found on the system AND
+# RVEGEN_BUILD_DOCS is ON. Default is OFF so the standard build is unchanged.
+
+PROJECT_NAME           = "rvegen"
+PROJECT_NUMBER         = @PROJECT_VERSION@
+PROJECT_BRIEF          = "RVE generator for FFT/FEM homogenization"
+OUTPUT_DIRECTORY       = @CMAKE_CURRENT_BINARY_DIR@/docs
+
+INPUT                  = @CMAKE_CURRENT_SOURCE_DIR@/include \
+                         @CMAKE_CURRENT_SOURCE_DIR@/README.md \
+                         @CMAKE_CURRENT_SOURCE_DIR@/docs/extending.md
+
+USE_MDFILE_AS_MAINPAGE = @CMAKE_CURRENT_SOURCE_DIR@/README.md
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h *.hpp *.md
+EXCLUDE_PATTERNS       = */external/* */build/*
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+HIDE_UNDOC_MEMBERS     = NO
+
+# rvegen relies heavily on C++23 templates + concepts. Doxygen's parser
+# struggles with concepts; mark them as predefined so the type system
+# doesn't choke on them.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+PREDEFINED             = __cplusplus=202302L
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_DYNAMIC_MENUS     = YES
+HTML_DYNAMIC_SECTIONS  = YES
+GENERATE_TREEVIEW      = YES
+
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_AS_ERROR          = NO
+
+HAVE_DOT               = NO
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+
+ALPHABETICAL_INDEX     = YES

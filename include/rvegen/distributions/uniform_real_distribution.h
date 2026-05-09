@@ -30,8 +30,10 @@ public:
   // Static schema — co-located with the type. Returned by registry::schema().
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<value_type>("a").template add<numsim_core::is_required>();
-    s.template insert<value_type>("b").template add<numsim_core::is_required>();
+    s.template insert<value_type>("a").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"lower bound of the uniform distribution (inclusive)">>();
+    s.template insert<value_type>("b").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"upper bound of the uniform distribution (inclusive)">>();
     return s;
   }
 

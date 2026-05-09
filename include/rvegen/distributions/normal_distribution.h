@@ -26,8 +26,11 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<value_type>("mean").template add<numsim_core::is_required>();
-    s.template insert<value_type>("stddev").template add<numsim_core::is_required>();
+    s.template insert<value_type>("mean").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"mean of the normal distribution">>();
+    s.template insert<value_type>("stddev").template add<numsim_core::is_required>()
+        .template add<min_only<value_type{0}>>()
+        .template add<numsim_core::description_label<"standard deviation of the normal distribution">>();
     return s;
   }
 

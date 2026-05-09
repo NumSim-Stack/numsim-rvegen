@@ -50,9 +50,13 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<value_type>("canvas_width")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<min_only<value_type{1}>>()
+        .template add<numsim_core::unit_label<"px">>()
+        .template add<numsim_core::description_label<"rendered SVG canvas width in CSS pixels (height derived from view)">>();
     s.template insert<std::string>("output_path")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"destination path for the 3D SVG file">>();
     return s;
   }
 
@@ -131,7 +135,11 @@ public:
     };
     constexpr std::size_t palette_size = std::size(palette);
 
-    auto emit = [&](value_type d, std::string xml) {
+    // NB: do NOT name this lambda `emit` — Qt's QtCore defines `emit` as an
+    // empty macro to dress up signal calls (`emit signal()`), which mangles
+    // any local with that name when Tessera (a Qt 6 + VTK app) includes
+    // rvegen headers after a Qt header.
+    auto add_item = [&](value_type d, std::string xml) {
       items.push_back({d, std::move(xml)});
     };
 
@@ -156,7 +164,7 @@ public:
                         "\" fill=\"" + color +
                         "\" stroke=\"#222\" stroke-width=\"" +
                         fmt(stroke_w) + "\"/>";
-        emit(d, std::move(x));
+        add_item(d, std::move(x));
       } else if (auto const* b = dynamic_cast<box<value_type> const*>(raw); b) {
         // Project 8 corners, emit 6 faces with their centroid depths.
         std::array<std::pair<value_type, value_type>, 8> p2;
@@ -198,7 +206,7 @@ public:
                           "\" fill-opacity=\"0.85\" "
                           "stroke=\"#222\" stroke-width=\"" +
                           fmt(stroke_w) + "\"/>";
-          emit(cd, std::move(x));
+          add_item(cd, std::move(x));
         }
       }
       ++idx;

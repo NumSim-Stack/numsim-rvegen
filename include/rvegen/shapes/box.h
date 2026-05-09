@@ -41,12 +41,27 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<T>("x").template add<numsim_core::is_required>();
-    s.template insert<T>("y").template add<numsim_core::is_required>();
-    s.template insert<T>("z").template add<numsim_core::is_required>();
-    s.template insert<T>("width").template add<numsim_core::is_required>();
-    s.template insert<T>("height").template add<numsim_core::is_required>();
-    s.template insert<T>("depth").template add<numsim_core::is_required>();
+    s.template insert<T>("x").template add<numsim_core::is_required>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"x-coordinate of the box centre">>();
+    s.template insert<T>("y").template add<numsim_core::is_required>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"y-coordinate of the box centre">>();
+    s.template insert<T>("z").template add<numsim_core::is_required>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"z-coordinate of the box centre">>();
+    s.template insert<T>("width").template add<numsim_core::is_required>()
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"box extent along x (must be positive)">>();
+    s.template insert<T>("height").template add<numsim_core::is_required>()
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"box extent along y (must be positive)">>();
+    s.template insert<T>("depth").template add<numsim_core::is_required>()
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"box extent along z (must be positive)">>();
     return s;
   }
 

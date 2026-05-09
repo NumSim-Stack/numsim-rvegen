@@ -37,13 +37,17 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<std::string>("pos_x_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle centre x">>();
     s.template insert<std::string>("pos_y_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle centre y">>();
     s.template insert<std::string>("width_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle width">>();
     s.template insert<std::string>("height_dist")
-        .template add<numsim_core::is_required>();
+        .template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle height">>();
     return s;
   }
 
