@@ -243,7 +243,22 @@ installed locally.
 
 ## License
 
-[TODO — add a LICENSE file before publication]
+rvegen is **dual-licensed**:
+
+- **GNU General Public License v3.0** (see [`LICENSE`](LICENSE)) — free
+  for open-source work whose derivatives are themselves distributed
+  under GPL-3.0.
+- **Commercial licence** (see [`COMMERCIAL.md`](COMMERCIAL.md)) — for
+  proprietary, closed-source use without GPL's copyleft requirements.
+
+The GPL-3.0 covers academic research, open-source projects, and internal
+research that isn't redistributed. If you ship a closed-source product
+that links rvegen, or your organisation prohibits GPL dependencies in
+production, see `COMMERCIAL.md` for the paid licence terms.
+
+The vendored GeometricTools headers under `external/GeometricTools/`
+remain governed by their own (Boost Software License) terms; the rvegen
+licence does not modify or override them.
 
 ---
 
