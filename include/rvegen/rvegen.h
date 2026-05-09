@@ -58,6 +58,7 @@
 #include "registry/register_generators.h"
 #include "registry/register_inputs.h"
 #include "registry/register_collisions.h"
+#include "registry/register_materials.h"
 #include "registry/register_post_processes.h"
 #include "registry/register_meshes.h"
 #include "registry/build.h"

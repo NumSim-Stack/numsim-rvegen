@@ -342,6 +342,51 @@ void test_vtk_legacy_writer_header_and_size() {
   REQUIRE(txt.find("\n1\n") != std::string::npos);
 }
 
+// ----------------------------------------------------------------------------
+// material_registry: linear_elastic and void via JSON-driven instantiation.
+// Verifies the constitutive layer's registry plumbing matches the rest of
+// the library (distributions, inputs, generators, etc.).
+// ----------------------------------------------------------------------------
+void test_material_registry_linear_elastic() {
+  rvegen::register_all_materials<>();
+
+  auto& reg = rvegen::material_registry_t<>::instance();
+  REQUIRE(reg.contains("linear_elastic"));
+  REQUIRE(reg.contains("void"));
+
+  const auto spec = nlohmann::json::parse(R"({
+    "type": "linear_elastic",
+    "E":  3.5e9,
+    "nu": 0.35
+  })");
+  auto mat = rvegen::build_from_json(reg, spec);
+  REQUIRE(mat != nullptr);
+  REQUIRE(mat->kind() == std::string_view{"linear_elastic"});
+
+  const auto S = mat->stiffness();
+  // Voigt isotropic: C11 = λ + 2μ; for E=3.5e9, ν=0.35:
+  //   λ = E·ν / ((1+ν)(1-2ν)) ≈ 3.022e9
+  //   μ = E / (2(1+ν))         ≈ 1.296e9
+  //   C11 = λ + 2μ            ≈ 5.614e9
+  REQUIRE(std::abs(S.c[0][0] - 5.614e9) < 1e7);   // 0.2% tolerance
+  REQUIRE(std::abs(S.c[3][3] - 1.296e9) < 1e7);   // shear modulus G
+}
+
+void test_material_registry_void_is_zero() {
+  rvegen::register_all_materials<>();
+  auto& reg = rvegen::material_registry_t<>::instance();
+
+  const auto spec = nlohmann::json::parse(R"({"type": "void"})");
+  auto mat = rvegen::build_from_json(reg, spec);
+  REQUIRE(mat != nullptr);
+  REQUIRE(mat->kind() == std::string_view{"void"});
+
+  const auto S = mat->stiffness();
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 6; ++j)
+      REQUIRE(S.c[i][j] == 0.0);
+}
+
 } // namespace
 
 int main() {
@@ -356,6 +401,8 @@ int main() {
   test_circle_ellipse_collision();
   test_ellipse_input_via_registry();
   test_vtk_legacy_writer_header_and_size();
+  test_material_registry_linear_elastic();
+  test_material_registry_void_is_zero();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
