@@ -43,7 +43,7 @@ public:
   [[nodiscard]] shape_vector
   compute(input_vector& inputs,
           termination_base<T> const& termination,
-          std::array<value_type, 3> const& /*domain_box — unused*/,
+          std::array<value_type, 3> const& domain_box,
           progress_options const& opts = {}) override {
     shape_vector accepted;
     if (inputs.empty()) return accepted;
@@ -81,7 +81,9 @@ public:
       accepted.push_back(std::move(candidate));
 
       if (accepted.size() - last_emit >= opts.emit_every) {
-        opts.on_progress({accepted.size(), 0, 0.0});
+        opts.on_progress({accepted.size(),
+                          termination.target_count(),
+                          current_volume_fraction(accepted, domain_box)});
         last_emit = accepted.size();
       }
     }

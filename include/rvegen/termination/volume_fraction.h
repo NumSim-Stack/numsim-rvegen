@@ -74,6 +74,13 @@ public:
   [[nodiscard]] value_type target_fraction() const noexcept { return _target; }
   [[nodiscard]] value_type domain_size() const noexcept { return _domain_size; }
 
+  // Surface the configured fraction for the generator's progress callback —
+  // Tessera's progress bar reads (current_fraction / target_fraction) for
+  // a percentage display when this is non-zero.
+  [[nodiscard]] double target_volume_fraction() const noexcept override {
+    return static_cast<double>(_target);
+  }
+
 private:
   static constexpr value_type compute_domain_size(
       std::array<value_type, 3> const& box) noexcept {

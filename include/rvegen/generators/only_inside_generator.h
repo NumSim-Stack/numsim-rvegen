@@ -103,7 +103,9 @@ public:
       accepted.push_back(std::move(candidate));
 
       if (accepted.size() - last_emit >= opts.emit_every) {
-        opts.on_progress({accepted.size(), 0, 0.0});
+        opts.on_progress({accepted.size(),
+                          termination.target_count(),
+                          current_volume_fraction(accepted, domain_box)});
         last_emit = accepted.size();
       }
     }
