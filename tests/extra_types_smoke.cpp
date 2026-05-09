@@ -342,6 +342,55 @@ void test_vtk_legacy_writer_header_and_size() {
   REQUIRE(txt.find("\n1\n") != std::string::npos);
 }
 
+// ----------------------------------------------------------------------------
+// gmsh_geo_writer periodic mode: emits Periodic Curve / Surface directives
+// + Coherence; for FE-RVE workflows that need matching nodes on opposite
+// faces. Default mode (periodic=false) leaves the output untouched.
+// ----------------------------------------------------------------------------
+void test_gmsh_geo_writer_periodic_2d() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{"", true};   // periodic = true
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+
+  const auto txt = out.str();
+  REQUIRE(txt.find("Periodic Curve { 3 } = { 1 }") != std::string::npos);
+  REQUIRE(txt.find("Periodic Curve { 2 } = { 4 }") != std::string::npos);
+  REQUIRE(txt.find("Coherence;")                   != std::string::npos);
+}
+
+void test_gmsh_geo_writer_periodic_3d() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{"", true};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 1.0});
+
+  const auto txt = out.str();
+  REQUIRE(txt.find("Periodic Surface { 2 } = { 1 }") != std::string::npos);
+  REQUIRE(txt.find("Periodic Surface { 4 } = { 3 }") != std::string::npos);
+  REQUIRE(txt.find("Periodic Surface { 6 } = { 5 }") != std::string::npos);
+  REQUIRE(txt.find("Coherence;")                     != std::string::npos);
+}
+
+void test_gmsh_geo_writer_non_periodic_unchanged() {
+  // Default (periodic=false) must NOT emit the Periodic block — keeps
+  // existing configs producing byte-identical output.
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+
+  const auto txt = out.str();
+  REQUIRE(txt.find("Periodic")  == std::string::npos);
+  REQUIRE(txt.find("Coherence") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -356,6 +405,9 @@ int main() {
   test_circle_ellipse_collision();
   test_ellipse_input_via_registry();
   test_vtk_legacy_writer_header_and_size();
+  test_gmsh_geo_writer_periodic_2d();
+  test_gmsh_geo_writer_periodic_3d();
+  test_gmsh_geo_writer_non_periodic_unchanged();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";

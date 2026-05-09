@@ -42,18 +42,28 @@ public:
   // emitted text into a stringstream without needing a file.
   gmsh_geo_writer() = default;
 
-  explicit gmsh_geo_writer(std::string output_path)
-      : _output_path{std::move(output_path)} {}
+  explicit gmsh_geo_writer(std::string output_path, bool periodic = false)
+      : _output_path{std::move(output_path)}, _periodic{periodic} {}
 
   explicit gmsh_geo_writer(parameter_handler_t const& handler)
-      : _output_path{handler.template get<std::string>("output_path")} {}
+      : _output_path{handler.template get<std::string>("output_path")},
+        _periodic{handler.contains("periodic")
+                      ? handler.template get<bool>("periodic")
+                      : false} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"destination path for the gmsh .geo script">>();
+    // Optional — default false. Schema does NOT mark it required so existing
+    // configs keep working unchanged.
+    s.template insert<bool>("periodic")
+        .template add<numsim_core::description_label<"emit Periodic Curve/Surface directives + Coherence; for FE-RVE workflows that need matching nodes on opposite faces (default false)">>();
     return s;
   }
+
+  [[nodiscard]] bool periodic() const noexcept { return _periodic; }
+  void set_periodic(bool v) noexcept { _periodic = v; }
 
   [[nodiscard]] std::string const& output_path() const noexcept {
     return _output_path;
@@ -120,6 +130,7 @@ private:
         out << "// (unsupported 2D shape skipped)\n";
       }
     }
+    if (_periodic) write_periodic_2d(out, domain_box);
   }
 
   void write_3d(std::ostream& out,
@@ -150,9 +161,49 @@ private:
         out << "// (unsupported 3D shape skipped)\n";
       }
     }
+    if (_periodic) write_periodic_3d(out, domain_box);
+  }
+
+  // Emit gmsh's `Periodic Curve` directives pairing the four boundary
+  // edges of a 2D unit cell, plus `Coherence;` to deduplicate inclusion
+  // wrap-copies into a clean periodic geometry.
+  //
+  // Edge-numbering convention (gmsh built-in for a Rectangle entity):
+  //     curve 1 = bottom (y=0)
+  //     curve 2 = right  (x=Lx)
+  //     curve 3 = top    (y=Ly)
+  //     curve 4 = left   (x=0)
+  static void write_periodic_2d(std::ostream& out,
+                                 std::array<value_type, 3> const& dom) {
+    out << "\n// Periodic boundary conditions — opposite edges identified.\n"
+        << "Periodic Curve { 3 } = { 1 } Translate { 0, "
+        << dom[1] << ", 0 };\n"
+        << "Periodic Curve { 2 } = { 4 } Translate { "
+        << dom[0] << ", 0, 0 };\n"
+        << "\n// Boolean fragment + coherence — splits inclusions across\n"
+        << "// the boundary and merges duplicate geometry from wrap copies.\n"
+        << "Coherence;\n";
+  }
+
+  // Same for a 3D unit cube. Surface numbering for a Box entity in
+  // gmsh ≥ 4.10:
+  //     surface 1 = -x face       surface 2 = +x face
+  //     surface 3 = -y face       surface 4 = +y face
+  //     surface 5 = -z face       surface 6 = +z face
+  static void write_periodic_3d(std::ostream& out,
+                                 std::array<value_type, 3> const& dom) {
+    out << "\n// Periodic boundary conditions — opposite faces identified.\n"
+        << "Periodic Surface { 2 } = { 1 } Translate { "
+        << dom[0] << ", 0, 0 };\n"
+        << "Periodic Surface { 4 } = { 3 } Translate { 0, "
+        << dom[1] << ", 0 };\n"
+        << "Periodic Surface { 6 } = { 5 } Translate { 0, 0, "
+        << dom[2] << " };\n"
+        << "\nCoherence;\n";
   }
 
   std::string _output_path;
+  bool _periodic{false};
 };
 
 } // namespace rvegen
