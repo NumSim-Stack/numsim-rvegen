@@ -1,0 +1,59 @@
+# CI: configure + build + ctest on every push and PR.
+#
+# rvegen depends on numsim-core (sibling repo). The two are checked out
+# into a layout that matches the local development convention —
+# numsim-rvegen/rvegen/ next to numsim-core/ — so CMakeLists' relative
+# include path `../../numsim-core/include` resolves correctly.
+#
+# Compiler: g++-14. The library uses <print> from C++23 which lands in
+# libstdc++ 14+; older toolchains are gated out at configure time
+# (RVEGEN_HAS_STD_PRINT).
+
+name: CI
+
+on:
+  push:
+    branches: [main, integration/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Linux / g++-14 / Release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout numsim-core (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: numsim-stack/numsim-core
+          path: numsim-core
+
+      - name: Checkout rvegen
+        uses: actions/checkout@v4
+        with:
+          path: numsim-rvegen/rvegen
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            g++-14 \
+            cmake \
+            ninja-build \
+            libboost-dev \
+            libeigen3-dev \
+            nlohmann-json3-dev
+
+      - name: Configure
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CXX: g++-14
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: numsim-rvegen/rvegen
+        run: cmake --build build -j
+
+      - name: Test
+        working-directory: numsim-rvegen/rvegen
+        run: ctest --test-dir build --output-on-failure
