@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -26,6 +27,14 @@ public:
   virtual ~termination_base() = default;
 
   [[nodiscard]] virtual bool operator()(shape_vector const& accepted) const = 0;
+
+  // Optional progress hooks consumed by the generator base when filling
+  // `progress_info` for the on_progress callback. Concrete terminations
+  // override whichever applies; the defaults of 0 mean "unknown" and
+  // surface in Tessera's progress bar as a count-only display rather
+  // than a percentage.
+  [[nodiscard]] virtual std::size_t target_count() const noexcept { return 0; }
+  [[nodiscard]] virtual double target_volume_fraction() const noexcept { return 0.0; }
 };
 
 } // namespace rvegen

@@ -60,6 +60,12 @@ public:
   [[nodiscard]] std::size_t target() const noexcept { return _target; }
   void set_target(std::size_t n) noexcept { _target = n; }
 
+  // Surface the configured count for the generator's progress callback —
+  // Tessera's progress bar displays "X / N" when this is non-zero.
+  [[nodiscard]] std::size_t target_count() const noexcept override {
+    return _target;
+  }
+
 private:
   std::size_t _target;
   std::array<T, 3> _domain_box;

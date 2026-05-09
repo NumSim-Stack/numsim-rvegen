@@ -103,6 +103,83 @@ void test_cancel_halts_generator() {
   REQUIRE(callback_count >= cancel_after_n_callbacks);
 }
 
+void test_progress_carries_termination_target_count() {
+  // number_of_inclusions termination should surface its target count
+  // through progress_info::shapes_target every callback. Tessera reads
+  // this to render "X / N" in the progress bar.
+  std::mt19937 engine{11};
+  rvegen::uniform_real_distribution<double> pos_x{0.05, 0.95, engine};
+  rvegen::uniform_real_distribution<double> pos_y{0.05, 0.95, engine};
+  rvegen::uniform_real_distribution<double> radius{0.01, 0.02, engine};
+
+  rvegen::only_inside_generator<double>::input_vector inputs;
+  inputs.push_back(std::make_unique<rvegen::circle_input<double>>(pos_x, pos_y, radius));
+
+  constexpr std::size_t kTarget = 200;
+  rvegen::number_of_inclusions<double> termination{kTarget};
+  rvegen::only_inside_generator<double> generator;
+
+  std::vector<rvegen::progress_info> snapshots;
+  rvegen::progress_options opts;
+  opts.emit_every = 50;
+  opts.on_progress = [&snapshots](rvegen::progress_info info) {
+    snapshots.push_back(info);
+  };
+
+  auto shapes = generator.compute(inputs, termination, {1.0, 1.0, 0.0}, opts);
+  REQUIRE(shapes.size() == kTarget);
+  REQUIRE(!snapshots.empty());
+
+  for (auto const& snap : snapshots) {
+    REQUIRE(snap.shapes_target == kTarget);
+    // current_volume_fraction should be in (0, 1) for a 1x1 box with
+    // 0.01-0.02 radius circles — non-zero (we placed shapes) and well
+    // below 1.0 (200 small circles can't fill a unit box).
+    REQUIRE(snap.volume_fraction > 0.0);
+    REQUIRE(snap.volume_fraction < 1.0);
+  }
+
+  // Volume fraction should be monotonically non-decreasing as more
+  // shapes accumulate (only_inside doesn't remove anything).
+  for (std::size_t i = 1; i < snapshots.size(); ++i) {
+    REQUIRE(snapshots[i].volume_fraction >= snapshots[i - 1].volume_fraction);
+  }
+}
+
+void test_progress_target_unknown_for_until_full() {
+  // until_full has no notion of "target" — both progress fields stay
+  // at the default-zero, signalling "unbounded" to the consumer.
+  std::mt19937 engine{13};
+  rvegen::uniform_real_distribution<double> pos_x{0.05, 0.95, engine};
+  rvegen::uniform_real_distribution<double> pos_y{0.05, 0.95, engine};
+  rvegen::uniform_real_distribution<double> radius{0.05, 0.07, engine};
+
+  rvegen::only_inside_generator<double>::input_vector inputs;
+  inputs.push_back(std::make_unique<rvegen::circle_input<double>>(pos_x, pos_y, radius));
+
+  rvegen::until_full<double> termination;
+  rvegen::only_inside_generator<double> generator;
+  generator.set_max_attempts(20'000);
+
+  std::vector<rvegen::progress_info> snapshots;
+  rvegen::progress_options opts;
+  opts.emit_every = 5;
+  opts.on_progress = [&snapshots](rvegen::progress_info info) {
+    snapshots.push_back(info);
+  };
+
+  auto shapes = generator.compute(inputs, termination, {1.0, 1.0, 0.0}, opts);
+  REQUIRE(!shapes.empty());
+
+  // until_full leaves both progress targets at zero — the consumer
+  // (Tessera's progress bar) should display count-only when it sees this.
+  REQUIRE(termination.target_count() == 0);
+  REQUIRE(termination.target_volume_fraction() == 0.0);
+  for (auto const& snap : snapshots) {
+    REQUIRE(snap.shapes_target == 0);
+  }
+}
+
 void test_default_options_match_pre_hook_behaviour() {
   // Calling compute() with no opts argument compiles (default-constructed
   // progress_options is no-op + never-cancel) and produces the same result
