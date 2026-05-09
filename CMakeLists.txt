@@ -80,12 +80,24 @@ endif()
 
 # ---------------------------------------------------------------------------
 # rvegen library (header-only).
+#
+# BUILD_INTERFACE: paths used while building rvegen and any consumer that
+# pulls rvegen via add_subdirectory().
+# INSTALL_INTERFACE: paths used by consumers that find rvegen via
+# find_package(rvegen). The Mathematics subset of GTE is installed under
+# rvegen/_thirdparty/ so the consumer's global include namespace stays
+# clean; numsim-core is found by the consumer's own find_dependency()
+# call (chained from rvegenConfig.cmake).
 # ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+
 add_library(rvegen_lib INTERFACE)
 target_include_directories(rvegen_lib INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/GeometricTools/GTE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/GeometricTools/GTE>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/rvegen/_thirdparty>
 )
 target_link_libraries(rvegen_lib INTERFACE
     Eigen3::Eigen
@@ -192,6 +204,61 @@ target_link_libraries(rvegen PRIVATE
 
 install(TARGETS rvegen
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# ---------------------------------------------------------------------------
+# Install + export for find_package(rvegen) consumers.
+#
+# Downstream usage:
+#     find_package(rvegen 0.1.0 CONFIG REQUIRED)
+#     target_link_libraries(my_target PRIVATE rvegen::rvegen_lib)
+#
+# The four upstream packages — Boost, Eigen3, nlohmann_json, numsim-core —
+# are pulled in by find_dependency() in rvegenConfig.cmake and must be
+# discoverable by the consumer's CMake.
+# ---------------------------------------------------------------------------
+include(CMakePackageConfigHelpers)
+
+# rvegen's own headers.
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/rvegen
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+)
+
+# Vendored GTE Mathematics — what rvegen's headers actually #include.
+# Installed under rvegen/_thirdparty/ to keep the consumer's global
+# include namespace clean; rvegen_lib's INSTALL_INTERFACE adds the dir.
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/external/GeometricTools/GTE/Mathematics
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rvegen/_thirdparty
+    FILES_MATCHING PATTERN "*.h"
+)
+
+# Header-only — exporting the target records include-dir + link-dependency
+# metadata for consumers, no binary artefacts.
+install(TARGETS rvegen_lib EXPORT rvegen_Targets)
+
+install(EXPORT rvegen_Targets
+    FILE rvegenTargets.cmake
+    NAMESPACE rvegen::
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/rvegen/cmake
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMinorVersion
+)
+
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/rvegenConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/rvegen/cmake
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/rvegen/cmake
 )
 
 # Smoke tests: drive the CLI against the bundled example configs. Each
