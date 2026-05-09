@@ -160,6 +160,10 @@ add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
 add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
 
+add_executable(rvegen_statistical_validation_test tests/statistical_validation_test.cpp)
+target_link_libraries(rvegen_statistical_validation_test PRIVATE rvegen_lib)
+add_test(NAME statistical_validation_test COMMAND rvegen_statistical_validation_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console
