@@ -41,12 +41,27 @@ public:
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
-    s.template insert<T>("x").template add<numsim_core::is_required>();
-    s.template insert<T>("y").template add<numsim_core::is_required>();
-    s.template insert<T>("z").template add<numsim_core::is_required>();
-    s.template insert<T>("width").template add<numsim_core::is_required>();
-    s.template insert<T>("height").template add<numsim_core::is_required>();
-    s.template insert<T>("depth").template add<numsim_core::is_required>();
+    s.template insert<T>("x").template add<numsim_core::is_required>()
+        .units("m")
+        .description("x-coordinate of the box centre");
+    s.template insert<T>("y").template add<numsim_core::is_required>()
+        .units("m")
+        .description("y-coordinate of the box centre");
+    s.template insert<T>("z").template add<numsim_core::is_required>()
+        .units("m")
+        .description("z-coordinate of the box centre");
+    s.template insert<T>("width").template add<numsim_core::is_required>()
+        .min(0.0)
+        .units("m")
+        .description("box extent along x (must be positive)");
+    s.template insert<T>("height").template add<numsim_core::is_required>()
+        .min(0.0)
+        .units("m")
+        .description("box extent along y (must be positive)");
+    s.template insert<T>("depth").template add<numsim_core::is_required>()
+        .min(0.0)
+        .units("m")
+        .description("box extent along z (must be positive)");
     return s;
   }
 
