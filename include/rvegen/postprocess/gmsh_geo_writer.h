@@ -51,7 +51,7 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
-        .description("destination path for the gmsh .geo script");
+        .template add<numsim_core::description_label<"destination path for the gmsh .geo script">>();
     return s;
   }
 

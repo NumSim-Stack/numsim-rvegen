@@ -39,16 +39,16 @@ public:
     parameter_controller_t s;
     s.template insert<std::string>("pos_x_dist")
         .template add<numsim_core::is_required>()
-        .description("name of a distribution sampled for the sphere x-position");
+        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere x-position">>();
     s.template insert<std::string>("pos_y_dist")
         .template add<numsim_core::is_required>()
-        .description("name of a distribution sampled for the sphere y-position");
+        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere y-position">>();
     s.template insert<std::string>("pos_z_dist")
         .template add<numsim_core::is_required>()
-        .description("name of a distribution sampled for the sphere z-position");
+        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere z-position">>();
     s.template insert<std::string>("radius_dist")
         .template add<numsim_core::is_required>()
-        .description("name of a distribution sampled for the sphere radius");
+        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere radius">>();
     return s;
   }
 

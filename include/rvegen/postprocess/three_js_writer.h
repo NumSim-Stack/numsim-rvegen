@@ -50,7 +50,7 @@ public:
     parameter_controller_t s;
     s.template insert<std::string>("output_path")
         .template add<numsim_core::is_required>()
-        .description("destination path for the self-contained Three.js HTML viewer");
+        .template add<numsim_core::description_label<"destination path for the self-contained Three.js HTML viewer">>();
     return s;
   }
 

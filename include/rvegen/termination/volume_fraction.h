@@ -50,8 +50,9 @@ public:
     parameter_controller_t s;
     s.template insert<value_type>("target_fraction")
         .template add<numsim_core::is_required>()
-        .min(0.0).max(1.0).units("fraction")
-        .description("target volume (3D) or area (2D) fraction of inclusions");
+        .template add<numsim_core::range<value_type{0}, value_type{1}>>()
+        .template add<numsim_core::unit_label<"fraction">>()
+        .template add<numsim_core::description_label<"target volume (3D) or area (2D) fraction of inclusions">>();
     return s;
   }
 

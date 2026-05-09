@@ -1,11 +1,12 @@
 // Audits every parameter schema across all rvegen registries to make sure
 // new types don't slip in without GUI metadata. Asserts:
 //
-//   * Every field has a nonempty description() — Tessera form widgets
-//     surface this as a tooltip, and CLI errors refer to it.
-//   * Every INTEGRAL numeric field has at least one of .min(), .max(),
-//     or .units() set — Qt's QSpinBox defaults to 0..99 if no range is
-//     given, which is wrong for nearly every count/dimension we have.
+//   * Every field has a description_label policy attached — Tessera form
+//     widgets surface this as a tooltip, and error messages reference it.
+//   * Every INTEGRAL numeric field has at least one of: a range policy
+//     (range<>, min_only<>, max_only<>) or a unit_label policy. Qt's
+//     QSpinBox defaults to 0..99 if no range is given, which is wrong
+//     for nearly every count/dimension we have.
 //
 // Floating-point fields are exempt from the second rule: distribution
 // parameters (a/b/mean/value) are user-supplied bounds with no inherent
@@ -13,17 +14,25 @@
 // the form-builder. String fields are exempt entirely (filenames,
 // distribution-name references, free-form text).
 //
-// Failure mode: the test collects every offending (registry, type, field)
-// across all registries before reporting, so one fix-then-build cycle
-// surfaces the full set rather than one at a time.
+// Implementation note: under the policy API, hint metadata lives on
+// side-bases (range_hint_base, units_hint_base, description_hint_base)
+// reachable via dynamic_cast. The audit downcasts each parameter to
+// its concrete typed input_parameter<T, K, P> for known T (size_t,
+// int, double, string), walks the resulting checks() list, and tests
+// each check against the side-bases. Any T not in the known list is
+// silently skipped — the audit is only as complete as its T-list, but
+// extending it is one if-else.
 
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <string>
 #include <typeindex>
 #include <vector>
+
+#include <numsim-core/input_parameter_controller.h>
 
 #include "rvegen/rvegen.h"
 #include "rvegen/shapes/box.h"
@@ -34,11 +43,18 @@
 
 namespace {
 
+using base_t = numsim_core::input_parameter_base<
+    std::string, rvegen::parameter_handler_t>;
+
+template <typename T>
+using typed_t = numsim_core::input_parameter<
+    T, std::string, rvegen::parameter_handler_t>;
+
 struct violation {
   std::string registry;
   std::string type;
   std::string field;
-  std::string what;   // "missing description" | "numeric field missing min/max/units"
+  std::string what;   // "missing description" | "integral field missing range/units"
 };
 
 std::vector<violation> all_violations;
@@ -50,22 +66,62 @@ bool is_integral_numeric(std::type_index t) {
       || t == typeid(std::int32_t)  || t == typeid(std::int64_t);
 }
 
+// Walk the typed parameter's check list and report which side-bases
+// are reachable. The caller picks T because input_parameter_base
+// can't expose checks() polymorphically.
+struct hint_summary {
+  bool has_description = false;
+  bool has_range = false;
+  bool has_units = false;
+};
+
+template <typename T>
+hint_summary inspect_typed(typed_t<T> const& p) {
+  hint_summary s;
+  for (auto const& check : p.checks()) {
+    if (dynamic_cast<numsim_core::description_hint_base const*>(check.get()))
+      s.has_description = true;
+    if (dynamic_cast<numsim_core::range_hint_base const*>(check.get()))
+      s.has_range = true;
+    if (dynamic_cast<numsim_core::units_hint_base const*>(check.get()))
+      s.has_units = true;
+  }
+  return s;
+}
+
+// Try the known T-list. Returns nullopt if this base parameter doesn't
+// match any known type (audit silently skips it; extend the list if a
+// new T appears in the schema).
+std::optional<hint_summary> inspect(base_t const& base) {
+  if (auto const* p = dynamic_cast<typed_t<int> const*>(&base))
+    return inspect_typed(*p);
+  if (auto const* p = dynamic_cast<typed_t<unsigned int> const*>(&base))
+    return inspect_typed(*p);
+  if (auto const* p = dynamic_cast<typed_t<std::size_t> const*>(&base))
+    return inspect_typed(*p);
+  if (auto const* p = dynamic_cast<typed_t<double> const*>(&base))
+    return inspect_typed(*p);
+  if (auto const* p = dynamic_cast<typed_t<float> const*>(&base))
+    return inspect_typed(*p);
+  if (auto const* p = dynamic_cast<typed_t<std::string> const*>(&base))
+    return inspect_typed(*p);
+  return std::nullopt;
+}
+
 template <typename Schema>
 void audit_schema(Schema const& schema, std::string const& registry_name,
                   std::string const& type_name) {
   for (auto const& [field_key, param_ptr] : schema) {
-    if (param_ptr->description().empty()) {
+    auto hints = inspect(*param_ptr);
+    if (!hints) continue;  // unknown T; skip silently
+    if (!hints->has_description) {
       all_violations.push_back({registry_name, type_name, field_key,
                                 "missing description"});
     }
     if (is_integral_numeric(param_ptr->type_id())) {
-      const bool has_hint =
-          param_ptr->min().has_value() ||
-          param_ptr->max().has_value() ||
-          !param_ptr->units().empty();
-      if (!has_hint) {
+      if (!hints->has_range && !hints->has_units) {
         all_violations.push_back({registry_name, type_name, field_key,
-                                  "integral field missing min/max/units"});
+                                  "integral field missing range/units"});
       }
     }
   }

@@ -44,19 +44,19 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     s.template insert<T>("x").template add<numsim_core::is_required>()
-        .units("m")
-        .description("x-coordinate of the rectangle centre");
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"x-coordinate of the rectangle centre">>();
     s.template insert<T>("y").template add<numsim_core::is_required>()
-        .units("m")
-        .description("y-coordinate of the rectangle centre");
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"y-coordinate of the rectangle centre">>();
     s.template insert<T>("width").template add<numsim_core::is_required>()
-        .min(0.0)
-        .units("m")
-        .description("rectangle extent along x (must be positive)");
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"rectangle extent along x (must be positive)">>();
     s.template insert<T>("height").template add<numsim_core::is_required>()
-        .min(0.0)
-        .units("m")
-        .description("rectangle extent along y (must be positive)");
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<numsim_core::description_label<"rectangle extent along y (must be positive)">>();
     return s;
   }
 

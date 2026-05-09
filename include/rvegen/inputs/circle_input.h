@@ -47,13 +47,13 @@ public:
     parameter_controller_t s;
     s.template insert<std::string>("pos_x_dist")
         .template add<numsim_core::is_required>()
-        .description("name of a distribution sampled for the circle x-position");
+        .template add<numsim_core::description_label<"name of a distribution sampled for the circle x-position">>();
     s.template insert<std::string>("pos_y_dist")
         .template add<numsim_core::is_required>()
-        .description("name of a distribution sampled for the circle y-position");
+        .template add<numsim_core::description_label<"name of a distribution sampled for the circle y-position">>();
     s.template insert<std::string>("radius_dist")
         .template add<numsim_core::is_required>()
-        .description("name of a distribution sampled for the circle radius");
+        .template add<numsim_core::description_label<"name of a distribution sampled for the circle radius">>();
     return s;
   }
 

@@ -49,8 +49,8 @@ public:
     parameter_controller_t s;
     s.template insert<std::size_t>("max_attempts")
         .template add<numsim_core::is_required>()
-        .min(1.0)
-        .description("maximum placement attempts before giving up");
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::description_label<"maximum placement attempts before giving up">>();
     return s;
   }
 
