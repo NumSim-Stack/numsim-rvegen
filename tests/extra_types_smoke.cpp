@@ -342,6 +342,55 @@ void test_vtk_legacy_writer_header_and_size() {
   REQUIRE(txt.find("\n1\n") != std::string::npos);
 }
 
+// ----------------------------------------------------------------------------
+// oriented_uniform_distribution: von-Mises sampler. Two regime checks:
+//   κ = 0:    behaviour collapses to uniform on a 2π interval.
+//   κ = 10:   tightly concentrated around mean_angle.
+// Both verified statistically over a moderate sample.
+// ----------------------------------------------------------------------------
+void test_oriented_uniform_uniform_regime() {
+  std::mt19937 engine{123};
+  rvegen::oriented_uniform_distribution<double> dist{
+      0.0 /*mean*/, 0.0 /*kappa = uniform*/, engine};
+
+  // 5000 samples binned into 12 30°-wide bins. With kappa=0 each bin
+  // expects ~417 samples; standard deviation under the binomial is
+  // sqrt(N · p · (1-p)) ≈ √(5000 · 1/12 · 11/12) ≈ 19.5. Tolerance set
+  // to 5σ so the test isn't flaky — this is detecting "wildly skewed"
+  // not "minor sampling noise".
+  constexpr int N = 5000;
+  constexpr int B = 12;
+  std::array<int, B> bins{};
+  for (int i = 0; i < N; ++i) {
+    double a = std::fmod(dist() + 4 * M_PI, 2 * M_PI);   // wrap to [0, 2π)
+    int b = std::min(int(a / (2 * M_PI / B)), B - 1);
+    ++bins[b];
+  }
+  for (int count : bins) {
+    REQUIRE(std::abs(count - N / B) < 5 * 20);   // ~5σ tolerance
+  }
+}
+
+void test_oriented_uniform_concentrated_regime() {
+  std::mt19937 engine{456};
+  // mean_angle = π/4; high concentration. Samples should cluster.
+  rvegen::oriented_uniform_distribution<double> dist{
+      M_PI / 4, 50.0 /*kappa large*/, engine};
+
+  constexpr int N = 2000;
+  double sum_dev_sq = 0.0;
+  for (int i = 0; i < N; ++i) {
+    double a = dist();
+    double dev = std::fmod(a - M_PI / 4 + 3 * M_PI, 2 * M_PI) - M_PI;  // wrap to [-π, π]
+    sum_dev_sq += dev * dev;
+  }
+  // For a von Mises distribution, Var ≈ 1/κ for large κ. With κ=50,
+  // expect std-dev ≈ 1/√50 ≈ 0.14 rad. Empirical std-dev should be in
+  // the same ballpark (allow 3× factor for sample noise).
+  const double empirical_std = std::sqrt(sum_dev_sq / N);
+  REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
+}
+
 } // namespace
 
 int main() {
@@ -356,6 +405,8 @@ int main() {
   test_circle_ellipse_collision();
   test_ellipse_input_via_registry();
   test_vtk_legacy_writer_header_and_size();
+  test_oriented_uniform_uniform_regime();
+  test_oriented_uniform_concentrated_regime();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";

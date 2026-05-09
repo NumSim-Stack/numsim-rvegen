@@ -22,6 +22,7 @@
 #include "../distributions/constant_distribution.h"
 #include "../distributions/distribution_base.h"
 #include "../distributions/normal_distribution.h"
+#include "../distributions/oriented_uniform_distribution.h"
 #include "../distributions/uniform_real_distribution.h"
 #include "../types.h"
 
@@ -55,6 +56,13 @@ inline void register_constant_distribution() {
       .template register_type<constant_distribution<T, Engine>>("constant");
 }
 
+template <typename T = double, typename Engine = std::mt19937>
+inline void register_oriented_uniform_distribution() {
+  distribution_registry_t<T, Engine>::instance()
+      .template register_type<oriented_uniform_distribution<T, Engine>>(
+          "oriented_uniform");
+}
+
 // Convenience aggregator. Add new distribution registrations here as they
 // gain JSON-driven ctor + parameters().
 template <typename T = double, typename Engine = std::mt19937>
@@ -62,6 +70,7 @@ inline void register_all_distributions() {
   register_uniform_real_distribution<T, Engine>();
   register_normal_distribution<T, Engine>();
   register_constant_distribution<T, Engine>();
+  register_oriented_uniform_distribution<T, Engine>();
 }
 
 } // namespace rvegen
