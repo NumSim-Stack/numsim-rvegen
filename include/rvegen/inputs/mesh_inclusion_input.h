@@ -4,13 +4,13 @@
 // at construction time, then on each new_shape() clones the mesh and
 // places it at a sampled position.
 //
-// Why load-once-clone-many:
-//   STL parsing is the costly step; cloning a triangle vector is a
-//   memcpy. The shape's own translation logic (set_middle_point) shifts
-//   the cached centroid + face triangles. Each placement is therefore
-//   O(N_triangles) memory and time — fine for moderate meshes, worth
-//   sharing the triangle list via shared_ptr for very large meshes
-//   (tracked as follow-up).
+// Why load-once-share-many:
+//   STL parsing is the costly step. The triangle list is wrapped in a
+//   `std::shared_ptr<vector<triangle_type> const>` and handed to every
+//   placed `mesh_inclusion` by reference (refcount bump only). Each
+//   placement carries only its own translation offset — set_middle_point
+//   is O(1) instead of O(N_triangles). For 1000 placements of a 10k-tri
+//   mesh: one triangle allocation, not 1000.
 //
 // What this header lands today (phase 2 of #9, after the
 // mesh_inclusion shape + STL reader in PR #23):
@@ -23,12 +23,10 @@
 //
 // Out of scope here, ships in follow-up PRs against #9:
 //   * Per-shape rotation distributions (axis-angle or Bingham
-//     orientation). Needs rotation logic in mesh_inclusion (the
-//     primitive only supports translation today via set_middle_point).
-//   * Per-shape uniform scaling. Same shape mutation gap.
+//     orientation). Needs rotation logic in mesh_inclusion (today the
+//     primitive's offset only encodes translation).
+//   * Per-shape uniform scaling. Same primitive-side gap.
 //   * Binary STL reader hookup once it lands.
-//   * shared_ptr-backed triangle storage to avoid the per-shape
-//     memcpy on heavy meshes.
 
 #include <memory>
 #include <stdexcept>
@@ -57,13 +55,14 @@ public:
                        distribution_base<value_type>& py,
                        distribution_base<value_type>& pz)
       : _stl_path{std::move(stl_path)},
-        _triangles{read_stl_ascii_file<value_type>(_stl_path)},
+        _shared_triangles{std::make_shared<std::vector<triangle_type> const>(
+            read_stl_ascii_file<value_type>(_stl_path))},
         _px{px}, _py{py}, _pz{pz} {
     // An empty triangle list yields a `mesh_inclusion` whose
     // `is_inside` is always false. The generator's volume_fraction
     // termination would then never satisfy and the run would loop
     // until `max_attempts` (silent timeout) — fail fast instead.
-    if (_triangles.empty()) {
+    if (!_shared_triangles || _shared_triangles->empty()) {
       throw std::runtime_error{
           "mesh_inclusion_input: STL file '" + _stl_path +
           "' contained no triangles; refusing to construct an "
@@ -96,8 +95,11 @@ public:
     return s;
   }
 
+  // Zero-copy placement: the shared_ptr is captured by `mesh_inclusion`,
+  // so 1000 placements share one triangle vector instead of cloning it
+  // 1000 times. set_middle_point only updates the per-shape offset.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto mesh = std::make_unique<mesh_inclusion<value_type>>(_triangles);
+    auto mesh = std::make_unique<mesh_inclusion<value_type>>(_shared_triangles);
     mesh->set_middle_point({_px(), _py(), _pz()});
     return mesh;
   }
@@ -108,7 +110,7 @@ public:
 
 private:
   std::string _stl_path;
-  std::vector<triangle_type> _triangles;
+  std::shared_ptr<std::vector<triangle_type> const> _shared_triangles;
   distribution_base<value_type>& _px;
   distribution_base<value_type>& _py;
   distribution_base<value_type>& _pz;
