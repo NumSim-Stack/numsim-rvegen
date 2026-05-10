@@ -89,9 +89,12 @@ template <typename T = double>
 }
 
 // Reuss lower bound: C = (Σ v_i · C_i^{-1})^{-1}. Inverts each phase
-// matrix via Eigen's PartialPivLU; throws if any phase is singular
-// (e.g. a void phase with zero stiffness — for that case the user
-// should drop the void from the average and renormalise the
+// matrix via `FullPivLU` and uses its rank-revealing `isInvertible()`
+// check, which is robust at engineering scales — comparing
+// `determinant()` against `epsilon` would be meaningless for a 6×6
+// stiffness with ~1e9 entries (det ~1e54). Throws if any phase is
+// singular (e.g. a void phase with zero stiffness — for that case the
+// user should drop the void from the average and renormalise the
 // remaining phases, since the harmonic mean diverges).
 template <typename T = double>
 [[nodiscard]] stiffness_matrix<T> reuss_bound(
@@ -106,21 +109,24 @@ template <typename T = double>
   }
   stiffness_matrix<T> S = stiffness_matrix<T>::Zero();
   for (std::size_t i = 0; i < stiffnesses.size(); ++i) {
-    Eigen::PartialPivLU<stiffness_matrix<T>> lu{stiffnesses[i]};
-    if (std::abs(lu.determinant()) < std::numeric_limits<T>::epsilon()) {
+    Eigen::FullPivLU<stiffness_matrix<T>> lu{stiffnesses[i]};
+    if (!lu.isInvertible()) {
       throw std::runtime_error{
           "reuss_bound: a phase stiffness is singular (e.g. void); "
           "drop it from the input and renormalise volume fractions"};
     }
-    S += volume_fractions[i] * lu.inverse();
+    S.noalias() += volume_fractions[i] * lu.inverse();
   }
-  return Eigen::PartialPivLU<stiffness_matrix<T>>{S}.inverse();
+  return Eigen::FullPivLU<stiffness_matrix<T>>{S}.inverse();
 }
 
 // Voigt-Reuss-Hill average: (C_voigt + C_reuss) / 2. A common
-// engineering estimate that sits between the bounds and is often
-// closer to experimental data than either bound alone for moderate
-// phase contrasts.
+// engineering rule-of-thumb estimate that sits between the bounds.
+// Whether it lands closer to experiment than either bound alone is
+// morphology-dependent and not a property of the average itself —
+// for tightly-bracketed cases (low contrast) the bounds are close so
+// it doesn't matter much; for high-contrast composites with one phase
+// percolating the experiment can favour either bound.
 template <typename T = double>
 [[nodiscard]] stiffness_matrix<T> voigt_reuss_hill(
     std::vector<stiffness_matrix<T>> const& stiffnesses,

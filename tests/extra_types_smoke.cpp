@@ -530,22 +530,57 @@ void test_mean_field_voigt_above_reuss_for_contrast() {
 
   const auto cv = voigt_bound(stiffnesses, v);
   const auto cr = reuss_bound(stiffnesses, v);
-  // Voigt > Reuss component-wise on the diagonal block.
-  REQUIRE(cv(0, 0) > cr(0, 0));
-  REQUIRE(cv(3, 3) > cr(3, 3));
-  // Hill average sits strictly between.
+  // Voigt ≥ Reuss component-wise across the full 6×6 (the strict
+  // inequality holds where the phases differ; equality elsewhere).
+  for (int r = 0; r < 6; ++r) {
+    for (int c = 0; c < 6; ++c) {
+      REQUIRE(cv(r, c) >= cr(r, c) - 1e-6);
+    }
+  }
+  // Both bounds must be positive-definite (eigenvalues strictly > 0).
+  Eigen::SelfAdjointEigenSolver<stiffness_matrix<double>> ev_v{cv};
+  Eigen::SelfAdjointEigenSolver<stiffness_matrix<double>> ev_r{cr};
+  REQUIRE(ev_v.eigenvalues().minCoeff() > 0.0);
+  REQUIRE(ev_r.eigenvalues().minCoeff() > 0.0);
+  // Hill average sits strictly between the diagonal extremes.
   const auto ch = voigt_reuss_hill(stiffnesses, v);
   REQUIRE(ch(0, 0) > cr(0, 0));
   REQUIRE(ch(0, 0) < cv(0, 0));
 }
 
-void test_mean_field_size_mismatch_throws() {
+void test_mean_field_voigt_size_mismatch_throws() {
   using namespace rvegen::homogenization;
   std::vector<stiffness_matrix<double>> stiffnesses{
       lame_to_voigt_stiffness<double>(1.0, 0.5)};
   std::vector<double> v{0.5, 0.5};   // wrong size
   bool threw = false;
   try { voigt_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mean_field_reuss_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0, 0.5),
+      lame_to_voigt_stiffness<double>(2.0, 1.0)};
+  std::vector<double> v{0.5};   // wrong size
+  bool threw = false;
+  try { reuss_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mean_field_reuss_singular_phase_throws() {
+  // A void phase (zero stiffness) is singular; reuss_bound's harmonic
+  // mean diverges. The check uses FullPivLU::isInvertible(), which is
+  // robust at engineering scales — the previous det-vs-epsilon check
+  // would silently pass for near-singular matrices with norm ~1e9.
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0e9, 0.5e9),
+      stiffness_matrix<double>::Zero()};
+  std::vector<double> v{0.5, 0.5};
+  bool threw = false;
+  try { reuss_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
   REQUIRE(threw);
 }
 
@@ -574,7 +609,9 @@ int main() {
   test_oriented_uniform_concentrated_regime();
   test_mean_field_single_phase_collapses_to_phase();
   test_mean_field_voigt_above_reuss_for_contrast();
-  test_mean_field_size_mismatch_throws();
+  test_mean_field_voigt_size_mismatch_throws();
+  test_mean_field_reuss_size_mismatch_throws();
+  test_mean_field_reuss_singular_phase_throws();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
