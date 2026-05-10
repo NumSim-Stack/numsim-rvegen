@@ -1334,6 +1334,46 @@ void test_input_phase_name_default_is_empty() {
   REQUIRE(shape->phase_name().empty());
 }
 
+void test_input_metadata_json_field_merges_into_info() {
+  // The `metadata` schema field accepts a JSON-encoded string of
+  // arbitrary key/value pairs that get merged into the produced
+  // shape's info blob. Combined with `phase_name`, both fields
+  // round-trip and metadata can also override phase_name on its own.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{121};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "x": {"type": "constant", "value": 0.5},
+    "y": {"type": "constant", "value": 0.5},
+    "r": {"type": "constant", "value": 0.1}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  // phase_name + a metadata blob with custom keys + a numeric value.
+  // The schema requires `metadata` to be a JSON-encoded string (not a
+  // nested object) until the parameter visitor learns object passthrough.
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "circle_input",
+    "pos_x_dist": "x",
+    "pos_y_dist": "y",
+    "radius_dist": "r",
+    "phase_name": "fibre",
+    "metadata": "{\"orientation_deg\": 42.5, \"source\": \"a.stl\", \"active\": true}"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape->phase_name() == "fibre");
+  REQUIRE(shape->info().get<double>("orientation_deg") == 42.5);
+  REQUIRE(shape->info().get<std::string>("source") == "a.stl");
+  REQUIRE(shape->info().get<bool>("active") == true);
+}
+
 void test_info_generic_metadata_round_trip() {
   // Verify the info container behaves as a generic key-value store
   // beyond the phase_name shortcut: write multiple typed values,
@@ -1419,6 +1459,7 @@ int main() {
   test_load_phases_from_json_round_trip();
   test_input_stamps_phase_name_on_produced_shape();
   test_input_phase_name_default_is_empty();
+  test_input_metadata_json_field_merges_into_info();
   test_info_generic_metadata_round_trip();
   test_load_phases_from_json_rejects_non_array();
   test_load_phases_from_json_rejects_missing_name();

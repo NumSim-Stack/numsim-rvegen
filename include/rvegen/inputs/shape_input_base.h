@@ -60,11 +60,28 @@ protected:
   // place. New metadata fields are added here once and every input
   // picks them up automatically — that's the point of the generic
   // info container.
+  //
+  // Two recognised fields:
+  //   * `phase_name` (string) — convenience shortcut, stamped onto
+  //     shape's info.phase_name.
+  //   * `metadata` (JSON-encoded string) — arbitrary key/value pairs
+  //     parsed via nlohmann::json and merged into the shape's info.
+  //     The string-encoding is a stop-gap until the parameter visitor
+  //     gains nested-object passthrough; until then, callers escape
+  //     their JSON as a string in the config:
+  //       "metadata": "{\"orientation_deg\": 42.5, \"source\": \"a.stl\"}"
+  //
+  // Order: `phase_name` is read first, then `metadata` is merged on
+  // top — so a `phase_name` key inside the metadata object overrides
+  // the explicit field.
   void read_metadata(parameter_handler_t const& handler) {
     if (handler.contains("phase_name")) {
       _info.set_phase_name(handler.template get<std::string>("phase_name"));
     }
-    // Future: orientation, source-id, custom user tags. Add here.
+    if (handler.contains("metadata")) {
+      auto const& blob = handler.template get<std::string>("metadata");
+      _info.json().merge_patch(nlohmann::json::parse(blob));
+    }
   }
 
   // Concrete inputs call this from `new_shape()` to stamp the input's

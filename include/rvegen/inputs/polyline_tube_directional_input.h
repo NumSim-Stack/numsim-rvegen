@@ -109,6 +109,8 @@ public:
         .template add<numsim_core::description_label<"name of a distribution sampled for the tube radius">>();
     s.template insert<std::string>("phase_name")
         .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
+    s.template insert<std::string>("metadata")
+        .template add<numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>();
     return s;
   }
 
