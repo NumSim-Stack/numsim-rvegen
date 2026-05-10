@@ -1,7 +1,7 @@
 # rvegen Python bindings
 
-Phase-1 surface: shape primitives only. Distributions, generators, and the
-JSON-driven config path land in follow-up PRs.
+Phase-2 shape surface: all eight shape primitives. Distributions, generators,
+and the JSON-driven config path land in follow-up PRs.
 
 ## Build & install (editable, from this directory)
 
@@ -31,11 +31,27 @@ print(r.area())                  # 0.08
 
 b = rvegen.Box(0.0, 0.0, 0.0, 0.2, 0.4, 0.5)
 print(b.volume())                # 0.04
+
+e = rvegen.Ellipse(0.0, 0.0, 0.5, 0.2, 0.0)
+print(e.area())                  # ≈ π · 0.5 · 0.2
+
+t = rvegen.PolylineTube([(0, 0, 0), (1, 0, 0)], radius=0.1)
+print(t.is_inside(0.5, 0, 0))    # True
+
+m = rvegen.MeshInclusion.from_stl_file("cube.stl")
+print(m.triangle_count, m.volume())
+
+# Voronoi cell — convex polyhedron via vertices + face-index lists.
+v = rvegen.VoronoiCell(
+    vertices=[(-0.5,-0.5,-0.5),(0.5,-0.5,-0.5),(0.5,0.5,-0.5),(-0.5,0.5,-0.5),
+              (-0.5,-0.5,0.5),(0.5,-0.5,0.5),(0.5,0.5,0.5),(-0.5,0.5,0.5)],
+    faces=[[0,3,2,1],[4,5,6,7],[0,1,5,4],[3,7,6,2],[0,4,7,3],[1,2,6,5]],
+)
+print(v.volume())                # 1.0
 ```
 
 ## What's NOT exposed yet
 
-- Ellipse, polyline_tube, mesh_inclusion, voronoi_cell (trivial follow-up — same binding pattern)
 - Distributions (need engine reference + GIL handling)
 - Generators, terminations, post-processes
 - JSON config path (`rvegen.run_from_json(...)`)
