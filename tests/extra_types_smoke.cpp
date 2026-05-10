@@ -494,6 +494,155 @@ void test_oriented_uniform_concentrated_regime() {
 }
 
 // ----------------------------------------------------------------------------
+// mesh_inclusion + STL ASCII reader. Mesh: an axis-aligned cube of side 1
+// centred at origin, expressed via 12 triangles.
+// ----------------------------------------------------------------------------
+namespace {
+
+constexpr char const* unit_cube_stl = R"(solid cube
+  facet normal 0 0 -1
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex  0.5  0.5 -0.5
+      vertex  0.5 -0.5 -0.5
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex -0.5  0.5 -0.5
+      vertex  0.5  0.5 -0.5
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -0.5 -0.5  0.5
+      vertex  0.5 -0.5  0.5
+      vertex  0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -0.5 -0.5  0.5
+      vertex  0.5  0.5  0.5
+      vertex -0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex  0.5 -0.5 -0.5
+      vertex  0.5 -0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex  0.5 -0.5  0.5
+      vertex -0.5 -0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -0.5  0.5 -0.5
+      vertex  0.5  0.5  0.5
+      vertex  0.5  0.5 -0.5
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -0.5  0.5 -0.5
+      vertex -0.5  0.5  0.5
+      vertex  0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex -0.5 -0.5  0.5
+      vertex -0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex -0.5  0.5  0.5
+      vertex -0.5  0.5 -0.5
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex  0.5 -0.5 -0.5
+      vertex  0.5  0.5  0.5
+      vertex  0.5 -0.5  0.5
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex  0.5 -0.5 -0.5
+      vertex  0.5  0.5 -0.5
+      vertex  0.5  0.5  0.5
+    endloop
+  endfacet
+endsolid cube
+)";
+
+}
+
+void test_stl_ascii_reader_triangle_count() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  REQUIRE(tris.size() == 12);
+}
+
+void test_mesh_inclusion_inside_outside_cube() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  rvegen::mesh_inclusion<double> mesh{tris};
+
+  // Origin is at the cube centre — should be inside.
+  REQUIRE(mesh.is_inside({0.0, 0.0, 0.0}));
+  // Far away — should be outside.
+  REQUIRE(!mesh.is_inside({2.0, 2.0, 2.0}));
+  // Just outside on +x.
+  REQUIRE(!mesh.is_inside({0.6, 0.0, 0.0}));
+}
+
+void test_mesh_inclusion_volume_unit_cube() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  rvegen::mesh_inclusion<double> mesh{tris};
+
+  // Unit cube — volume must equal 1 to within FP tolerance.
+  REQUIRE(std::abs(mesh.volume() - 1.0) < 1e-12);
+}
+
+void test_mesh_inclusion_translate_via_set_middle_point() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  rvegen::mesh_inclusion<double> mesh{tris};
+
+  mesh.set_middle_point({10.0, 5.0, 0.0});
+  // After translation, origin is no longer inside.
+  REQUIRE(!mesh.is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(mesh.is_inside({10.0, 5.0, 0.0}));
+}
+
+void test_stl_ascii_reader_rejects_binary_stl() {
+  // Binary STL: 80-byte header (often containing the literal "solid"),
+  // then 4-byte triangle count, then per-triangle 50 bytes. Synthesise
+  // a minimal binary blob — 80 NULs + a count of 0 — and confirm the
+  // ASCII reader refuses with a clear error rather than parsing garbage.
+  std::string blob(80, '\0');
+  blob.append({'\0', '\0', '\0', '\0'});   // 0 triangles
+  std::stringstream ss{blob};
+  bool threw = false;
+  try { (void)rvegen::read_stl_ascii<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+// ----------------------------------------------------------------------------
 // polyline_tube_input — schema-driven 2-point straight tube. Tests both the
 // direct ctor and the JSON-via-registry path.
 // ----------------------------------------------------------------------------
@@ -923,6 +1072,29 @@ void test_phase_collection_at_unknown_throws() {
   REQUIRE(threw);
 }
 
+void test_stl_ascii_reader_parse_error_includes_position() {
+  // An "outer" keyword replaced with a typo — the reader should throw
+  // with a position marker in the message.
+  const char* bad = R"(solid bad
+  facet normal 0 0 1
+    OUTNER loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 0 1 0
+    endloop
+  endfacet
+endsolid
+)";
+  std::stringstream ss{bad};
+  bool threw = false;
+  std::string what;
+  try { (void)rvegen::read_stl_ascii<double>(ss); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  // Position marker uses 'byte' as the unit.
+  REQUIRE(what.find("byte") != std::string::npos);
+}
+
 void test_load_phases_from_json_rejects_non_array() {
   bool threw = false;
   try {
@@ -988,6 +1160,12 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_stl_ascii_reader_triangle_count();
+  test_stl_ascii_reader_rejects_binary_stl();
+  test_stl_ascii_reader_parse_error_includes_position();
+  test_mesh_inclusion_inside_outside_cube();
+  test_mesh_inclusion_volume_unit_cube();
+  test_mesh_inclusion_translate_via_set_middle_point();
   test_polyline_tube_input_via_registry();
   test_polyline_tube_input_direct_ctor();
   test_polyline_tube_input_missing_dist_throws();
