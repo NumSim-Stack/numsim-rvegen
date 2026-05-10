@@ -5,6 +5,7 @@
 #include "../inputs/box_input.h"
 #include "../inputs/circle_input.h"  // brings in distribution_map_t
 #include "../inputs/ellipse_input.h"
+#include "../inputs/polyline_tube_input.h"
 #include "../inputs/rectangle_input.h"
 #include "../inputs/shape_input_base.h"
 #include "../inputs/sphere_input.h"
@@ -56,12 +57,19 @@ inline void register_ellipse_input() {
 }
 
 template <typename T = double>
+inline void register_polyline_tube_input() {
+  input_registry_t<T>::instance()
+      .template register_type<polyline_tube_input<T>>("polyline_tube_input");
+}
+
+template <typename T = double>
 inline void register_all_inputs() {
   register_circle_input<T>();
   register_sphere_input<T>();
   register_rectangle_input<T>();
   register_box_input<T>();
   register_ellipse_input<T>();
+  register_polyline_tube_input<T>();
 }
 
 } // namespace rvegen

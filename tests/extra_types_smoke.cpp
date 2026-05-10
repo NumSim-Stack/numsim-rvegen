@@ -442,6 +442,9 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
+}
+
+// ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
 //   κ = 10:   tightly concentrated around mean_angle.
@@ -490,6 +493,58 @@ void test_oriented_uniform_concentrated_regime() {
   REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
 }
 
+// ----------------------------------------------------------------------------
+// polyline_tube_input — schema-driven 2-point straight tube. Tests both the
+// direct ctor and the JSON-via-registry path.
+// ----------------------------------------------------------------------------
+void test_polyline_tube_input_via_registry() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  std::mt19937 engine{42};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "sx": {"type": "constant", "value": 0.1},
+    "sy": {"type": "constant", "value": 0.2},
+    "sz": {"type": "constant", "value": 0.3},
+    "ex": {"type": "constant", "value": 0.7},
+    "ey": {"type": "constant", "value": 0.8},
+    "ez": {"type": "constant", "value": 0.9},
+    "r":  {"type": "constant", "value": 0.05}
+  })");
+
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "polyline_tube_input",
+    "start_x_dist": "sx",
+    "start_y_dist": "sy",
+    "start_z_dist": "sz",
+    "end_x_dist":   "ex",
+    "end_y_dist":   "ey",
+    "end_z_dist":   "ez",
+    "radius_dist":  "r"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  auto* tube = dynamic_cast<rvegen::polyline_tube<double>*>(shape.get());
+  REQUIRE(tube != nullptr);
+  REQUIRE(tube->radius() == 0.05);
+  // Centerline endpoints match the constant distributions.
+  auto const& cl = tube->centerline();
+  REQUIRE(cl.size() == 2);
+  REQUIRE(std::abs(cl[0][0] - 0.1) < 1e-12);
+  REQUIRE(std::abs(cl[1][2] - 0.9) < 1e-12);
+}
+
 } // namespace
 
 int main() {
@@ -513,6 +568,7 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_polyline_tube_input_via_registry();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
