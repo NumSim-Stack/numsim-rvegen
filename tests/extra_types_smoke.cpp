@@ -573,6 +573,35 @@ void test_voronoi_cell_face_with_collinear_first_three_vertices() {
   REQUIRE(cell.is_inside({0.0, 0.0, 1.0}));      // above the -z face
 }
 
+void test_voronoi_cell_scale_invariant_collinear_threshold() {
+  // Build the unit-cube cell at micrometre scale (1e-6) and confirm
+  // volume + inside test still work. With the previous absolute
+  // collinearity threshold (epsilon * 1024 ≈ 2e-13) the cross
+  // magnitude on micrometre-scale faces is ~1e-12 — within an order
+  // of magnitude of being treated as collinear. The new sin-of-angle
+  // threshold is dimensionless and unaffected by scale.
+  using V = gte::Vector<3, double>;
+  constexpr double s = 1e-6;
+  std::vector<V> verts(8);
+  verts[0] = V{}; verts[0][0]=-0.5*s; verts[0][1]=-0.5*s; verts[0][2]=-0.5*s;
+  verts[1] = V{}; verts[1][0]= 0.5*s; verts[1][1]=-0.5*s; verts[1][2]=-0.5*s;
+  verts[2] = V{}; verts[2][0]= 0.5*s; verts[2][1]= 0.5*s; verts[2][2]=-0.5*s;
+  verts[3] = V{}; verts[3][0]=-0.5*s; verts[3][1]= 0.5*s; verts[3][2]=-0.5*s;
+  verts[4] = V{}; verts[4][0]=-0.5*s; verts[4][1]=-0.5*s; verts[4][2]= 0.5*s;
+  verts[5] = V{}; verts[5][0]= 0.5*s; verts[5][1]=-0.5*s; verts[5][2]= 0.5*s;
+  verts[6] = V{}; verts[6][0]= 0.5*s; verts[6][1]= 0.5*s; verts[6][2]= 0.5*s;
+  verts[7] = V{}; verts[7][0]=-0.5*s; verts[7][1]= 0.5*s; verts[7][2]= 0.5*s;
+  std::vector<std::vector<std::size_t>> faces{
+      {0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+      {3, 7, 6, 2}, {0, 4, 7, 3}, {1, 2, 6, 5}};
+  rvegen::voronoi_cell<double> cell{verts, faces};
+
+  // Volume = s³ = 1e-18.
+  REQUIRE(std::abs(cell.volume() - s * s * s) < 1e-30);
+  REQUIRE(cell.is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(!cell.is_inside({s, 0.0, 0.0}));
+}
+
 void test_voronoi_cell_translate_via_set_middle_point() {
   using V = gte::Vector<3, double>;
   // Tetrahedron with apex on +z, base on z=0.
@@ -622,6 +651,7 @@ int main() {
   test_oriented_uniform_concentrated_regime();
   test_voronoi_cell_unit_cube_volume_and_inside();
   test_voronoi_cell_face_with_collinear_first_three_vertices();
+  test_voronoi_cell_scale_invariant_collinear_threshold();
   test_voronoi_cell_translate_via_set_middle_point();
 
   if (failures > 0) {

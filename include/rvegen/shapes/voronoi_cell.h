@@ -201,6 +201,16 @@ private:
   // A face whose vertices are entirely collinear (i.e. degenerate to
   // a line) is silently dropped — emitting it would assign a zero
   // normal, which would always evaluate as inside in `is_inside`.
+  //
+  // Scale-invariant collinearity test: |e1 × e2| = |e1| · |e2| ·
+  // sin(angle), so dividing the cross magnitude by |e1| · |e2|
+  // gives sin(angle) — a dimensionless number in [0, 1] that does
+  // not depend on the size of the input vertices. The threshold
+  // `epsilon * 1024` is then a sin-of-angle tolerance: any angle
+  // smaller than ~1e-13 rad (for double) is treated as collinear.
+  // The previous absolute threshold worked for unit-scale inputs but
+  // would silently accept near-collinear triples at micrometre
+  // scale or reject genuine triples at kilometre scale.
   void rebuild_face_planes() {
     _centroid = vector_type::Zero();
     if (_vertices.empty()) return;
@@ -209,13 +219,14 @@ private:
 
     _face_planes.clear();
     _face_planes.reserve(_faces.size());
-    constexpr T mag_eps =
+    constexpr T sin_eps =
         std::numeric_limits<T>::epsilon() * T{1024};
     for (auto const& face : _faces) {
       if (face.size() < 3) continue;
       const auto& a = _vertices[face[0]];
       vector_type n;
       T mag = T{0};
+      bool found = false;
       // Walk pairs (i, i+1) starting from i=1 looking for a
       // non-collinear triple.
       for (std::size_t i = 1; i + 1 < face.size(); ++i) {
@@ -227,9 +238,15 @@ private:
         n[1] = e1[2] * e2[0] - e1[0] * e2[2];
         n[2] = e1[0] * e2[1] - e1[1] * e2[0];
         mag = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-        if (mag > mag_eps) break;
+        const T e1_mag = std::sqrt(gte::Dot(e1, e1));
+        const T e2_mag = std::sqrt(gte::Dot(e2, e2));
+        const T denom = e1_mag * e2_mag;
+        if (denom > T{0} && mag / denom > sin_eps) {
+          found = true;
+          break;
+        }
       }
-      if (mag <= mag_eps) continue;   // entirely collinear face — drop
+      if (!found) continue;   // entirely collinear face — drop
       n /= mag;
       // Flip outward if the centroid is on the positive side.
       const T offset0 = n[0] * a[0] + n[1] * a[1] + n[2] * a[2];
