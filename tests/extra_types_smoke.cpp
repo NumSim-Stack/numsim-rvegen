@@ -396,6 +396,52 @@ void test_vtk_legacy_writer_header_and_size() {
 }
 
 // ----------------------------------------------------------------------------
+// gmsh_geo_writer periodic mode: emits Periodic Curve / Surface directives
+// + Coherence; for FE-RVE workflows that need matching nodes on opposite
+// faces. Default mode (periodic=false) leaves the output untouched.
+// ----------------------------------------------------------------------------
+void test_gmsh_geo_writer_periodic_2d() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{"", true};   // periodic = true
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+
+  const auto txt = out.str();
+  REQUIRE(txt.find("Periodic Curve { 3 } = { 1 }") != std::string::npos);
+  REQUIRE(txt.find("Periodic Curve { 2 } = { 4 }") != std::string::npos);
+  REQUIRE(txt.find("Coherence;")                   != std::string::npos);
+}
+
+void test_gmsh_geo_writer_periodic_3d() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{"", true};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 1.0});
+
+  const auto txt = out.str();
+  REQUIRE(txt.find("Periodic Surface { 2 } = { 1 }") != std::string::npos);
+  REQUIRE(txt.find("Periodic Surface { 4 } = { 3 }") != std::string::npos);
+  REQUIRE(txt.find("Periodic Surface { 6 } = { 5 }") != std::string::npos);
+  REQUIRE(txt.find("Coherence;")                     != std::string::npos);
+}
+
+void test_gmsh_geo_writer_non_periodic_unchanged() {
+  // Default (periodic=false) must NOT emit the Periodic block — keeps
+  // existing configs producing byte-identical output.
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+
+  const auto txt = out.str();
+  REQUIRE(txt.find("Periodic")  == std::string::npos);
+  REQUIRE(txt.find("Coherence") == std::string::npos);
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
 //   κ = 10:   tightly concentrated around mean_angle.
@@ -462,6 +508,9 @@ int main() {
   test_polyline_tube_volume_and_bbox();
   test_polyline_tube_translate_via_set_middle_point();
   test_vtk_legacy_writer_header_and_size();
+  test_gmsh_geo_writer_periodic_2d();
+  test_gmsh_geo_writer_periodic_3d();
+  test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
 
