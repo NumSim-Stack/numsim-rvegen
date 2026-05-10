@@ -628,6 +628,43 @@ void test_mesh_inclusion_translate_via_set_middle_point() {
   REQUIRE(mesh.is_inside({10.0, 5.0, 0.0}));
 }
 
+void test_stl_ascii_reader_rejects_binary_stl() {
+  // Binary STL: 80-byte header (often containing the literal "solid"),
+  // then 4-byte triangle count, then per-triangle 50 bytes. Synthesise
+  // a minimal binary blob — 80 NULs + a count of 0 — and confirm the
+  // ASCII reader refuses with a clear error rather than parsing garbage.
+  std::string blob(80, '\0');
+  blob.append({'\0', '\0', '\0', '\0'});   // 0 triangles
+  std::stringstream ss{blob};
+  bool threw = false;
+  try { (void)rvegen::read_stl_ascii<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_stl_ascii_reader_parse_error_includes_position() {
+  // An "outer" keyword replaced with a typo — the reader should throw
+  // with a position marker in the message.
+  const char* bad = R"(solid bad
+  facet normal 0 0 1
+    OUTNER loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 0 1 0
+    endloop
+  endfacet
+endsolid
+)";
+  std::stringstream ss{bad};
+  bool threw = false;
+  std::string what;
+  try { (void)rvegen::read_stl_ascii<double>(ss); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  // Position marker uses 'byte' as the unit.
+  REQUIRE(what.find("byte") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -652,6 +689,8 @@ int main() {
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
   test_stl_ascii_reader_triangle_count();
+  test_stl_ascii_reader_rejects_binary_stl();
+  test_stl_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_inside_outside_cube();
   test_mesh_inclusion_volume_unit_cube();
   test_mesh_inclusion_translate_via_set_middle_point();
