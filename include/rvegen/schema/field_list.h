@@ -22,6 +22,7 @@
 //     `parameter_controller_t` matching the field declarations.
 //   * `field_list<Fields...>::extract(handler)` — pulls the named
 //     values out of a `parameter_handler_t` into a `std::tuple<>`.
+//   * Compile-time uniqueness check on field names.
 //   * Standalone unit tests that exercise both, with no migration of
 //     existing types.
 //
@@ -36,8 +37,14 @@
 //     verifies its `schema()` output matches the pre-migration schema.
 //   * `make_from_tuple<Derived>(extract(handler))` ergonomic helper
 //     for ctors. Trivial once annotations are sorted.
+//   * Default values for `Required = false` fields. Today an optional
+//     field still throws on missing key in `extract`; richer
+//     annotations will let it return a default instead.
 
+#include <array>
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <tuple>
 
 #include <numsim-core/input_parameter_controller.h>
@@ -50,6 +57,14 @@ namespace rvegen {
 // numsim_core::fixed_string), `T` is the value type, `Required`
 // determines whether the field is added with `is_required` in the
 // emitted schema.
+//
+// Default `Required = true` mirrors the rvegen convention that nearly
+// every schema field is required (matches the explicit `is_required`
+// add()s in every existing `parameters()` declaration). Pass
+// `Required=false` for the rare optional field — note that today
+// `extract()` will still throw on a missing key, so optional fields
+// need defaults to be useful (annotation work is the next phase
+// against #1).
 template <numsim_core::fixed_string Name, typename T, bool Required = true>
 struct field {
   static constexpr auto name = Name;
@@ -57,10 +72,39 @@ struct field {
   static constexpr bool required = Required;
 };
 
+namespace detail {
+
+// Compile-time check that a list of field names is unique. Catches the
+// `field_list<field<"x", T>, field<"y", T>, field<"x", T>>` typo at
+// type definition rather than at runtime. O(N²) — fine for typical
+// schemas (3–7 fields, never more than ~20).
+template <typename... Fields>
+constexpr bool field_names_unique() {
+  std::array<std::string_view, sizeof...(Fields)> names{
+      std::string_view{Fields::name.view()}...};
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    for (std::size_t j = i + 1; j < names.size(); ++j) {
+      if (names[i] == names[j]) return false;
+    }
+  }
+  return true;
+}
+
+} // namespace detail
+
 // A pack of fields. `schema()` builds the `parameter_controller_t`;
 // `extract()` pulls a tuple of values out of a `parameter_handler_t`.
+//
+// Note: `extract()` returns the values by value via `std::make_tuple`,
+// which copies. `parameter_handler::get<T>` returns `T const&`, so a
+// string-typed field is copied once per `extract()`. Negligible at
+// construction time (handler.get is one-shot per shape ctor) and
+// in line with how the existing inputs read from the handler today.
 template <typename... Fields>
 struct field_list {
+  static_assert(detail::field_names_unique<Fields...>(),
+                "field_list: duplicate field names");
+
   [[nodiscard]] static parameter_controller_t schema() {
     parameter_controller_t s;
     (insert_one<Fields>(s), ...);
