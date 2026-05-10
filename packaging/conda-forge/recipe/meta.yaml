@@ -1,0 +1,59 @@
+{% set name = "rvegen" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/NumSim-Stack/numsim-rvegen/archive/v{{ version }}.tar.gz
+  # The sha256 below is a placeholder; replace with the real hash once the
+  # v0.1.0 tag is published on GitHub.
+  sha256: 0000000000000000000000000000000000000000000000000000000000000000
+
+build:
+  number: 0
+  # Header-only library — `noarch: generic` would be ideal, but conda-forge
+  # convention treats CMake-installed C++ headers + a CMake config as
+  # platform-dependent (paths differ between linux/osx/windows). Keep
+  # platform-specific until the conda-forge admins say otherwise.
+  skip: true  # [py<311 or python_impl == 'pypy']
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - cmake >=3.20
+    - ninja
+  host:
+    - boost-cpp >=1.83
+    - eigen >=3.4
+    - nlohmann_json >=3.12
+    - numsim-core
+  run:
+    - boost-cpp >=1.83
+    - eigen >=3.4
+    - nlohmann_json >=3.12
+    - numsim-core
+
+test:
+  commands:
+    # Verifies that the CMake config installed correctly.
+    - test -f $PREFIX/include/rvegen/rvegen.h         # [unix]
+    - if not exist %PREFIX%\\Library\\include\\rvegen\\rvegen.h exit 1   # [win]
+    - test -f $PREFIX/lib/cmake/rvegen/rvegenConfig.cmake   # [unix]
+
+about:
+  home: https://github.com/NumSim-Stack/numsim-rvegen
+  license: GPL-3.0-or-later
+  license_file: LICENSE
+  summary: RVE generator for FFT/FEM homogenization
+  description: |
+    rvegen is a C++23 header-only library for generating Representative
+    Volume Elements (random packings of circles, rectangles, ellipses,
+    spheres, boxes, and polyline tubes) used in FFT/FEM-based multiscale
+    homogenization of composite materials. It produces gmsh .geo,
+    voxel grids, VTK, SVG, three.js, and DAMASK-compatible outputs.
+
+extra:
+  recipe-maintainers:
+    - peterlenz89
