@@ -322,6 +322,59 @@ void test_ellipse_input_via_registry() {
 }
 
 // ----------------------------------------------------------------------------
+// polyline_tube: a swept tube around a centerline (foundation for #3).
+// ----------------------------------------------------------------------------
+void test_polyline_tube_inside_along_segment() {
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {1.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  REQUIRE(tube.is_inside({0.5, 0.0, 0.0}));
+  REQUIRE(tube.is_inside({0.5, 0.05, 0.0}));
+  REQUIRE(!tube.is_inside({0.5, 0.11, 0.0}));
+  // Past the cap (segment terminates at x=1): outside.
+  REQUIRE(!tube.is_inside({1.5, 0.0, 0.0}));
+}
+
+void test_polyline_tube_bend_inside_corner() {
+  // L-shaped centerline. Mid-second-segment must register inside.
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {1.0, 0.0, 0.0},
+                                                {1.0, 1.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  REQUIRE(tube.is_inside({1.0, 0.0, 0.0}));
+  REQUIRE(tube.is_inside({1.0, 0.5, 0.0}));
+  REQUIRE(!tube.is_inside({1.2, 0.5, 0.0}));
+}
+
+void test_polyline_tube_volume_and_bbox() {
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {2.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  // π · r² · L
+  const double expected_v = std::numbers::pi_v<double> * 0.01 * 2.0;
+  REQUIRE(std::abs(tube.volume() - expected_v) < 1e-12);
+
+  tube.make_bounding_box();
+  REQUIRE(tube.bounding_box() != nullptr);
+}
+
+void test_polyline_tube_translate_via_set_middle_point() {
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {1.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  tube.set_middle_point({10.0, 5.0, 0.0});
+  auto const& cl = tube.centerline();
+  REQUIRE(std::abs(cl[0][0] - 9.5) < 1e-12);
+  REQUIRE(std::abs(cl[0][1] - 5.0) < 1e-12);
+  REQUIRE(std::abs(cl[1][0] - 10.5) < 1e-12);
+  REQUIRE(std::abs(cl[1][1] - 5.0) < 1e-12);
+}
+
+// ----------------------------------------------------------------------------
 // vtk_legacy_writer: ASCII STRUCTURED_POINTS header + flat phase data.
 // ----------------------------------------------------------------------------
 void test_vtk_legacy_writer_header_and_size() {
@@ -355,6 +408,10 @@ int main() {
   test_ellipse_collision_via_gte();
   test_circle_ellipse_collision();
   test_ellipse_input_via_registry();
+  test_polyline_tube_inside_along_segment();
+  test_polyline_tube_bend_inside_corner();
+  test_polyline_tube_volume_and_bbox();
+  test_polyline_tube_translate_via_set_middle_point();
   test_vtk_legacy_writer_header_and_size();
 
   if (failures > 0) {
