@@ -77,6 +77,9 @@
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
 
+// schema scaffolding — collapse name/type duplication into one declaration
+#include "schema/field_list.h"
+
 // homogenization — analytical bounds (Voigt / Reuss / Hill)
 #include "homogenization/mean_field.h"
 

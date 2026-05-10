@@ -494,6 +494,53 @@ void test_oriented_uniform_concentrated_regime() {
 }
 
 // ----------------------------------------------------------------------------
+// field_list scaffolding (#1): a schema declared once, used by both
+// `schema()` and `extract()`.
+// ----------------------------------------------------------------------------
+void test_field_list_schema_round_trip() {
+  using fields = rvegen::field_list<
+      rvegen::field<"x",      double>,
+      rvegen::field<"y",      double>,
+      rvegen::field<"radius", double>>;
+
+  // Schema must list all three names and mark them required.
+  auto s = fields::schema();
+  REQUIRE(s.contains("x"));
+  REQUIRE(s.contains("y"));
+  REQUIRE(s.contains("radius"));
+
+  // Round-trip: populate a handler with the field values, then extract.
+  rvegen::parameter_handler_t h;
+  h.insert<double>("x", 0.25);
+  h.insert<double>("y", 0.50);
+  h.insert<double>("radius", 0.10);
+  auto values = fields::extract(h);
+  REQUIRE(std::get<0>(values) == 0.25);
+  REQUIRE(std::get<1>(values) == 0.50);
+  REQUIRE(std::get<2>(values) == 0.10);
+}
+
+void test_field_list_optional_field_not_required() {
+  using fields = rvegen::field_list<
+      rvegen::field<"required_field", double>,
+      rvegen::field<"optional_field", double, /*Required=*/false>>;
+  auto s = fields::schema();
+  REQUIRE(s.contains("required_field"));
+  REQUIRE(s.contains("optional_field"));
+}
+
+void test_field_list_empty_pack() {
+  // A no-parameter type (e.g. a future void_material with no schema
+  // fields) should produce a valid empty schema and an empty tuple.
+  using empty_fields = rvegen::field_list<>;
+  auto s = empty_fields::schema();
+  rvegen::parameter_handler_t h;
+  auto values = empty_fields::extract(h);
+  static_assert(std::tuple_size_v<decltype(values)> == 0);
+  (void)s;
+}
+
+// ----------------------------------------------------------------------------
 // bingham_distribution: 3D unit-vector sampler. Three regimes verified.
 // ----------------------------------------------------------------------------
 void test_bingham_uniform_regime_unit_length() {
@@ -801,6 +848,9 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_field_list_schema_round_trip();
+  test_field_list_optional_field_not_required();
+  test_field_list_empty_pack();
   test_bingham_uniform_regime_unit_length();
   test_bingham_uniform_kappa_zero_spreads_over_sphere();
   test_bingham_operator_call_matches_sample();
