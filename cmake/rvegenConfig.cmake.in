@@ -1,0 +1,34 @@
+@PACKAGE_INIT@
+
+# rvegen — Representative Volume Element generator (header-only, C++23).
+#
+# Re-resolves transitive dependencies that rvegen's INTERFACE target
+# links against, so downstream `find_package(rvegen)` doesn't require
+# the consumer to call `find_package(Eigen3)` / `find_package(Boost)`
+# themselves.
+#
+# numsim-core: rvegen depends on numsim-core's headers. The current
+# numsim-core release does NOT install a CMake config (sibling-tree
+# usage only), so we look for it conditionally — if it's available
+# (e.g. once the numsim-core vcpkg port / conda-forge feedstock lands
+# the config), we pull it in; otherwise the consumer must put
+# numsim-core's include path on the compiler search path themselves.
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Boost)
+find_dependency(Eigen3)
+find_dependency(nlohmann_json)
+
+# Optional numsim-core resolution — silent if not yet packaged.
+find_package(numsim-core CONFIG QUIET)
+if(NOT numsim-core_FOUND)
+  message(STATUS
+    "rvegen: numsim-core CMake config not found. Consumers must ensure "
+    "numsim-core's headers are on the include path until the upstream "
+    "package gains a CMake config.")
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/rvegenTargets.cmake")
+
+check_required_components(rvegen)

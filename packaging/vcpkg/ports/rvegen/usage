@@ -1,0 +1,8 @@
+rvegen provides CMake targets:
+
+    find_package(rvegen CONFIG REQUIRED)
+    target_link_libraries(your_target PRIVATE rvegen::rvegen)
+
+rvegen is header-only and depends transitively on:
+    Boost::container, Eigen3::Eigen, nlohmann_json::nlohmann_json,
+    numsim-core::numsim-core
