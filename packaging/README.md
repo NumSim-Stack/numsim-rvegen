@@ -24,6 +24,9 @@ along with a `versions/r-/rvegen.json` baseline-version entry.
 - [ ] A `v0.1.0` tag exists on this repo
 - [ ] The placeholder `SHA512 0` in `portfile.cmake` is replaced with the
       real hash (`vcpkg_get_archive_sha512` or equivalent)
+- [ ] The `git-tree: 0…0` placeholder in `versions/r-/rvegen.json` is
+      replaced with the real tree hash from `git rev-parse HEAD:ports/rvegen`
+      (or your overlay-port equivalent)
 
 ## conda-forge
 
