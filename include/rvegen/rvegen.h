@@ -52,6 +52,7 @@
 #include "distributions/uniform_real_distribution.h"
 #include "distributions/normal_distribution.h"
 #include "distributions/constant_distribution.h"
+#include "distributions/bingham_distribution.h"
 
 // registry (opt-in: pulls in object_registry)
 #include "registry/register_distributions.h"
@@ -78,6 +79,13 @@
 
 // schema scaffolding — collapse name/type duplication into one declaration
 #include "schema/field_list.h"
+
+// homogenization — analytical bounds (Voigt / Reuss / Hill)
+#include "homogenization/mean_field.h"
+
+// phase model — named regions with opaque material_config blobs that
+// downstream solvers (numsim-materials) interpret.
+#include "phase/phase.h"
 
 // inputs
 #include "inputs/shape_input_base.h"

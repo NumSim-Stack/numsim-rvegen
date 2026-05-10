@@ -540,6 +540,291 @@ void test_field_list_empty_pack() {
   (void)s;
 }
 
+// ----------------------------------------------------------------------------
+// bingham_distribution: 3D unit-vector sampler. Three regimes verified.
+// ----------------------------------------------------------------------------
+void test_bingham_uniform_regime_unit_length() {
+  // κ = 0 → uniform on the sphere. Each sample must be unit length.
+  std::mt19937 engine{321};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> dist{axis, 0.0, engine};
+  for (int i = 0; i < 200; ++i) {
+    auto v = dist.sample();
+    const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    REQUIRE(std::abs(n - 1.0) < 1e-9);
+  }
+}
+
+void test_bingham_prolate_clusters_on_axis() {
+  // κ = 50 → samples should cluster around mean axis. Mean |dot(v, axis)|
+  // should be very close to 1.
+  std::mt19937 engine{555};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> dist{axis, 50.0, engine};
+
+  constexpr int N = 1000;
+  double mean_abs_dot = 0.0;
+  for (int i = 0; i < N; ++i) {
+    auto v = dist.sample();
+    mean_abs_dot += std::abs(v[2]);   // axis is ẑ
+  }
+  mean_abs_dot /= N;
+  // For uniform, E[|cos θ|] = 0.5. For κ=50 prolate, it should be > 0.9.
+  REQUIRE(mean_abs_dot > 0.9);
+}
+
+void test_bingham_oblate_avoids_axis() {
+  // κ = -50 → oblate, samples lie near the equator. Mean |dot(v, axis)|
+  // should be small.
+  std::mt19937 engine{777};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> dist{axis, -50.0, engine};
+
+  constexpr int N = 1000;
+  double mean_abs_dot = 0.0;
+  for (int i = 0; i < N; ++i) {
+    auto v = dist.sample();
+    mean_abs_dot += std::abs(v[2]);
+  }
+  mean_abs_dot /= N;
+  REQUIRE(mean_abs_dot < 0.2);   // would be 0.5 for uniform
+}
+
+void test_bingham_uniform_kappa_zero_spreads_over_sphere() {
+  // κ = 0 should give a uniform distribution on S². Mean of dot
+  // products with each world axis should be near 0; mean of |dot|
+  // should be near 0.5.
+  std::mt19937 engine{2024};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> dist{axis, 0.0, engine};
+
+  constexpr int N = 4000;
+  double sum_z = 0.0, sum_abs_z = 0.0;
+  for (int i = 0; i < N; ++i) {
+    auto v = dist.sample();
+    sum_z += v[2];
+    sum_abs_z += std::abs(v[2]);
+  }
+  REQUIRE(std::abs(sum_z / N) < 0.05);            // uniform: E[v_z] = 0
+  REQUIRE(std::abs(sum_abs_z / N - 0.5) < 0.05);  // uniform: E[|v_z|] = 0.5
+}
+
+void test_bingham_operator_call_matches_sample() {
+  // `operator()` is just sugar for `sample()` — same engine state, same
+  // sequence (each call advances the engine deterministically). We
+  // build two identically-seeded distributions and compare.
+  std::mt19937 e1{777}, e2{777};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> a{axis, 5.0, e1};
+  rvegen::bingham_distribution<double> b{axis, 5.0, e2};
+  auto v_op = a();
+  auto v_sa = b.sample();
+  REQUIRE(std::abs(v_op[0] - v_sa[0]) < 1e-15);
+  REQUIRE(std::abs(v_op[1] - v_sa[1]) < 1e-15);
+  REQUIRE(std::abs(v_op[2] - v_sa[2]) < 1e-15);
+}
+
+void test_bingham_rotated_oblate_avoids_axis() {
+  // axis = ŷ, κ = -50: girdle in the xz-plane. Mean |v · ŷ| should be small.
+  std::mt19937 engine{1234};
+  std::array<double, 3> axis{0.0, 1.0, 0.0};
+  rvegen::bingham_distribution<double> dist{axis, -50.0, engine};
+
+  constexpr int N = 800;
+  double mean_abs_dot = 0.0;
+  for (int i = 0; i < N; ++i) mean_abs_dot += std::abs(dist.sample()[1]);
+  mean_abs_dot /= N;
+  REQUIRE(mean_abs_dot < 0.2);
+}
+
+void test_bingham_rotated_axis() {
+  // Mean axis x̂ instead of ẑ. Samples should cluster on x.
+  std::mt19937 engine{999};
+  std::array<double, 3> axis{1.0, 0.0, 0.0};
+  rvegen::bingham_distribution<double> dist{axis, 50.0, engine};
+
+  constexpr int N = 800;
+  double mean_abs_dot = 0.0;
+  for (int i = 0; i < N; ++i) {
+    auto v = dist.sample();
+    mean_abs_dot += std::abs(v[0]);
+  }
+  mean_abs_dot /= N;
+  REQUIRE(mean_abs_dot > 0.9);
+}
+
+// ----------------------------------------------------------------------------
+// mean-field bounds: Voigt (upper) and Reuss (lower) on the effective
+// stiffness of a multi-phase composite.
+// ----------------------------------------------------------------------------
+void test_mean_field_single_phase_collapses_to_phase() {
+  // A single-phase "composite" — Voigt and Reuss should both equal C.
+  using namespace rvegen::homogenization;
+  const auto C = lame_to_voigt_stiffness<double>(1.0e9, 0.5e9);
+  const std::vector<stiffness_matrix<double>> stiffnesses{C};
+  const std::vector<double> v{1.0};
+
+  const auto cv = voigt_bound(stiffnesses, v);
+  const auto cr = reuss_bound(stiffnesses, v);
+  REQUIRE((cv - C).norm() < 1e-6);
+  REQUIRE((cr - C).norm() < 1e-6);
+}
+
+void test_mean_field_voigt_above_reuss_for_contrast() {
+  // High-contrast 2-phase: matrix (E=3 GPa) + fibre (E=70 GPa). Voigt
+  // upper > Reuss lower. Compare top-left C(0,0).
+  using namespace rvegen::homogenization;
+  // Convert (E, ν) → (λ, μ) for ν = 0.3:
+  //   μ = E / (2(1+ν)) ; λ = E·ν / ((1+ν)(1-2ν))
+  const double Em = 3.0e9, vm = 0.3;
+  const double Ef = 70.0e9;
+  const double mu_m = Em / (2.0 * (1.0 + vm));
+  const double lam_m = Em * vm / ((1.0 + vm) * (1.0 - 2.0 * vm));
+  const double mu_f = Ef / (2.0 * (1.0 + vm));
+  const double lam_f = Ef * vm / ((1.0 + vm) * (1.0 - 2.0 * vm));
+  const auto Cm = lame_to_voigt_stiffness(lam_m, mu_m);
+  const auto Cf = lame_to_voigt_stiffness(lam_f, mu_f);
+
+  const std::vector<stiffness_matrix<double>> stiffnesses{Cm, Cf};
+  const std::vector<double> v{0.6, 0.4};   // 40% fibre
+
+  const auto cv = voigt_bound(stiffnesses, v);
+  const auto cr = reuss_bound(stiffnesses, v);
+  // Voigt ≥ Reuss component-wise across the full 6×6 (the strict
+  // inequality holds where the phases differ; equality elsewhere).
+  for (int r = 0; r < 6; ++r) {
+    for (int c = 0; c < 6; ++c) {
+      REQUIRE(cv(r, c) >= cr(r, c) - 1e-6);
+    }
+  }
+  // Both bounds must be positive-definite (eigenvalues strictly > 0).
+  Eigen::SelfAdjointEigenSolver<stiffness_matrix<double>> ev_v{cv};
+  Eigen::SelfAdjointEigenSolver<stiffness_matrix<double>> ev_r{cr};
+  REQUIRE(ev_v.eigenvalues().minCoeff() > 0.0);
+  REQUIRE(ev_r.eigenvalues().minCoeff() > 0.0);
+  // Hill average sits strictly between the diagonal extremes.
+  const auto ch = voigt_reuss_hill(stiffnesses, v);
+  REQUIRE(ch(0, 0) > cr(0, 0));
+  REQUIRE(ch(0, 0) < cv(0, 0));
+}
+
+void test_mean_field_voigt_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0, 0.5)};
+  std::vector<double> v{0.5, 0.5};   // wrong size
+  bool threw = false;
+  try { voigt_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mean_field_reuss_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0, 0.5),
+      lame_to_voigt_stiffness<double>(2.0, 1.0)};
+  std::vector<double> v{0.5};   // wrong size
+  bool threw = false;
+  try { reuss_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mean_field_reuss_singular_phase_throws() {
+  // A void phase (zero stiffness) is singular; reuss_bound's harmonic
+  // mean diverges. The check uses FullPivLU::isInvertible(), which is
+  // robust at engineering scales — the previous det-vs-epsilon check
+  // would silently pass for near-singular matrices with norm ~1e9.
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0e9, 0.5e9),
+      stiffness_matrix<double>::Zero()};
+  std::vector<double> v{0.5, 0.5};
+  bool threw = false;
+  try { reuss_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+// ----------------------------------------------------------------------------
+// phase + phase_collection: name + opaque material_config; ids start at 1.
+// ----------------------------------------------------------------------------
+void test_phase_collection_basics_and_ids() {
+  rvegen::phase_collection<double> phases;
+  auto const& matrix = phases.add("matrix",
+      nlohmann::json{{"type", "linear_elasticity"}, {"K", 1.6e9}, {"G", 0.8e9}});
+  auto const& fibre  = phases.add("fibre",
+      nlohmann::json{{"type", "linear_elasticity"}, {"K", 5.0e10}, {"G", 3.0e10}});
+
+  REQUIRE(matrix.id == 1);
+  REQUIRE(fibre.id == 2);
+  REQUIRE(phases.size() == 2);
+  REQUIRE(phases.id_of("matrix") == 1);
+  REQUIRE(phases.id_of("fibre") == 2);
+  REQUIRE(phases.contains("matrix"));
+  REQUIRE(!phases.contains("void"));
+
+  // Material config is opaque pass-through.
+  REQUIRE(phases.at("fibre").material_config["K"].get<double>() == 5.0e10);
+}
+
+void test_phase_collection_duplicate_throws() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  bool threw = false;
+  try { phases.add("matrix"); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_phase_collection_at_unknown_throws() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  bool threw = false;
+  try { (void)phases.at("nonexistent"); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_non_array() {
+  bool threw = false;
+  try {
+    rvegen::load_phases_from_json<double>(nlohmann::json::object());
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_missing_name() {
+  const auto cfg = nlohmann::json::parse(R"([{"material": {"K": 1.0}}])");
+  bool threw = false;
+  try { rvegen::load_phases_from_json<double>(cfg); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_non_object_material() {
+  const auto cfg = nlohmann::json::parse(R"([{"name": "x", "material": 42}])");
+  bool threw = false;
+  try { rvegen::load_phases_from_json<double>(cfg); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_round_trip() {
+  const auto cfg = nlohmann::json::parse(R"([
+    {"name": "matrix", "material": {"type": "linear_elasticity", "K": 1.6e9, "G": 0.8e9}},
+    {"name": "fibre",  "material": {"type": "linear_elasticity", "K": 5.0e10, "G": 3.0e10}}
+  ])");
+  auto phases = rvegen::load_phases_from_json<double>(cfg);
+  REQUIRE(phases.size() == 2);
+  REQUIRE(phases.id_of("matrix") == 1);
+  REQUIRE(phases.id_of("fibre") == 2);
+  REQUIRE(phases.at("matrix").material_config["G"].get<double>() == 0.8e9);
+
+  // Insertion order preserved in ordered() view.
+  auto const& ord = phases.ordered();
+  REQUIRE(ord.size() == 2);
+  REQUIRE(ord[0]->name == "matrix");
+  REQUIRE(ord[1]->name == "fibre");
+}
+
 } // namespace
 
 int main() {
@@ -566,6 +851,25 @@ int main() {
   test_field_list_schema_round_trip();
   test_field_list_optional_field_not_required();
   test_field_list_empty_pack();
+  test_bingham_uniform_regime_unit_length();
+  test_bingham_uniform_kappa_zero_spreads_over_sphere();
+  test_bingham_operator_call_matches_sample();
+  test_bingham_prolate_clusters_on_axis();
+  test_bingham_oblate_avoids_axis();
+  test_bingham_rotated_oblate_avoids_axis();
+  test_bingham_rotated_axis();
+  test_mean_field_single_phase_collapses_to_phase();
+  test_mean_field_voigt_above_reuss_for_contrast();
+  test_mean_field_voigt_size_mismatch_throws();
+  test_mean_field_reuss_size_mismatch_throws();
+  test_mean_field_reuss_singular_phase_throws();
+  test_phase_collection_basics_and_ids();
+  test_phase_collection_duplicate_throws();
+  test_phase_collection_at_unknown_throws();
+  test_load_phases_from_json_round_trip();
+  test_load_phases_from_json_rejects_non_array();
+  test_load_phases_from_json_rejects_missing_name();
+  test_load_phases_from_json_rejects_non_object_material();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
