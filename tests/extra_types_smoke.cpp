@@ -442,6 +442,9 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
+}
+
+// ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
 //   κ = 10:   tightly concentrated around mean_angle.
@@ -490,6 +493,62 @@ void test_oriented_uniform_concentrated_regime() {
   REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
 }
 
+// ----------------------------------------------------------------------------
+// mean-field bounds: Voigt (upper) and Reuss (lower) on the effective
+// stiffness of a multi-phase composite.
+// ----------------------------------------------------------------------------
+void test_mean_field_single_phase_collapses_to_phase() {
+  // A single-phase "composite" — Voigt and Reuss should both equal C.
+  using namespace rvegen::homogenization;
+  const auto C = lame_to_voigt_stiffness<double>(1.0e9, 0.5e9);
+  const std::vector<stiffness_matrix<double>> stiffnesses{C};
+  const std::vector<double> v{1.0};
+
+  const auto cv = voigt_bound(stiffnesses, v);
+  const auto cr = reuss_bound(stiffnesses, v);
+  REQUIRE((cv - C).norm() < 1e-6);
+  REQUIRE((cr - C).norm() < 1e-6);
+}
+
+void test_mean_field_voigt_above_reuss_for_contrast() {
+  // High-contrast 2-phase: matrix (E=3 GPa) + fibre (E=70 GPa). Voigt
+  // upper > Reuss lower. Compare top-left C(0,0).
+  using namespace rvegen::homogenization;
+  // Convert (E, ν) → (λ, μ) for ν = 0.3:
+  //   μ = E / (2(1+ν)) ; λ = E·ν / ((1+ν)(1-2ν))
+  const double Em = 3.0e9, vm = 0.3;
+  const double Ef = 70.0e9;
+  const double mu_m = Em / (2.0 * (1.0 + vm));
+  const double lam_m = Em * vm / ((1.0 + vm) * (1.0 - 2.0 * vm));
+  const double mu_f = Ef / (2.0 * (1.0 + vm));
+  const double lam_f = Ef * vm / ((1.0 + vm) * (1.0 - 2.0 * vm));
+  const auto Cm = lame_to_voigt_stiffness(lam_m, mu_m);
+  const auto Cf = lame_to_voigt_stiffness(lam_f, mu_f);
+
+  const std::vector<stiffness_matrix<double>> stiffnesses{Cm, Cf};
+  const std::vector<double> v{0.6, 0.4};   // 40% fibre
+
+  const auto cv = voigt_bound(stiffnesses, v);
+  const auto cr = reuss_bound(stiffnesses, v);
+  // Voigt > Reuss component-wise on the diagonal block.
+  REQUIRE(cv(0, 0) > cr(0, 0));
+  REQUIRE(cv(3, 3) > cr(3, 3));
+  // Hill average sits strictly between.
+  const auto ch = voigt_reuss_hill(stiffnesses, v);
+  REQUIRE(ch(0, 0) > cr(0, 0));
+  REQUIRE(ch(0, 0) < cv(0, 0));
+}
+
+void test_mean_field_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0, 0.5)};
+  std::vector<double> v{0.5, 0.5};   // wrong size
+  bool threw = false;
+  try { voigt_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 } // namespace
 
 int main() {
@@ -513,6 +572,9 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_mean_field_single_phase_collapses_to_phase();
+  test_mean_field_voigt_above_reuss_for_contrast();
+  test_mean_field_size_mismatch_throws();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";

@@ -76,6 +76,9 @@
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
 
+// homogenization — analytical bounds (Voigt / Reuss / Hill)
+#include "homogenization/mean_field.h"
+
 // inputs
 #include "inputs/shape_input_base.h"
 #include "inputs/circle_input.h"
