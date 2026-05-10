@@ -1,8 +1,10 @@
 #pragma once
 
 // JSON-driven input that loads a triangle mesh from an STL file once
-// at construction time, then on each new_shape() clones the mesh and
-// places it at a sampled position.
+// at construction time, then on each new_shape() hands a shared
+// reference to the same triangle list to the produced mesh_inclusion
+// (no per-shape triangle copy) and stores a per-shape translation
+// offset.
 //
 // Why load-once-share-many:
 //   STL parsing is the costly step. The triangle list is wrapped in a
@@ -17,9 +19,11 @@
 //   * `mesh_inclusion_input<T>` — schema-driven (`stl_path`,
 //     `position_x_dist`, `position_y_dist`, `position_z_dist`).
 //   * Registered as `"mesh_inclusion_input"` in `register_inputs.h`.
-//   * STL is read once at input construction; `new_shape()` clones the
-//     cached triangle list and translates the clone to the sampled
-//     position.
+//   * STL is read once at input construction and wrapped in a
+//     `std::shared_ptr<vector<triangle_type> const>`. `new_shape()`
+//     constructs a `mesh_inclusion` that captures the same shared_ptr
+//     (refcount bump only) and applies the sampled position via the
+//     primitive's O(1) offset — no triangle data is copied per shape.
 //
 // Out of scope here, ships in follow-up PRs against #9:
 //   * Per-shape rotation distributions (axis-angle or Bingham
