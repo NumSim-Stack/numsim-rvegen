@@ -81,7 +81,7 @@ namespace detail {
 template <typename... Fields>
 constexpr bool field_names_unique() {
   std::array<std::string_view, sizeof...(Fields)> names{
-      std::string_view{Fields::name.view()}...};
+      Fields::name.view()...};
   for (std::size_t i = 0; i < names.size(); ++i) {
     for (std::size_t j = i + 1; j < names.size(); ++j) {
       if (names[i] == names[j]) return false;
