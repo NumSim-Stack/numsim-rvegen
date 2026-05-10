@@ -76,6 +76,9 @@
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
 
+// schema scaffolding — collapse name/type duplication into one declaration
+#include "schema/field_list.h"
+
 // inputs
 #include "inputs/shape_input_base.h"
 #include "inputs/circle_input.h"

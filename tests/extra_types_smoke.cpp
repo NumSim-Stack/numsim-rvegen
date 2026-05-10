@@ -442,6 +442,9 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
+}
+
+// ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
 //   κ = 10:   tightly concentrated around mean_angle.
@@ -490,6 +493,42 @@ void test_oriented_uniform_concentrated_regime() {
   REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
 }
 
+// ----------------------------------------------------------------------------
+// field_list scaffolding (#1): a schema declared once, used by both
+// `schema()` and `extract()`.
+// ----------------------------------------------------------------------------
+void test_field_list_schema_round_trip() {
+  using fields = rvegen::field_list<
+      rvegen::field<"x",      double>,
+      rvegen::field<"y",      double>,
+      rvegen::field<"radius", double>>;
+
+  // Schema must list all three names and mark them required.
+  auto s = fields::schema();
+  REQUIRE(s.contains("x"));
+  REQUIRE(s.contains("y"));
+  REQUIRE(s.contains("radius"));
+
+  // Round-trip: populate a handler with the field values, then extract.
+  rvegen::parameter_handler_t h;
+  h.insert<double>("x", 0.25);
+  h.insert<double>("y", 0.50);
+  h.insert<double>("radius", 0.10);
+  auto values = fields::extract(h);
+  REQUIRE(std::get<0>(values) == 0.25);
+  REQUIRE(std::get<1>(values) == 0.50);
+  REQUIRE(std::get<2>(values) == 0.10);
+}
+
+void test_field_list_optional_field_not_required() {
+  using fields = rvegen::field_list<
+      rvegen::field<"required_field", double>,
+      rvegen::field<"optional_field", double, /*Required=*/false>>;
+  auto s = fields::schema();
+  REQUIRE(s.contains("required_field"));
+  REQUIRE(s.contains("optional_field"));
+}
+
 } // namespace
 
 int main() {
@@ -513,6 +552,8 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_field_list_schema_round_trip();
+  test_field_list_optional_field_not_required();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
