@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build, test, install, smoke-consume
+    runs-on: ubuntu-latest
+
+    steps:
+      # rvegen depends on numsim-core via sibling-tree includes
+      # (../../numsim-core/include). We check both repos out so the
+      # checkout layout matches what rvegen's CMakeLists.txt expects.
+      - name: Checkout rvegen
+        uses: actions/checkout@v4
+        with:
+          path: numsim-rvegen/rvegen
+
+      - name: Checkout numsim-core (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: NumSim-Stack/numsim-core
+          path: numsim-core
+
+      # GCC 14 for `<print>` (numsim-core needs C++23 lib support).
+      - name: Install g++-14
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 ninja-build
+
+      - name: Configure
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CXX: g++-14
+          CC: gcc-14
+        run: cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: numsim-rvegen/rvegen
+        run: cmake --build build --parallel
+
+      - name: Test
+        working-directory: numsim-rvegen/rvegen
+        run: ctest --test-dir build --output-on-failure
+
+      # Install + smoke-consume: verifies the CMake export works
+      # end-to-end. A separate consumer project does
+      # find_package(rvegen CONFIG REQUIRED) and links via
+      # rvegen::rvegen, then compiles a minimal program that
+      # uses Circle::is_inside.
+      - name: Install rvegen to a temp prefix
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          cmake --install build --prefix "$GITHUB_WORKSPACE/install"
+
+      - name: Configure smoke consumer
+        working-directory: numsim-rvegen/rvegen/tests/install_smoke
+        env:
+          CXX: g++-14
+        run: |
+          cmake -G Ninja -B build \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/install" \
+            -DCMAKE_CXX_FLAGS="-I$GITHUB_WORKSPACE/numsim-core/include"
+
+      - name: Build smoke consumer
+        working-directory: numsim-rvegen/rvegen/tests/install_smoke
+        run: cmake --build build
+
+      - name: Run smoke consumer
+        working-directory: numsim-rvegen/rvegen/tests/install_smoke
+        run: ./build/install_smoke
