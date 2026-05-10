@@ -1,0 +1,25 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "rvegen"
+version = "0.1.0"
+description = "RVE (Representative Volume Element) generator for FFT/FEM homogenization — Python bindings"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "Peter Lenz", email = "peterlenz89.pl@gmail.com" },
+]
+requires-python = ">=3.11"
+
+[project.urls]
+Homepage = "https://github.com/NumSim-Stack/numsim-rvegen"
+
+[tool.scikit-build]
+# CMake source dir is python/, which adds the parent rvegen tree as a
+# subdirectory when invoked standalone.
+cmake.source-dir = "."
+cmake.version = ">=3.20"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["rvegen"]
