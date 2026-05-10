@@ -52,6 +52,7 @@
 #include "distributions/uniform_real_distribution.h"
 #include "distributions/normal_distribution.h"
 #include "distributions/constant_distribution.h"
+#include "distributions/bingham_distribution.h"
 
 // registry (opt-in: pulls in object_registry)
 #include "registry/register_distributions.h"
