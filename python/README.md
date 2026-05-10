@@ -25,11 +25,17 @@ print(c.area())                  # ≈ π · 0.01
 
 s = rvegen.Sphere(0.0, 0.0, 0.0, 0.5)
 print(s.volume())                # ≈ (4/3)π · 0.125
+
+r = rvegen.Rectangle(0.0, 0.0, 0.2, 0.4)
+print(r.area())                  # 0.08
+
+b = rvegen.Box(0.0, 0.0, 0.0, 0.2, 0.4, 0.5)
+print(b.volume())                # 0.04
 ```
 
 ## What's NOT exposed yet
 
-- Rectangle / box / ellipse / polyline_tube / mesh_inclusion (trivial follow-up — same binding pattern as Circle / Sphere)
+- Ellipse, polyline_tube, mesh_inclusion, voronoi_cell (trivial follow-up — same binding pattern)
 - Distributions (need engine reference + GIL handling)
 - Generators, terminations, post-processes
 - JSON config path (`rvegen.run_from_json(...)`)
