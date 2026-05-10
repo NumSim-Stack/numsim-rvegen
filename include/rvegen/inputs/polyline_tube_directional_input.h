@@ -108,6 +108,13 @@ public:
     return s;
   }
 
+  // Degenerate-direction note: if the direction distributions
+  // produce (0, 0, 0), `mag = 0` and the normalisation is skipped.
+  // Both centerline endpoints collapse to the position, so the
+  // resulting polyline_tube has two coincident endpoints —
+  // `is_inside` then degenerates to a point-radius test (effectively
+  // a sphere of \c radius centred at \c position). Callers should
+  // pick direction distributions whose support excludes the origin.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type cx = _px(), cy = _py(), cz = _pz();
     value_type dx = _dx(), dy = _dy(), dz = _dz();
