@@ -74,6 +74,13 @@ protected:
   // Order: `phase_name` is read first, then `metadata` is merged on
   // top — so a `phase_name` key inside the metadata object overrides
   // the explicit field.
+  //
+  // `merge_patch` follows RFC 7396 (JSON Merge Patch): a `null` value
+  // in the patch ERASES the corresponding key. So
+  // `"metadata": "{\"phase_name\": null}"` removes the phase tag set
+  // by the explicit `phase_name` field. Useful for opt-out cases;
+  // surprising if the caller expects "set to null" semantics — pass
+  // an empty string instead if that's what you want.
   void read_metadata(parameter_handler_t const& handler) {
     if (handler.contains("phase_name")) {
       _info.set_phase_name(handler.template get<std::string>("phase_name"));
