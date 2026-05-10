@@ -25,7 +25,7 @@ jobs:
 
       # numsim-core is pinned to a known-good SHA so a breaking change
       # on numsim-core's main doesn't cascade into every rvegen PR.
-      # Bump deliberately when rvegen needs a numsim-core feature.
+      # Bump deliberately — see CONTRIBUTING.md for the procedure.
       - name: Checkout numsim-core (sibling, pinned)
         uses: actions/checkout@v4
         with:
@@ -39,26 +39,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++-14 ninja-build
 
-      - name: Configure
+      - name: Configure rvegen
         working-directory: numsim-rvegen/rvegen
         env:
           CXX: g++-14
           CC: gcc-14
         run: cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build
+      - name: Build rvegen
         working-directory: numsim-rvegen/rvegen
         run: cmake --build build --parallel
 
-      - name: Test
+      - name: Test rvegen
         working-directory: numsim-rvegen/rvegen
         run: ctest --test-dir build --output-on-failure
 
       # Install + smoke-consume: verifies the CMake export works
       # end-to-end. A separate consumer project does
       # find_package(rvegen CONFIG REQUIRED) and links via
-      # rvegen::rvegen, then compiles a minimal program that
-      # uses Circle::is_inside.
+      # rvegen::rvegen, then compiles a minimal program.
       - name: Install rvegen to a temp prefix
         working-directory: numsim-rvegen/rvegen
         run: |
@@ -80,3 +79,28 @@ jobs:
       - name: Run smoke consumer
         working-directory: numsim-rvegen/rvegen/tests/install_smoke
         run: ./build/install_smoke
+
+      # Python bindings test — guarded on the existence of the test
+      # file so this workflow degrades gracefully on branches that
+      # haven't yet picked up the pytest fixture (PR #28). Once that
+      # PR lands on main the guard always passes.
+      - name: Set up Python
+        if: hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build & test Python bindings
+        if: hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CXX: g++-14
+          # scikit-build-core forwards CMAKE_ARGS through to the
+          # rvegen CMake configure during `pip install`. We reuse the
+          # same numsim-core include trick as the smoke consumer.
+          CMAKE_ARGS: "-DCMAKE_CXX_FLAGS=-I${{ github.workspace }}/numsim-core/include"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install -v ./python
+          pytest python/tests/
