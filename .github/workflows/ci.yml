@@ -10,6 +10,9 @@ jobs:
   build-and-test:
     name: Build, test, install, smoke-consume
     runs-on: ubuntu-latest
+    # Hard cap: a stuck FetchContent download or pathological test
+    # shouldn't hold a runner for the GitHub default 6h.
+    timeout-minutes: 30
 
     steps:
       # rvegen depends on numsim-core via sibling-tree includes
@@ -20,10 +23,14 @@ jobs:
         with:
           path: numsim-rvegen/rvegen
 
-      - name: Checkout numsim-core (sibling)
+      # numsim-core is pinned to a known-good SHA so a breaking change
+      # on numsim-core's main doesn't cascade into every rvegen PR.
+      # Bump deliberately when rvegen needs a numsim-core feature.
+      - name: Checkout numsim-core (sibling, pinned)
         uses: actions/checkout@v4
         with:
           repository: NumSim-Stack/numsim-core
+          ref: a56bc466f8cfbbdc79936f140166fb60fcaabb90
           path: numsim-core
 
       # GCC 14 for `<print>` (numsim-core needs C++23 lib support).
