@@ -5,13 +5,27 @@ and the JSON-driven config path land in follow-up PRs.
 
 ## Build & install (editable, from this directory)
 
+Use a virtual environment — modern Linux distros (Debian, Ubuntu, …)
+mark the system Python "externally managed" (PEP 668) and refuse a
+plain `pip install`.
+
 ```bash
 cd python
-pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .            # editable install — picks up source edits
 ```
 
 scikit-build-core invokes the CMake build, which fetches pybind11 if not
 found and links against the parent `rvegen_lib` interface target.
+
+If your numsim-core checkout isn't at `../../numsim-core/include` (the
+default sibling layout), point CMake at it:
+
+```bash
+CMAKE_ARGS="-DCMAKE_CXX_FLAGS=-I/path/to/numsim-core/include" \
+  pip install -e .
+```
 
 ## Usage
 
@@ -53,15 +67,18 @@ print(v.volume())                # 1.0
 ## Tests
 
 A pytest suite under `python/tests/` exercises one method per bound
-shape. After an editable install:
+shape. After an editable install (in your venv):
 
 ```bash
 pip install pytest
 pytest python/tests/
 ```
 
-The CI workflow runs this on every PR (see `.github/workflows/ci.yml`
-once it lands).
+Running the suite without `pip install -e .` first will fail with
+`ModuleNotFoundError: No module named 'rvegen'` — the editable install
+is what links the compiled `_core.so` next to the package.
+
+The CI workflow runs this on every PR (see `.github/workflows/ci.yml`).
 
 ## What's NOT exposed yet
 
