@@ -75,12 +75,32 @@ endif()
 
 # ---------------------------------------------------------------------------
 # rvegen library (header-only).
+#
+# In-tree consumers (apps/, tests/, examples/) get the BUILD_INTERFACE
+# include paths; downstream consumers that pull rvegen via the install
+# tree (vcpkg / conda-forge / `find_package(rvegen)`) get
+# INSTALL_INTERFACE paths so the CMake config relocates correctly.
+#
+# numsim-core is treated as an installed dependency: rvegen's installed
+# CMake config does `find_dependency(numsim-core)` so users don't have to
+# wire it manually. The vendored GTE headers are installed alongside
+# rvegen's own headers.
 # ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+
 add_library(rvegen_lib INTERFACE)
+add_library(rvegen::rvegen ALIAS rvegen_lib)
+# Make the install-tree target name match the in-tree alias: callers
+# always say `rvegen::rvegen` regardless of which CMake context they're
+# in (build tree via add_subdirectory, or install tree via find_package).
+set_target_properties(rvegen_lib PROPERTIES EXPORT_NAME rvegen)
+
 target_include_directories(rvegen_lib INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/GeometricTools/GTE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/GeometricTools/GTE>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/rvegen/external>
 )
 target_link_libraries(rvegen_lib INTERFACE
     Eigen3::Eigen
@@ -187,6 +207,66 @@ target_link_libraries(rvegen PRIVATE
 
 install(TARGETS rvegen
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# ---------------------------------------------------------------------------
+# Install / export so downstream `find_package(rvegen)` works.
+#
+# Installs:
+#   * rvegen public headers under <prefix>/include/rvegen/
+#   * vendored GTE headers under <prefix>/include/rvegen/external/Mathematics/
+#   * `rvegenTargets.cmake` exporting the `rvegen::rvegen` interface target
+#   * `rvegenConfig.cmake` so `find_package(rvegen CONFIG)` resolves
+#   * `rvegenConfigVersion.cmake` for SemVer compatibility checks
+# ---------------------------------------------------------------------------
+install(DIRECTORY include/rvegen/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rvegen
+    FILES_MATCHING PATTERN "*.h"
+)
+
+# Vendored GTE — install under rvegen/external/ so the install-tree
+# include path matches the source-tree layout used in our headers
+# (`#include <Mathematics/...>`). Consumers who already have GTE
+# elsewhere can ignore this; rvegen's CMake config doesn't propagate
+# system-GTE detection.
+install(DIRECTORY external/GeometricTools/GTE/Mathematics
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rvegen/external
+    FILES_MATCHING PATTERN "*.h"
+)
+
+install(TARGETS rvegen_lib
+    EXPORT rvegenTargets
+)
+
+install(EXPORT rvegenTargets
+    FILE rvegenTargets.cmake
+    NAMESPACE rvegen::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rvegen
+)
+
+include(CMakePackageConfigHelpers)
+
+# Project version: read from cmake/version.cmake or default to 0.1.0.
+# (A CHANGELOG-driven version bump is a separate concern; 0.1.0 is the
+# baseline matching the packaging metadata's placeholder.)
+set(RVEGEN_VERSION 0.1.0)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfigVersion.cmake
+    VERSION ${RVEGEN_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/rvegenConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rvegen
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rvegen
 )
 
 # Smoke tests: drive the CLI against the bundled example configs. Each
