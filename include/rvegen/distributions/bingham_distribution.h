@@ -33,11 +33,21 @@
 //   * `bingham_distribution<T, Engine>` — ctor taking (mean_axis,
 //     kappa, engine).
 //   * `sample()` returning a unit `gte::Vector<3, T>`.
-//   * Rejection-sampling implementation (Wood 1994 style) for the
+//   * Naive rejection sampling on a uniform `cos θ` proposal for the
 //     axisymmetric case in both κ > 0 and κ < 0 regimes.
 //
+// On the sampling algorithm and its useful range:
+//   This is not Wood (1994) — Wood uses a tailored proposal density
+//   that gives near-100 % acceptance even at very high |κ|. The naive
+//   uniform proposal here has acceptance ≈ 1 / √(π |κ| / 2) for large
+//   |κ|, so it's efficient up to roughly |κ| ≲ 50 (≥ 10 % accept). At
+//   |κ| ≳ 200 each accept costs tens of candidates; at |κ| ≳ 1000 the
+//   sampler is unusable. If callers need that regime, replace with a
+//   real Wood proposal — tracked as part of the Kume-Walker follow-up.
+//
 // Out of scope here, ships in follow-up PRs against #6:
-//   * Generic 3×3 Bingham (Kume-Walker sampler).
+//   * Generic 3×3 Bingham (Kume-Walker sampler) — also fixes the
+//     high-|κ| performance cliff above.
 //   * `direction_distribution_base` hierarchy + JSON registry entry.
 //   * 3D fibre input that consumes this for tube orientation.
 
@@ -74,8 +84,16 @@ public:
   // exp(κ(x² − 1)) for κ > 0, or exp(κ·x²) for κ < 0 (each scaled to
   // a max of 1). Once x is accepted, φ is uniform on [0, 2π) and the
   // 3-vector is built in the mean-axis-aligned frame and rotated.
+  // Convenience operator — same return as `sample()`. Provided so
+  // callers can write generic "draw from distribution" code via
+  // `auto v = dist();` regardless of return-type shape (the 2D
+  // von-Mises uses scalar `operator()()` from `distribution_base<T>`;
+  // here we mirror the spelling at vector return).
+  [[nodiscard]] vector_type operator()() { return sample(); }
+
   [[nodiscard]] vector_type sample() {
-    if (std::abs(_kappa) < T{1e-9}) {
+    if (std::abs(_kappa) <
+        std::numeric_limits<T>::epsilon() * T{1024}) {
       return sample_uniform_sphere();
     }
     T x = T{0};
@@ -123,14 +141,27 @@ private:
     const T n2 = gte::Dot(axis, axis);
     if (n2 > T{0}) axis /= std::sqrt(n2);
     _mean_axis = axis;
+    // Pick the auxiliary vector farthest from `_mean_axis` to maximise
+    // the cross-product magnitude. Choosing the world axis with the
+    // smallest |component| of `_mean_axis` guarantees |aux × axis| ≥
+    // √(2/3), comfortably away from the degenerate-parallel case.
     vector_type aux;
-    aux[0] = T{0}; aux[1] = T{0}; aux[2] = T{1};
-    if (std::abs(_mean_axis[2]) > T{0.9}) {
-      aux[0] = T{1}; aux[2] = T{0};
-    }
+    aux[0] = T{0}; aux[1] = T{0}; aux[2] = T{0};
+    const T ax = std::abs(_mean_axis[0]);
+    const T ay = std::abs(_mean_axis[1]);
+    const T az = std::abs(_mean_axis[2]);
+    if (ax <= ay && ax <= az) aux[0] = T{1};
+    else if (ay <= az) aux[1] = T{1};
+    else aux[2] = T{1};
     _frame_x = gte::Cross(_mean_axis, aux);
     const T fx = std::sqrt(gte::Dot(_frame_x, _frame_x));
-    if (fx > T{0}) _frame_x /= fx;
+    // fx ≥ √(2/3) ≈ 0.816 by construction; the tolerance below is a
+    // belt-and-braces guard for non-finite inputs.
+    if (fx > std::numeric_limits<T>::epsilon() * T{1024}) {
+      _frame_x /= fx;
+    } else {
+      _frame_x[0] = T{1}; _frame_x[1] = T{0}; _frame_x[2] = T{0};
+    }
     _frame_y = gte::Cross(_mean_axis, _frame_x);
   }
 

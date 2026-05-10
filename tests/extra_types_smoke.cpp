@@ -543,6 +543,53 @@ void test_bingham_oblate_avoids_axis() {
   REQUIRE(mean_abs_dot < 0.2);   // would be 0.5 for uniform
 }
 
+void test_bingham_uniform_kappa_zero_spreads_over_sphere() {
+  // κ = 0 should give a uniform distribution on S². Mean of dot
+  // products with each world axis should be near 0; mean of |dot|
+  // should be near 0.5.
+  std::mt19937 engine{2024};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> dist{axis, 0.0, engine};
+
+  constexpr int N = 4000;
+  double sum_z = 0.0, sum_abs_z = 0.0;
+  for (int i = 0; i < N; ++i) {
+    auto v = dist.sample();
+    sum_z += v[2];
+    sum_abs_z += std::abs(v[2]);
+  }
+  REQUIRE(std::abs(sum_z / N) < 0.05);            // uniform: E[v_z] = 0
+  REQUIRE(std::abs(sum_abs_z / N - 0.5) < 0.05);  // uniform: E[|v_z|] = 0.5
+}
+
+void test_bingham_operator_call_matches_sample() {
+  // `operator()` is just sugar for `sample()` — same engine state, same
+  // sequence (each call advances the engine deterministically). We
+  // build two identically-seeded distributions and compare.
+  std::mt19937 e1{777}, e2{777};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> a{axis, 5.0, e1};
+  rvegen::bingham_distribution<double> b{axis, 5.0, e2};
+  auto v_op = a();
+  auto v_sa = b.sample();
+  REQUIRE(std::abs(v_op[0] - v_sa[0]) < 1e-15);
+  REQUIRE(std::abs(v_op[1] - v_sa[1]) < 1e-15);
+  REQUIRE(std::abs(v_op[2] - v_sa[2]) < 1e-15);
+}
+
+void test_bingham_rotated_oblate_avoids_axis() {
+  // axis = ŷ, κ = -50: girdle in the xz-plane. Mean |v · ŷ| should be small.
+  std::mt19937 engine{1234};
+  std::array<double, 3> axis{0.0, 1.0, 0.0};
+  rvegen::bingham_distribution<double> dist{axis, -50.0, engine};
+
+  constexpr int N = 800;
+  double mean_abs_dot = 0.0;
+  for (int i = 0; i < N; ++i) mean_abs_dot += std::abs(dist.sample()[1]);
+  mean_abs_dot /= N;
+  REQUIRE(mean_abs_dot < 0.2);
+}
+
 void test_bingham_rotated_axis() {
   // Mean axis x̂ instead of ẑ. Samples should cluster on x.
   std::mt19937 engine{999};
@@ -583,8 +630,11 @@ int main() {
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
   test_bingham_uniform_regime_unit_length();
+  test_bingham_uniform_kappa_zero_spreads_over_sphere();
+  test_bingham_operator_call_matches_sample();
   test_bingham_prolate_clusters_on_axis();
   test_bingham_oblate_avoids_axis();
+  test_bingham_rotated_oblate_avoids_axis();
   test_bingham_rotated_axis();
 
   if (failures > 0) {
