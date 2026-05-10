@@ -494,6 +494,146 @@ void test_oriented_uniform_concentrated_regime() {
 }
 
 // ----------------------------------------------------------------------------
+// polyline_tube_input — schema-driven 2-point straight tube. Tests both the
+// direct ctor and the JSON-via-registry path.
+// ----------------------------------------------------------------------------
+void test_polyline_tube_input_via_registry() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  std::mt19937 engine{42};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "sx": {"type": "constant", "value": 0.1},
+    "sy": {"type": "constant", "value": 0.2},
+    "sz": {"type": "constant", "value": 0.3},
+    "ex": {"type": "constant", "value": 0.7},
+    "ey": {"type": "constant", "value": 0.8},
+    "ez": {"type": "constant", "value": 0.9},
+    "r":  {"type": "constant", "value": 0.05}
+  })");
+
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "polyline_tube_input",
+    "start_x_dist": "sx",
+    "start_y_dist": "sy",
+    "start_z_dist": "sz",
+    "end_x_dist":   "ex",
+    "end_y_dist":   "ey",
+    "end_z_dist":   "ez",
+    "radius_dist":  "r"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  auto* tube = dynamic_cast<rvegen::polyline_tube<double>*>(shape.get());
+  REQUIRE(tube != nullptr);
+  REQUIRE(tube->radius() == 0.05);
+  // Centerline endpoints match the constant distributions.
+  auto const& cl = tube->centerline();
+  REQUIRE(cl.size() == 2);
+  REQUIRE(std::abs(cl[0][0] - 0.1) < 1e-12);
+  REQUIRE(std::abs(cl[1][2] - 0.9) < 1e-12);
+}
+
+void test_polyline_tube_input_direct_ctor() {
+  // Construction without going through the JSON registry.
+  rvegen::constant_distribution<double> sx{0.0}, sy{0.0}, sz{0.0};
+  rvegen::constant_distribution<double> ex{1.0}, ey{0.0}, ez{0.0};
+  rvegen::constant_distribution<double> r{0.05};
+  rvegen::polyline_tube_input<double> input{sx, sy, sz, ex, ey, ez, r};
+
+  auto shape = input.new_shape();
+  REQUIRE(shape != nullptr);
+  auto* tube = dynamic_cast<rvegen::polyline_tube<double>*>(shape.get());
+  REQUIRE(tube != nullptr);
+  REQUIRE(std::abs(tube->radius() - 0.05) < 1e-12);
+}
+
+void test_polyline_tube_input_missing_dist_throws() {
+  // Schema-driven ctor calls `distributions.at(...)` which throws
+  // std::out_of_range when the named distribution is absent.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{1};
+
+  rvegen::distribution_map_t<double> empty_dists;
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "polyline_tube_input",
+    "start_x_dist": "missing",
+    "start_y_dist": "missing",
+    "start_z_dist": "missing",
+    "end_x_dist":   "missing",
+    "end_y_dist":   "missing",
+    "end_z_dist":   "missing",
+    "radius_dist":  "missing"
+  })");
+  bool threw = false;
+  try {
+    auto input = rvegen::build_from_json(
+        rvegen::input_registry_t<>::instance(), input_spec, empty_dists);
+  } catch (std::out_of_range const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_polyline_tube_directional_input_via_registry() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{7};
+
+  // Position (0.5, 0.5, 0.0); direction (1, 0, 0); length 0.4; radius 0.05.
+  // Expected centerline: (0.3, 0.5, 0.0) → (0.7, 0.5, 0.0).
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "px": {"type": "constant", "value": 0.5},
+    "py": {"type": "constant", "value": 0.5},
+    "pz": {"type": "constant", "value": 0.0},
+    "dx": {"type": "constant", "value": 1.0},
+    "dy": {"type": "constant", "value": 0.0},
+    "dz": {"type": "constant", "value": 0.0},
+    "len": {"type": "constant", "value": 0.4},
+    "rad": {"type": "constant", "value": 0.05}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "polyline_tube_directional_input",
+    "position_x_dist":  "px",
+    "position_y_dist":  "py",
+    "position_z_dist":  "pz",
+    "direction_x_dist": "dx",
+    "direction_y_dist": "dy",
+    "direction_z_dist": "dz",
+    "length_dist":      "len",
+    "radius_dist":      "rad"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  auto* tube = dynamic_cast<rvegen::polyline_tube<double>*>(shape.get());
+  REQUIRE(tube != nullptr);
+  REQUIRE(std::abs(tube->radius() - 0.05) < 1e-12);
+  auto const& cl = tube->centerline();
+  REQUIRE(cl.size() == 2);
+  REQUIRE(std::abs(cl[0][0] - 0.3) < 1e-12);
+  REQUIRE(std::abs(cl[1][0] - 0.7) < 1e-12);
+}
+
+// ----------------------------------------------------------------------------
 // field_list scaffolding (#1): a schema declared once, used by both
 // `schema()` and `extract()`.
 // ----------------------------------------------------------------------------
@@ -848,6 +988,10 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_polyline_tube_input_via_registry();
+  test_polyline_tube_input_direct_ctor();
+  test_polyline_tube_input_missing_dist_throws();
+  test_polyline_tube_directional_input_via_registry();
   test_field_list_schema_round_trip();
   test_field_list_optional_field_not_required();
   test_field_list_empty_pack();
