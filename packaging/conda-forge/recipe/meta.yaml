@@ -13,18 +13,21 @@ source:
 
 build:
   number: 0
-  # Header-only library — `noarch: generic` would be ideal, but conda-forge
-  # convention treats CMake-installed C++ headers + a CMake config as
-  # platform-dependent (paths differ between linux/osx/windows). Keep
-  # platform-specific until the conda-forge admins say otherwise.
-  skip: true  # [py<311 or python_impl == 'pypy']
+  # Header-only library with platform-portable CMake config — try
+  # `noarch: generic` first; if conda-forge admins push back during
+  # staged-recipes review (e.g. because the embedded GTE submodule
+  # has any platform conditionals at install time), fall back to
+  # platform-specific. The `skip:` line was previously a Python
+  # selector copy-pasted from a Python-extension recipe and would have
+  # silently skipped the build on every non-Python platform.
+  noarch: generic
 
 requirements:
-  build:
-    - {{ compiler('cxx') }}
+  # noarch: generic skips the compiler at runtime — only the host
+  # tools need C++23 to run the install rule.
+  host:
     - cmake >=3.20
     - ninja
-  host:
     - boost-cpp >=1.83
     - eigen >=3.4
     - nlohmann_json >=3.12
@@ -38,9 +41,9 @@ requirements:
 test:
   commands:
     # Verifies that the CMake config installed correctly.
-    - test -f $PREFIX/include/rvegen/rvegen.h         # [unix]
+    - test -f $PREFIX/include/rvegen/rvegen.h                     # [unix]
     - if not exist %PREFIX%\\Library\\include\\rvegen\\rvegen.h exit 1   # [win]
-    - test -f $PREFIX/lib/cmake/rvegen/rvegenConfig.cmake   # [unix]
+    - test -f $PREFIX/lib/cmake/rvegen/rvegenConfig.cmake         # [unix]
 
 about:
   home: https://github.com/NumSim-Stack/numsim-rvegen
