@@ -36,6 +36,7 @@
 #include "shapes/box.h"
 #include "shapes/ellipse.h"
 #include "shapes/polyline_tube.h"
+#include "shapes/mesh_inclusion.h"
 #include "shapes/shape_variant.h"
 #include "shapes/shape_pool.h"
 
@@ -75,6 +76,9 @@
 
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
+
+// io — STL / PLY mesh readers
+#include "io/stl_reader.h"
 
 // inputs
 #include "inputs/shape_input_base.h"

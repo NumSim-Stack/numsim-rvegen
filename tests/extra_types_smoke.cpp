@@ -442,6 +442,9 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
+}
+
+// ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
 //   κ = 10:   tightly concentrated around mean_angle.
@@ -490,6 +493,141 @@ void test_oriented_uniform_concentrated_regime() {
   REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
 }
 
+// ----------------------------------------------------------------------------
+// mesh_inclusion + STL ASCII reader. Mesh: an axis-aligned cube of side 1
+// centred at origin, expressed via 12 triangles.
+// ----------------------------------------------------------------------------
+namespace {
+
+constexpr char const* unit_cube_stl = R"(solid cube
+  facet normal 0 0 -1
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex  0.5  0.5 -0.5
+      vertex  0.5 -0.5 -0.5
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex -0.5  0.5 -0.5
+      vertex  0.5  0.5 -0.5
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -0.5 -0.5  0.5
+      vertex  0.5 -0.5  0.5
+      vertex  0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -0.5 -0.5  0.5
+      vertex  0.5  0.5  0.5
+      vertex -0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex  0.5 -0.5 -0.5
+      vertex  0.5 -0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex  0.5 -0.5  0.5
+      vertex -0.5 -0.5  0.5
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -0.5  0.5 -0.5
+      vertex  0.5  0.5  0.5
+      vertex  0.5  0.5 -0.5
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -0.5  0.5 -0.5
+      vertex -0.5  0.5  0.5
+      vertex  0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex -0.5 -0.5  0.5
+      vertex -0.5  0.5  0.5
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -0.5 -0.5 -0.5
+      vertex -0.5  0.5  0.5
+      vertex -0.5  0.5 -0.5
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex  0.5 -0.5 -0.5
+      vertex  0.5  0.5  0.5
+      vertex  0.5 -0.5  0.5
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex  0.5 -0.5 -0.5
+      vertex  0.5  0.5 -0.5
+      vertex  0.5  0.5  0.5
+    endloop
+  endfacet
+endsolid cube
+)";
+
+}
+
+void test_stl_ascii_reader_triangle_count() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  REQUIRE(tris.size() == 12);
+}
+
+void test_mesh_inclusion_inside_outside_cube() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  rvegen::mesh_inclusion<double> mesh{tris};
+
+  // Origin is at the cube centre — should be inside.
+  REQUIRE(mesh.is_inside({0.0, 0.0, 0.0}));
+  // Far away — should be outside.
+  REQUIRE(!mesh.is_inside({2.0, 2.0, 2.0}));
+  // Just outside on +x.
+  REQUIRE(!mesh.is_inside({0.6, 0.0, 0.0}));
+}
+
+void test_mesh_inclusion_volume_unit_cube() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  rvegen::mesh_inclusion<double> mesh{tris};
+
+  // Unit cube — volume must equal 1 to within FP tolerance.
+  REQUIRE(std::abs(mesh.volume() - 1.0) < 1e-12);
+}
+
+void test_mesh_inclusion_translate_via_set_middle_point() {
+  std::stringstream ss{unit_cube_stl};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  rvegen::mesh_inclusion<double> mesh{tris};
+
+  mesh.set_middle_point({10.0, 5.0, 0.0});
+  // After translation, origin is no longer inside.
+  REQUIRE(!mesh.is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(mesh.is_inside({10.0, 5.0, 0.0}));
+}
+
 } // namespace
 
 int main() {
@@ -513,6 +651,10 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_stl_ascii_reader_triangle_count();
+  test_mesh_inclusion_inside_outside_cube();
+  test_mesh_inclusion_volume_unit_cube();
+  test_mesh_inclusion_translate_via_set_middle_point();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
