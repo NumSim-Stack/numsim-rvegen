@@ -442,6 +442,9 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
+}
+
+// ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
 //   κ = 10:   tightly concentrated around mean_angle.
@@ -490,6 +493,87 @@ void test_oriented_uniform_concentrated_regime() {
   REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
 }
 
+// ----------------------------------------------------------------------------
+// phase + phase_collection: name + opaque material_config; ids start at 1.
+// ----------------------------------------------------------------------------
+void test_phase_collection_basics_and_ids() {
+  rvegen::phase_collection<double> phases;
+  auto const& matrix = phases.add("matrix",
+      nlohmann::json{{"type", "linear_elasticity"}, {"K", 1.6e9}, {"G", 0.8e9}});
+  auto const& fibre  = phases.add("fibre",
+      nlohmann::json{{"type", "linear_elasticity"}, {"K", 5.0e10}, {"G", 3.0e10}});
+
+  REQUIRE(matrix.id == 1);
+  REQUIRE(fibre.id == 2);
+  REQUIRE(phases.size() == 2);
+  REQUIRE(phases.id_of("matrix") == 1);
+  REQUIRE(phases.id_of("fibre") == 2);
+  REQUIRE(phases.contains("matrix"));
+  REQUIRE(!phases.contains("void"));
+
+  // Material config is opaque pass-through.
+  REQUIRE(phases.at("fibre").material_config["K"].get<double>() == 5.0e10);
+}
+
+void test_phase_collection_duplicate_throws() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  bool threw = false;
+  try { phases.add("matrix"); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_phase_collection_at_unknown_throws() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  bool threw = false;
+  try { (void)phases.at("nonexistent"); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_non_array() {
+  bool threw = false;
+  try {
+    rvegen::load_phases_from_json<double>(nlohmann::json::object());
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_missing_name() {
+  const auto cfg = nlohmann::json::parse(R"([{"material": {"K": 1.0}}])");
+  bool threw = false;
+  try { rvegen::load_phases_from_json<double>(cfg); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_non_object_material() {
+  const auto cfg = nlohmann::json::parse(R"([{"name": "x", "material": 42}])");
+  bool threw = false;
+  try { rvegen::load_phases_from_json<double>(cfg); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_round_trip() {
+  const auto cfg = nlohmann::json::parse(R"([
+    {"name": "matrix", "material": {"type": "linear_elasticity", "K": 1.6e9, "G": 0.8e9}},
+    {"name": "fibre",  "material": {"type": "linear_elasticity", "K": 5.0e10, "G": 3.0e10}}
+  ])");
+  auto phases = rvegen::load_phases_from_json<double>(cfg);
+  REQUIRE(phases.size() == 2);
+  REQUIRE(phases.id_of("matrix") == 1);
+  REQUIRE(phases.id_of("fibre") == 2);
+  REQUIRE(phases.at("matrix").material_config["G"].get<double>() == 0.8e9);
+
+  // Insertion order preserved in ordered() view.
+  auto const& ord = phases.ordered();
+  REQUIRE(ord.size() == 2);
+  REQUIRE(ord[0]->name == "matrix");
+  REQUIRE(ord[1]->name == "fibre");
+}
+
 } // namespace
 
 int main() {
@@ -513,6 +597,13 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_phase_collection_basics_and_ids();
+  test_phase_collection_duplicate_throws();
+  test_phase_collection_at_unknown_throws();
+  test_load_phases_from_json_round_trip();
+  test_load_phases_from_json_rejects_non_array();
+  test_load_phases_from_json_rejects_missing_name();
+  test_load_phases_from_json_rejects_non_object_material();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";

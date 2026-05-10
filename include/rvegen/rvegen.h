@@ -76,6 +76,10 @@
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
 
+// phase model — named regions with opaque material_config blobs that
+// downstream solvers (numsim-materials) interpret.
+#include "phase/phase.h"
+
 // inputs
 #include "inputs/shape_input_base.h"
 #include "inputs/circle_input.h"
