@@ -6,8 +6,9 @@
 // N of them with interlocked over/under topology.
 //
 // What this header provides today:
-//   * polyline_tube<T> shape with direct C++ ctor.
-//   * is_inside via closest-point-to-segment over each centerline edge.
+//   * polyline_tube<T> shape with direct C++ ctors (std::array or
+//     gte::Vector3 centerline points).
+//   * is_inside via GTE's DCPQuery point-to-segment for each centerline edge.
 //   * AABB bounding box from centerline extents ± radius.
 //   * static_indexing id so the collision dispatcher can address it
 //     (fallback to AABB-only collision until a polyline-tube-vs-X
@@ -30,10 +31,13 @@
 #include <cmath>
 #include <cstddef>
 #include <memory>
-#include <numeric>
 #include <vector>
 
 #include <numsim-core/static_indexing.h>
+
+#include <Mathematics/DistPointSegment.h>
+#include <Mathematics/Segment.h>
+#include <Mathematics/Vector.h>
 
 #include "../types.h"
 #include "box_bounding.h"
@@ -46,11 +50,22 @@ class polyline_tube
     : public numsim_core::static_indexing<polyline_tube<T>, shape_base<T>> {
 public:
   using value_type = T;
+  using point_type = gte::Vector<3, T>;
 
   polyline_tube() = default;
 
-  polyline_tube(std::vector<std::array<T, 3>> centerline, T radius)
+  polyline_tube(std::vector<point_type> centerline, T radius)
       : _centerline{std::move(centerline)}, _radius{radius} {}
+
+  // std::array overload — accepts {{x, y, z}, ...}-style initializers
+  // without forcing callers to construct gte::Vector3 explicitly.
+  polyline_tube(std::vector<std::array<T, 3>> const& centerline, T radius)
+      : _radius{radius} {
+    _centerline.reserve(centerline.size());
+    for (auto const& p : centerline) {
+      _centerline.push_back(make_vec(p));
+    }
+  }
 
   // ---- shape_base contract ----------------------------------------------
   [[nodiscard]] T area() const override { return T{0}; }   // 3D shape
@@ -64,12 +79,8 @@ public:
     if (_centerline.size() < 2) return T{0};
     T length = T{0};
     for (std::size_t i = 1; i < _centerline.size(); ++i) {
-      const auto& a = _centerline[i - 1];
-      const auto& b = _centerline[i];
-      const T dx = b[0] - a[0];
-      const T dy = b[1] - a[1];
-      const T dz = b[2] - a[2];
-      length += std::sqrt(dx * dx + dy * dy + dz * dz);
+      const auto d = _centerline[i] - _centerline[i - 1];
+      length += std::sqrt(gte::Dot(d, d));
     }
     constexpr T pi = T{3.14159265358979323846};
     return pi * _radius * _radius * length;
@@ -86,36 +97,33 @@ public:
   // for the centre-in-domain filter.
   [[nodiscard]] std::array<T, 3> get_middle_point() const override {
     if (_centerline.empty()) return {T{0}, T{0}, T{0}};
-    std::array<T, 3> sum{T{0}, T{0}, T{0}};
-    for (auto const& p : _centerline) {
-      sum[0] += p[0]; sum[1] += p[1]; sum[2] += p[2];
-    }
+    point_type sum = point_type::Zero();
+    for (auto const& p : _centerline) sum += p;
     const T n = static_cast<T>(_centerline.size());
     return {sum[0] / n, sum[1] / n, sum[2] / n};
   }
 
   void set_middle_point(std::array<T, 3> middle_point) override {
     const auto cur = get_middle_point();
-    const T dx = middle_point[0] - cur[0];
-    const T dy = middle_point[1] - cur[1];
-    const T dz = middle_point[2] - cur[2];
-    for (auto& p : _centerline) {
-      p[0] += dx; p[1] += dy; p[2] += dz;
-    }
+    point_type delta;
+    delta[0] = middle_point[0] - cur[0];
+    delta[1] = middle_point[1] - cur[1];
+    delta[2] = middle_point[2] - cur[2];
+    for (auto& p : _centerline) p += delta;
   }
 
-  // Inside iff closest distance from `point` to ANY centerline segment
-  // is ≤ radius. O(N) in centerline length; voxelization at moderate
-  // grids stays fast because most voxels reject early via bounding box.
+  // Inside iff GTE's point-to-segment squared distance to ANY centerline
+  // edge is ≤ radius². O(N) in centerline length; voxelization at
+  // moderate grids stays fast because most voxels reject early via
+  // the bounding box check upstream.
   [[nodiscard]] bool is_inside(std::array<T, 3> const& point) const override {
     if (_centerline.size() < 2) return false;
     const T r2 = _radius * _radius;
+    const auto p = make_vec(point);
+    gte::DCPQuery<T, point_type, gte::Segment<3, T>> query;
     for (std::size_t i = 1; i < _centerline.size(); ++i) {
-      if (point_segment_distance_sq(point,
-                                     _centerline[i - 1],
-                                     _centerline[i]) <= r2) {
-        return true;
-      }
+      gte::Segment<3, T> seg{_centerline[i - 1], _centerline[i]};
+      if (query(p, seg).sqrDistance <= r2) return true;
     }
     return false;
   }
@@ -137,22 +145,28 @@ public:
   }
 
   // ---- accessors --------------------------------------------------------
-  [[nodiscard]] std::vector<std::array<T, 3>> const& centerline() const noexcept {
+  [[nodiscard]] std::vector<point_type> const& centerline() const noexcept {
     return _centerline;
   }
   [[nodiscard]] T radius() const noexcept { return _radius; }
 
-  void set_centerline(std::vector<std::array<T, 3>> centerline) {
+  void set_centerline(std::vector<point_type> centerline) {
     _centerline = std::move(centerline);
   }
   void set_radius(T r) noexcept { _radius = r; }
 
 private:
+  static point_type make_vec(std::array<T, 3> const& a) {
+    point_type v;
+    v[0] = a[0]; v[1] = a[1]; v[2] = a[2];
+    return v;
+  }
+
   // Returns {min_corner, max_corner} of the bounding box in 3D.
   [[nodiscard]] std::array<std::array<T, 3>, 2> compute_bb_extents() const {
     if (_centerline.empty()) return {{{T{0}, T{0}, T{0}}, {T{0}, T{0}, T{0}}}};
-    std::array<T, 3> mn = _centerline[0];
-    std::array<T, 3> mx = _centerline[0];
+    std::array<T, 3> mn{_centerline[0][0], _centerline[0][1], _centerline[0][2]};
+    std::array<T, 3> mx = mn;
     for (auto const& p : _centerline) {
       for (int k = 0; k < 3; ++k) {
         mn[k] = std::min(mn[k], p[k]);
@@ -166,35 +180,7 @@ private:
     return {{mn, mx}};
   }
 
-  // Standard parameterised closest-point-on-segment. Returns the
-  // squared 3D distance from `p` to the segment [a, b]. Squared form
-  // avoids a sqrt per call inside is_inside.
-  static T point_segment_distance_sq(std::array<T, 3> const& p,
-                                      std::array<T, 3> const& a,
-                                      std::array<T, 3> const& b) {
-    const T abx = b[0] - a[0];
-    const T aby = b[1] - a[1];
-    const T abz = b[2] - a[2];
-    const T apx = p[0] - a[0];
-    const T apy = p[1] - a[1];
-    const T apz = p[2] - a[2];
-    const T ab_len_sq = abx * abx + aby * aby + abz * abz;
-    if (ab_len_sq <= T{0}) {
-      // Degenerate zero-length segment: distance to point a.
-      return apx * apx + apy * apy + apz * apz;
-    }
-    T t = (apx * abx + apy * aby + apz * abz) / ab_len_sq;
-    t = std::max(T{0}, std::min(T{1}, t));
-    const T qx = a[0] + t * abx;
-    const T qy = a[1] + t * aby;
-    const T qz = a[2] + t * abz;
-    const T dx = p[0] - qx;
-    const T dy = p[1] - qy;
-    const T dz = p[2] - qz;
-    return dx * dx + dy * dy + dz * dz;
-  }
-
-  std::vector<std::array<T, 3>> _centerline;
+  std::vector<point_type> _centerline;
   T _radius{T{0}};
 };
 
