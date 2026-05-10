@@ -16,20 +16,12 @@
 //     keeps shape_input small and lets multiple shapes share a phase
 //     by name without copying material parameters.
 //
-// What this header lands today (foundation for #7):
-//   * `phase<T>` struct — name + integer id + opaque material_config.
-//   * `phase_collection<T>` — name → phase map with monotonic id
-//     allocation.
-//   * `load_phases_from_json` — builds a phase_collection from the
-//     `"phases"` array in an rvegen JSON config.
-//
-// Out of scope here, ships in follow-up PRs against #7:
-//   * `shape_input_base::phase_name()` field + JSON schema entry on
-//     each input.
-//   * voxel_writer / gmsh_geo_writer per-phase ids (needs (a)).
-//   * DAMASK material.config writer.
-//   * Hard validation against numsim-materials' factory (currently
-//     opaque pass-through).
+// Convention on phase ids:
+//   User-defined phases get monotonic ids starting at 1. Id 0 is held
+//   in reserve for "void" / matrix gaps so a future voxel writer can
+//   use it as the default-fill marker without colliding with a real
+//   phase. Today no writer consumes this convention; it is a
+//   forward-looking reservation.
 
 #include <cstddef>
 #include <stdexcept>
@@ -54,8 +46,9 @@ struct phase {
   nlohmann::json material_config;
 };
 
-// Name → phase map with monotonic id allocation. Phase 0 is reserved
-// for "void" / matrix gaps in voxel writers; user phases start at 1.
+// Name → phase map with monotonic id allocation. `ordered()` exposes
+// insertion-order iteration directly (no const-cache, so concurrent
+// readers after the build phase are safe).
 template <typename T = double>
 class phase_collection {
 public:
@@ -73,8 +66,8 @@ public:
       throw std::runtime_error{"phase_collection: duplicate phase name '" +
                                name + "'"};
     }
-    phase_type p{name, _next_id++, std::move(material_config)};
-    auto [it, _] = _by_name.emplace(std::move(name), std::move(p));
+    auto [it, inserted] = _by_name.try_emplace(
+        name, phase_type{name, _next_id++, std::move(material_config)});
     _ordered.push_back(&it->second);
     return it->second;
   }
@@ -99,27 +92,18 @@ public:
   [[nodiscard]] std::size_t size() const noexcept { return _ordered.size(); }
   [[nodiscard]] bool empty() const noexcept { return _ordered.empty(); }
 
-  // Stable insertion-order iteration. Writers consuming this for
-  // gmsh Physical groups / DAMASK sections want deterministic order,
-  // so we expose a span over pointers into our owning map.
+  // Stable insertion-order view. Pointers are valid for the lifetime
+  // of the collection — `std::unordered_map` references are stable
+  // across `insert`/`try_emplace`, and we never erase. Reading
+  // `ordered()` from multiple threads after the build phase is
+  // finished is safe (no mutation, no lazy cache rebuild).
   [[nodiscard]] std::vector<phase_type const*> const& ordered() const noexcept {
-    return _ordered_const_view();
+    return _ordered;
   }
 
 private:
-  // Re-cast cache to const* on demand so callers can't mutate via the
-  // returned vector but we still keep insertion order without
-  // duplicating storage.
-  std::vector<phase_type const*> const& _ordered_const_view() const noexcept {
-    if (_ordered_const_cache.size() != _ordered.size()) {
-      _ordered_const_cache.assign(_ordered.begin(), _ordered.end());
-    }
-    return _ordered_const_cache;
-  }
-
   std::unordered_map<std::string, phase_type> _by_name;
-  std::vector<phase_type*> _ordered;
-  mutable std::vector<phase_type const*> _ordered_const_cache;
+  std::vector<phase_type const*> _ordered;
   std::size_t _next_id{1};
 };
 
@@ -133,9 +117,13 @@ private:
 //                                       "K": 5.0e10, "G": 3.0e10, ...}}
 //   ]
 //
-// The `"material"` sub-object is opaque — rvegen does not validate
-// or instantiate it; downstream consumers (e.g. numsim-materials'
-// factory) interpret it.
+// Validation:
+//   * `phases_array` must be an array.
+//   * Each entry must be an object with a string `"name"`.
+//   * `"material"` is required to be an object if present (rvegen does
+//     not interpret its contents, but accepting non-objects would let
+//     downstream solver mismatches surface as obscure errors far from
+//     the typo).
 template <typename T = double>
 inline phase_collection<T> load_phases_from_json(nlohmann::json const& phases_array) {
   phase_collection<T> phases;
@@ -144,13 +132,24 @@ inline phase_collection<T> load_phases_from_json(nlohmann::json const& phases_ar
         "load_phases_from_json: expected an array of phase objects"};
   }
   for (auto const& entry : phases_array) {
+    if (!entry.is_object()) {
+      throw std::runtime_error{
+          "load_phases_from_json: each phase entry must be an object"};
+    }
     if (!entry.contains("name") || !entry["name"].is_string()) {
       throw std::runtime_error{
           "load_phases_from_json: each phase must have a string 'name'"};
     }
     auto name = entry["name"].get<std::string>();
-    auto material = entry.contains("material") ? entry["material"]
-                                                : nlohmann::json::object();
+    nlohmann::json material = nlohmann::json::object();
+    if (entry.contains("material")) {
+      if (!entry["material"].is_object()) {
+        throw std::runtime_error{
+            "load_phases_from_json: 'material' for phase '" + name +
+            "' must be an object"};
+      }
+      material = entry["material"];
+    }
     phases.add(std::move(name), std::move(material));
   }
   return phases;

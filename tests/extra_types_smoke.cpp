@@ -523,6 +523,39 @@ void test_phase_collection_duplicate_throws() {
   REQUIRE(threw);
 }
 
+void test_phase_collection_at_unknown_throws() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  bool threw = false;
+  try { (void)phases.at("nonexistent"); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_non_array() {
+  bool threw = false;
+  try {
+    rvegen::load_phases_from_json<double>(nlohmann::json::object());
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_missing_name() {
+  const auto cfg = nlohmann::json::parse(R"([{"material": {"K": 1.0}}])");
+  bool threw = false;
+  try { rvegen::load_phases_from_json<double>(cfg); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_load_phases_from_json_rejects_non_object_material() {
+  const auto cfg = nlohmann::json::parse(R"([{"name": "x", "material": 42}])");
+  bool threw = false;
+  try { rvegen::load_phases_from_json<double>(cfg); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 void test_load_phases_from_json_round_trip() {
   const auto cfg = nlohmann::json::parse(R"([
     {"name": "matrix", "material": {"type": "linear_elasticity", "K": 1.6e9, "G": 0.8e9}},
@@ -566,7 +599,11 @@ int main() {
   test_oriented_uniform_concentrated_regime();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
+  test_phase_collection_at_unknown_throws();
   test_load_phases_from_json_round_trip();
+  test_load_phases_from_json_rejects_non_array();
+  test_load_phases_from_json_rejects_missing_name();
+  test_load_phases_from_json_rejects_non_object_material();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
