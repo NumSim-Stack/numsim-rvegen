@@ -78,9 +78,7 @@ public:
             *d.at(handler.template get<std::string>("direction_z_dist")),
             *d.at(handler.template get<std::string>("length_dist")),
             *d.at(handler.template get<std::string>("radius_dist"))) {
-    if (handler.contains("phase_name")) {
-      this->set_phase_name(handler.template get<std::string>("phase_name"));
-    }
+    this->read_metadata(handler);
   }
 
   [[nodiscard]] static parameter_controller_t parameters() {

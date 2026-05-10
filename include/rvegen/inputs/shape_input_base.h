@@ -6,6 +6,7 @@
 
 #include "../metadata/info.h"
 #include "../shapes/shape_base.h"
+#include "../types.h"
 
 namespace rvegen {
 
@@ -54,6 +55,18 @@ public:
   }
 
 protected:
+  // Concrete inputs call this from their schema-driven ctor body to
+  // pull every recognised metadata field out of the handler in one
+  // place. New metadata fields are added here once and every input
+  // picks them up automatically — that's the point of the generic
+  // info container.
+  void read_metadata(parameter_handler_t const& handler) {
+    if (handler.contains("phase_name")) {
+      _info.set_phase_name(handler.template get<std::string>("phase_name"));
+    }
+    // Future: orientation, source-id, custom user tags. Add here.
+  }
+
   // Concrete inputs call this from `new_shape()` to stamp the input's
   // metadata blob onto the shape before returning it.
   void tag(shape_base<T>& shape) const {
