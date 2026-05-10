@@ -1374,6 +1374,38 @@ void test_input_metadata_json_field_merges_into_info() {
   REQUIRE(shape->info().get<bool>("active") == true);
 }
 
+void test_input_metadata_overrides_phase_name() {
+  // Documented behaviour: `metadata` is merged AFTER `phase_name`,
+  // so a `phase_name` key inside the metadata object wins.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{909};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "x": {"type": "constant", "value": 0.5},
+    "y": {"type": "constant", "value": 0.5},
+    "r": {"type": "constant", "value": 0.1}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "circle_input",
+    "pos_x_dist": "x",
+    "pos_y_dist": "y",
+    "radius_dist": "r",
+    "phase_name": "matrix",
+    "metadata": "{\"phase_name\": \"fibre\"}"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape->phase_name() == "fibre");
+}
+
 void test_info_generic_metadata_round_trip() {
   // Verify the info container behaves as a generic key-value store
   // beyond the phase_name shortcut: write multiple typed values,
@@ -1460,6 +1492,7 @@ int main() {
   test_input_stamps_phase_name_on_produced_shape();
   test_input_phase_name_default_is_empty();
   test_input_metadata_json_field_merges_into_info();
+  test_input_metadata_overrides_phase_name();
   test_info_generic_metadata_round_trip();
   test_load_phases_from_json_rejects_non_array();
   test_load_phases_from_json_rejects_missing_name();
