@@ -66,10 +66,12 @@ public:
       throw std::runtime_error{"phase_collection: duplicate phase name '" +
                                name + "'"};
     }
-    auto [it, inserted] = _by_name.try_emplace(
-        name, phase_type{name, _next_id++, std::move(material_config)});
-    _ordered.push_back(&it->second);
-    return it->second;
+    auto& slot = _by_name
+                     .try_emplace(name, phase_type{name, _next_id++,
+                                                   std::move(material_config)})
+                     .first->second;
+    _ordered.push_back(&slot);
+    return slot;
   }
 
   [[nodiscard]] bool contains(std::string const& name) const noexcept {
