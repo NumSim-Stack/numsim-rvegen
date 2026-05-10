@@ -83,7 +83,7 @@ template <typename T = double>
   }
   stiffness_matrix<T> C = stiffness_matrix<T>::Zero();
   for (std::size_t i = 0; i < stiffnesses.size(); ++i) {
-    C += volume_fractions[i] * stiffnesses[i];
+    C.noalias() += volume_fractions[i] * stiffnesses[i];
   }
   return C;
 }
