@@ -13,21 +13,20 @@ source:
 
 build:
   number: 0
-  # Header-only library with platform-portable CMake config — try
-  # `noarch: generic` first; if conda-forge admins push back during
-  # staged-recipes review (e.g. because the embedded GTE submodule
-  # has any platform conditionals at install time), fall back to
-  # platform-specific. The `skip:` line was previously a Python
-  # selector copy-pasted from a Python-extension recipe and would have
-  # silently skipped the build on every non-Python platform.
-  noarch: generic
+  # Platform-specific build, matching conda-forge precedents for
+  # header-only C++ libraries with CMake configs (eigen, boost-headers,
+  # nlohmann_json are all NOT noarch). The CMake config emits paths
+  # that, while in principle relocatable, vary in casing and
+  # separators across linux/osx/windows. If conda-forge admins later
+  # suggest noarch:generic, the migration is mechanical (drop the
+  # compiler line, move build tools to host).
 
 requirements:
-  # noarch: generic skips the compiler at runtime — only the host
-  # tools need C++23 to run the install rule.
-  host:
+  build:
+    - {{ compiler('cxx') }}
     - cmake >=3.20
     - ninja
+  host:
     - boost-cpp >=1.83
     - eigen >=3.4
     - nlohmann_json >=3.12
@@ -59,4 +58,4 @@ about:
 
 extra:
   recipe-maintainers:
-    - peterlenz89
+    - petlenz
