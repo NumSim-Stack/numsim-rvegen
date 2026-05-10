@@ -83,6 +83,7 @@
 #include "inputs/rectangle_input.h"
 #include "inputs/box_input.h"
 #include "inputs/ellipse_input.h"
+#include "inputs/polyline_tube_directional_input.h"
 #include "inputs/polyline_tube_input.h"
 
 // termination
