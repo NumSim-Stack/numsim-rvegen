@@ -97,8 +97,11 @@ jobs:
           CXX: g++-14
           # scikit-build-core forwards CMAKE_ARGS through to the
           # rvegen CMake configure during `pip install`. We reuse the
-          # same numsim-core include trick as the smoke consumer.
-          CMAKE_ARGS: "-DCMAKE_CXX_FLAGS=-I${{ github.workspace }}/numsim-core/include"
+          # same numsim-core include trick as the smoke consumer, plus
+          # `-DBUILD_TESTING=OFF` to skip re-configuring rvegen's ctest
+          # binaries (already built + tested above) — saves ~30s of
+          # redundant configure work in CI.
+          CMAKE_ARGS: "-DCMAKE_CXX_FLAGS=-I${{ github.workspace }}/numsim-core/include -DBUILD_TESTING=OFF"
         run: |
           python -m pip install --upgrade pip
           python -m pip install pytest
