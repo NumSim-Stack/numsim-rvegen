@@ -31,6 +31,7 @@
 //     memcpy on heavy meshes.
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -57,7 +58,18 @@ public:
                        distribution_base<value_type>& pz)
       : _stl_path{std::move(stl_path)},
         _triangles{read_stl_ascii_file<value_type>(_stl_path)},
-        _px{px}, _py{py}, _pz{pz} {}
+        _px{px}, _py{py}, _pz{pz} {
+    // An empty triangle list yields a `mesh_inclusion` whose
+    // `is_inside` is always false. The generator's volume_fraction
+    // termination would then never satisfy and the run would loop
+    // until `max_attempts` (silent timeout) — fail fast instead.
+    if (_triangles.empty()) {
+      throw std::runtime_error{
+          "mesh_inclusion_input: STL file '" + _stl_path +
+          "' contained no triangles; refusing to construct an "
+          "always-empty inclusion."};
+    }
+  }
 
   mesh_inclusion_input(parameter_handler_t const& handler,
                        distribution_map_t<value_type> const& d)

@@ -1309,6 +1309,48 @@ void test_mesh_inclusion_input_missing_file_throws() {
   REQUIRE(threw);
 }
 
+void test_mesh_inclusion_input_empty_stl_throws() {
+  // An STL file with zero triangles would yield a `mesh_inclusion`
+  // whose `is_inside` is always false. The input ctor must refuse it
+  // up front rather than letting the generator's volume-fraction
+  // termination loop forever.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  const std::string tmp_path = "/tmp/rvegen_test_empty.stl";
+  {
+    std::ofstream out{tmp_path};
+    out << "solid empty\nendsolid empty\n";
+  }
+
+  std::mt19937 engine{19};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec_json = std::string{R"({
+    "type": "mesh_inclusion_input",
+    "stl_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })";
+  const auto input_spec = nlohmann::json::parse(input_spec_json);
+  bool threw = false;
+  try {
+    auto input = rvegen::build_from_json(
+        rvegen::input_registry_t<>::instance(), input_spec, dists);
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  std::remove(tmp_path.c_str());
+}
+
 void test_load_phases_from_json_rejects_non_array() {
   bool threw = false;
   try {
@@ -1383,6 +1425,7 @@ int main() {
   test_stl_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_input_via_registry();
   test_mesh_inclusion_input_missing_file_throws();
+  test_mesh_inclusion_input_empty_stl_throws();
   test_mesh_inclusion_inside_outside_cube();
   test_mesh_inclusion_volume_unit_cube();
   test_mesh_inclusion_translate_via_set_middle_point();
