@@ -322,6 +322,59 @@ void test_ellipse_input_via_registry() {
 }
 
 // ----------------------------------------------------------------------------
+// polyline_tube: a swept tube around a centerline (foundation for #3).
+// ----------------------------------------------------------------------------
+void test_polyline_tube_inside_along_segment() {
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {1.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  REQUIRE(tube.is_inside({0.5, 0.0, 0.0}));
+  REQUIRE(tube.is_inside({0.5, 0.05, 0.0}));
+  REQUIRE(!tube.is_inside({0.5, 0.11, 0.0}));
+  // Past the cap (segment terminates at x=1): outside.
+  REQUIRE(!tube.is_inside({1.5, 0.0, 0.0}));
+}
+
+void test_polyline_tube_bend_inside_corner() {
+  // L-shaped centerline. Mid-second-segment must register inside.
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {1.0, 0.0, 0.0},
+                                                {1.0, 1.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  REQUIRE(tube.is_inside({1.0, 0.0, 0.0}));
+  REQUIRE(tube.is_inside({1.0, 0.5, 0.0}));
+  REQUIRE(!tube.is_inside({1.2, 0.5, 0.0}));
+}
+
+void test_polyline_tube_volume_and_bbox() {
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {2.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  // π · r² · L
+  const double expected_v = std::numbers::pi_v<double> * 0.01 * 2.0;
+  REQUIRE(std::abs(tube.volume() - expected_v) < 1e-12);
+
+  tube.make_bounding_box();
+  REQUIRE(tube.bounding_box() != nullptr);
+}
+
+void test_polyline_tube_translate_via_set_middle_point() {
+  std::vector<std::array<double, 3>> centerline{{0.0, 0.0, 0.0},
+                                                {1.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+
+  tube.set_middle_point({10.0, 5.0, 0.0});
+  auto const& cl = tube.centerline();
+  REQUIRE(std::abs(cl[0][0] - 9.5) < 1e-12);
+  REQUIRE(std::abs(cl[0][1] - 5.0) < 1e-12);
+  REQUIRE(std::abs(cl[1][0] - 10.5) < 1e-12);
+  REQUIRE(std::abs(cl[1][1] - 5.0) < 1e-12);
+}
+
+// ----------------------------------------------------------------------------
 // vtk_legacy_writer: ASCII STRUCTURED_POINTS header + flat phase data.
 // ----------------------------------------------------------------------------
 void test_vtk_legacy_writer_header_and_size() {
@@ -389,6 +442,52 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
+// oriented_uniform_distribution: von-Mises sampler. Two regime checks:
+//   κ = 0:    behaviour collapses to uniform on a 2π interval.
+//   κ = 10:   tightly concentrated around mean_angle.
+// Both verified statistically over a moderate sample.
+// ----------------------------------------------------------------------------
+void test_oriented_uniform_uniform_regime() {
+  std::mt19937 engine{123};
+  rvegen::oriented_uniform_distribution<double> dist{
+      0.0 /*mean*/, 0.0 /*kappa = uniform*/, engine};
+
+  // 5000 samples binned into 12 30°-wide bins. With kappa=0 each bin
+  // expects ~417 samples; standard deviation under the binomial is
+  // sqrt(N · p · (1-p)) ≈ √(5000 · 1/12 · 11/12) ≈ 19.5. Tolerance set
+  // to 5σ so the test isn't flaky — this is detecting "wildly skewed"
+  // not "minor sampling noise".
+  constexpr int N = 5000;
+  constexpr int B = 12;
+  std::array<int, B> bins{};
+  for (int i = 0; i < N; ++i) {
+    double a = std::fmod(dist() + 4 * M_PI, 2 * M_PI);   // wrap to [0, 2π)
+    int b = std::min(int(a / (2 * M_PI / B)), B - 1);
+    ++bins[b];
+  }
+  for (int count : bins) {
+    REQUIRE(std::abs(count - N / B) < 5 * 20);   // ~5σ tolerance
+  }
+}
+
+void test_oriented_uniform_concentrated_regime() {
+  std::mt19937 engine{456};
+  // mean_angle = π/4; high concentration. Samples should cluster.
+  rvegen::oriented_uniform_distribution<double> dist{
+      M_PI / 4, 50.0 /*kappa large*/, engine};
+
+  constexpr int N = 2000;
+  double sum_dev_sq = 0.0;
+  for (int i = 0; i < N; ++i) {
+    double a = dist();
+    double dev = std::fmod(a - M_PI / 4 + 3 * M_PI, 2 * M_PI) - M_PI;  // wrap to [-π, π]
+    sum_dev_sq += dev * dev;
+  }
+  // For a von Mises distribution, Var ≈ 1/κ for large κ. With κ=50,
+  // expect std-dev ≈ 1/√50 ≈ 0.14 rad. Empirical std-dev should be in
+  // the same ballpark (allow 3× factor for sample noise).
+  const double empirical_std = std::sqrt(sum_dev_sq / N);
+  REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
 }
 
 } // namespace
@@ -404,10 +503,16 @@ int main() {
   test_ellipse_collision_via_gte();
   test_circle_ellipse_collision();
   test_ellipse_input_via_registry();
+  test_polyline_tube_inside_along_segment();
+  test_polyline_tube_bend_inside_corner();
+  test_polyline_tube_volume_and_bbox();
+  test_polyline_tube_translate_via_set_middle_point();
   test_vtk_legacy_writer_header_and_size();
   test_gmsh_geo_writer_periodic_2d();
   test_gmsh_geo_writer_periodic_3d();
   test_gmsh_geo_writer_non_periodic_unchanged();
+  test_oriented_uniform_uniform_regime();
+  test_oriented_uniform_concentrated_regime();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
