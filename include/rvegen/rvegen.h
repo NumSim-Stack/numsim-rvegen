@@ -76,6 +76,9 @@
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
 
+// homogenization — analytical bounds (Voigt / Reuss / Hill)
+#include "homogenization/mean_field.h"
+
 // phase model — named regions with opaque material_config blobs that
 // downstream solvers (numsim-materials) interpret.
 #include "phase/phase.h"

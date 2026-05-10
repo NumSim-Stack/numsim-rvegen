@@ -494,6 +494,97 @@ void test_oriented_uniform_concentrated_regime() {
 }
 
 // ----------------------------------------------------------------------------
+// mean-field bounds: Voigt (upper) and Reuss (lower) on the effective
+// stiffness of a multi-phase composite.
+// ----------------------------------------------------------------------------
+void test_mean_field_single_phase_collapses_to_phase() {
+  // A single-phase "composite" — Voigt and Reuss should both equal C.
+  using namespace rvegen::homogenization;
+  const auto C = lame_to_voigt_stiffness<double>(1.0e9, 0.5e9);
+  const std::vector<stiffness_matrix<double>> stiffnesses{C};
+  const std::vector<double> v{1.0};
+
+  const auto cv = voigt_bound(stiffnesses, v);
+  const auto cr = reuss_bound(stiffnesses, v);
+  REQUIRE((cv - C).norm() < 1e-6);
+  REQUIRE((cr - C).norm() < 1e-6);
+}
+
+void test_mean_field_voigt_above_reuss_for_contrast() {
+  // High-contrast 2-phase: matrix (E=3 GPa) + fibre (E=70 GPa). Voigt
+  // upper > Reuss lower. Compare top-left C(0,0).
+  using namespace rvegen::homogenization;
+  // Convert (E, ν) → (λ, μ) for ν = 0.3:
+  //   μ = E / (2(1+ν)) ; λ = E·ν / ((1+ν)(1-2ν))
+  const double Em = 3.0e9, vm = 0.3;
+  const double Ef = 70.0e9;
+  const double mu_m = Em / (2.0 * (1.0 + vm));
+  const double lam_m = Em * vm / ((1.0 + vm) * (1.0 - 2.0 * vm));
+  const double mu_f = Ef / (2.0 * (1.0 + vm));
+  const double lam_f = Ef * vm / ((1.0 + vm) * (1.0 - 2.0 * vm));
+  const auto Cm = lame_to_voigt_stiffness(lam_m, mu_m);
+  const auto Cf = lame_to_voigt_stiffness(lam_f, mu_f);
+
+  const std::vector<stiffness_matrix<double>> stiffnesses{Cm, Cf};
+  const std::vector<double> v{0.6, 0.4};   // 40% fibre
+
+  const auto cv = voigt_bound(stiffnesses, v);
+  const auto cr = reuss_bound(stiffnesses, v);
+  // Voigt ≥ Reuss component-wise across the full 6×6 (the strict
+  // inequality holds where the phases differ; equality elsewhere).
+  for (int r = 0; r < 6; ++r) {
+    for (int c = 0; c < 6; ++c) {
+      REQUIRE(cv(r, c) >= cr(r, c) - 1e-6);
+    }
+  }
+  // Both bounds must be positive-definite (eigenvalues strictly > 0).
+  Eigen::SelfAdjointEigenSolver<stiffness_matrix<double>> ev_v{cv};
+  Eigen::SelfAdjointEigenSolver<stiffness_matrix<double>> ev_r{cr};
+  REQUIRE(ev_v.eigenvalues().minCoeff() > 0.0);
+  REQUIRE(ev_r.eigenvalues().minCoeff() > 0.0);
+  // Hill average sits strictly between the diagonal extremes.
+  const auto ch = voigt_reuss_hill(stiffnesses, v);
+  REQUIRE(ch(0, 0) > cr(0, 0));
+  REQUIRE(ch(0, 0) < cv(0, 0));
+}
+
+void test_mean_field_voigt_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0, 0.5)};
+  std::vector<double> v{0.5, 0.5};   // wrong size
+  bool threw = false;
+  try { voigt_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mean_field_reuss_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0, 0.5),
+      lame_to_voigt_stiffness<double>(2.0, 1.0)};
+  std::vector<double> v{0.5};   // wrong size
+  bool threw = false;
+  try { reuss_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mean_field_reuss_singular_phase_throws() {
+  // A void phase (zero stiffness) is singular; reuss_bound's harmonic
+  // mean diverges. The check uses FullPivLU::isInvertible(), which is
+  // robust at engineering scales — the previous det-vs-epsilon check
+  // would silently pass for near-singular matrices with norm ~1e9.
+  using namespace rvegen::homogenization;
+  std::vector<stiffness_matrix<double>> stiffnesses{
+      lame_to_voigt_stiffness<double>(1.0e9, 0.5e9),
+      stiffness_matrix<double>::Zero()};
+  std::vector<double> v{0.5, 0.5};
+  bool threw = false;
+  try { reuss_bound(stiffnesses, v); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+// ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
 void test_phase_collection_basics_and_ids() {
@@ -597,6 +688,11 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_mean_field_single_phase_collapses_to_phase();
+  test_mean_field_voigt_above_reuss_for_contrast();
+  test_mean_field_voigt_size_mismatch_throws();
+  test_mean_field_reuss_size_mismatch_throws();
+  test_mean_field_reuss_singular_phase_throws();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
