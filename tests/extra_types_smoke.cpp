@@ -442,6 +442,9 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
+}
+
+// ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
 //   κ = 10:   tightly concentrated around mean_angle.
@@ -490,6 +493,66 @@ void test_oriented_uniform_concentrated_regime() {
   REQUIRE(empirical_std < 0.5);   // would be ~π/√3 ≈ 1.81 if uniform
 }
 
+// ----------------------------------------------------------------------------
+// voronoi_cell — convex polyhedron via vertices + faces. Tested with a unit
+// cube tessellation (degenerate Voronoi case but exercises every code path).
+// ----------------------------------------------------------------------------
+void test_voronoi_cell_unit_cube_volume_and_inside() {
+  using V = gte::Vector<3, double>;
+  std::vector<V> verts(8);
+  verts[0] = V{}; verts[0][0]=-0.5; verts[0][1]=-0.5; verts[0][2]=-0.5;
+  verts[1] = V{}; verts[1][0]= 0.5; verts[1][1]=-0.5; verts[1][2]=-0.5;
+  verts[2] = V{}; verts[2][0]= 0.5; verts[2][1]= 0.5; verts[2][2]=-0.5;
+  verts[3] = V{}; verts[3][0]=-0.5; verts[3][1]= 0.5; verts[3][2]=-0.5;
+  verts[4] = V{}; verts[4][0]=-0.5; verts[4][1]=-0.5; verts[4][2]= 0.5;
+  verts[5] = V{}; verts[5][0]= 0.5; verts[5][1]=-0.5; verts[5][2]= 0.5;
+  verts[6] = V{}; verts[6][0]= 0.5; verts[6][1]= 0.5; verts[6][2]= 0.5;
+  verts[7] = V{}; verts[7][0]=-0.5; verts[7][1]= 0.5; verts[7][2]= 0.5;
+
+  std::vector<std::vector<std::size_t>> faces{
+      {0, 1, 2, 3},   // -z
+      {4, 5, 6, 7},   // +z
+      {0, 1, 5, 4},   // -y
+      {3, 2, 6, 7},   // +y
+      {0, 3, 7, 4},   // -x
+      {1, 2, 6, 5}    // +x
+  };
+
+  rvegen::voronoi_cell<double> cell{verts, faces};
+
+  // Volume of unit cube = 1.
+  REQUIRE(std::abs(cell.volume() - 1.0) < 1e-12);
+
+  // Origin is inside; corner+ε is outside.
+  REQUIRE(cell.is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(!cell.is_inside({0.6, 0.0, 0.0}));
+  REQUIRE(!cell.is_inside({0.51, 0.51, 0.51}));
+}
+
+void test_voronoi_cell_translate_via_set_middle_point() {
+  using V = gte::Vector<3, double>;
+  // Tetrahedron with apex on +z, base on z=0.
+  std::vector<V> verts(4);
+  verts[0] = V{}; verts[0][0]=0.0; verts[0][1]=0.0; verts[0][2]=1.0;
+  verts[1] = V{}; verts[1][0]=1.0; verts[1][1]=0.0; verts[1][2]=0.0;
+  verts[2] = V{}; verts[2][0]=0.0; verts[2][1]=1.0; verts[2][2]=0.0;
+  verts[3] = V{}; verts[3][0]=0.0; verts[3][1]=0.0; verts[3][2]=0.0;
+
+  std::vector<std::vector<std::size_t>> faces{
+      {1, 2, 3},   // base (z=0)
+      {0, 1, 2},   // diagonal
+      {0, 2, 3},
+      {0, 3, 1},
+  };
+
+  rvegen::voronoi_cell<double> cell{verts, faces};
+  // Centroid of {(0,0,1),(1,0,0),(0,1,0),(0,0,0)} = (0.25, 0.25, 0.25).
+  cell.set_middle_point({10.0, 10.0, 10.0});
+  // Original centroid (0.25, 0.25, 0.25) is no longer inside.
+  REQUIRE(!cell.is_inside({0.25, 0.25, 0.25}));
+  REQUIRE(cell.is_inside({10.0, 10.0, 10.0}));
+}
+
 } // namespace
 
 int main() {
@@ -513,6 +576,8 @@ int main() {
   test_gmsh_geo_writer_non_periodic_unchanged();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
+  test_voronoi_cell_unit_cube_volume_and_inside();
+  test_voronoi_cell_translate_via_set_middle_point();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";

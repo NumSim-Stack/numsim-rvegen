@@ -36,6 +36,7 @@
 #include "shapes/box.h"
 #include "shapes/ellipse.h"
 #include "shapes/polyline_tube.h"
+#include "shapes/voronoi_cell.h"
 #include "shapes/shape_variant.h"
 #include "shapes/shape_pool.h"
 
