@@ -4,6 +4,7 @@
 #include <string>
 #include <utility>
 
+#include "../metadata/info.h"
 #include "../shapes/shape_base.h"
 
 namespace rvegen {
@@ -15,13 +16,14 @@ namespace rvegen {
 // The generator drives the simulation by repeatedly calling new_shape() on
 // each input until a termination condition fires.
 //
-// Phase tagging:
-//   Each input may carry a `phase_name` that gets stamped onto every shape
-//   it produces. Concrete inputs read this from the schema (optional
-//   `phase_name` field, default empty) and call `tag(*shape)` from their
-//   `new_shape()` implementations. The shape carries the tag through
-//   clone / translate operations; per-phase output writers (gmsh Physical
-//   groups, voxel grid integers, DAMASK material.config) consume it.
+// Metadata propagation:
+//   Each input may carry an `info` blob that gets stamped onto every
+//   shape it produces. Concrete inputs read metadata fields from the
+//   schema (today: optional `phase_name`; future: orientation, source
+//   paths, custom tags) and call `tag(*shape)` from their `new_shape()`
+//   implementations. The shape carries the metadata through clone /
+//   translate operations; output writers consume it (per-phase gmsh
+//   Physical groups, voxel grid ids, DAMASK material.config).
 template <typename T>
 class shape_input_base {
 public:
@@ -41,21 +43,24 @@ public:
   // destroys the freshly-allocated candidate.
   [[nodiscard]] virtual std::unique_ptr<shape_base<T>> new_shape() = 0;
 
-  [[nodiscard]] std::string const& phase_name() const noexcept {
-    return _phase_name;
-  }
-  void set_phase_name(std::string name) noexcept {
-    _phase_name = std::move(name);
+  [[nodiscard]] rvegen::info const& info() const noexcept { return _info; }
+  [[nodiscard]] rvegen::info& info() noexcept { return _info; }
+  void set_info(rvegen::info i) noexcept { _info = std::move(i); }
+
+  // Convenience pair for the phase-name special case.
+  [[nodiscard]] std::string phase_name() const { return _info.phase_name(); }
+  void set_phase_name(std::string name) {
+    _info.set_phase_name(std::move(name));
   }
 
 protected:
   // Concrete inputs call this from `new_shape()` to stamp the input's
-  // phase name onto the shape before returning it.
+  // metadata blob onto the shape before returning it.
   void tag(shape_base<T>& shape) const {
-    shape.set_phase_name(_phase_name);
+    shape.set_info(_info);
   }
 
-  std::string _phase_name;
+  rvegen::info _info;
 };
 
 } // namespace rvegen

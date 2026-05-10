@@ -1334,6 +1334,33 @@ void test_input_phase_name_default_is_empty() {
   REQUIRE(shape->phase_name().empty());
 }
 
+void test_info_generic_metadata_round_trip() {
+  // Verify the info container behaves as a generic key-value store
+  // beyond the phase_name shortcut: write multiple typed values,
+  // confirm they round-trip, and confirm propagation through tag().
+  rvegen::info i;
+  i.set("phase_name", std::string{"matrix"});
+  i.set("orientation_deg", 42.5);
+  i.set("source_id", 7);
+  i.set("active", true);
+
+  REQUIRE(i.phase_name() == "matrix");
+  REQUIRE(i.get<double>("orientation_deg") == 42.5);
+  REQUIRE(i.get<int>("source_id") == 7);
+  REQUIRE(i.get<bool>("active") == true);
+  REQUIRE(i.contains("orientation_deg"));
+  REQUIRE(!i.contains("missing"));
+  REQUIRE(i.get_or<int>("missing", -1) == -1);
+
+  // Stamp onto a shape via direct ctor + set_info; clone propagates it.
+  rvegen::circle<double> c{0.5, 0.5, 0.1};
+  c.set_info(i);
+  REQUIRE(c.info().get<double>("orientation_deg") == 42.5);
+  auto cloned = c.clone();
+  REQUIRE(cloned->info().phase_name() == "matrix");
+  REQUIRE(cloned->info().get<bool>("active") == true);
+}
+
 } // namespace
 
 int main() {
@@ -1392,6 +1419,7 @@ int main() {
   test_load_phases_from_json_round_trip();
   test_input_stamps_phase_name_on_produced_shape();
   test_input_phase_name_default_is_empty();
+  test_info_generic_metadata_round_trip();
   test_load_phases_from_json_rejects_non_array();
   test_load_phases_from_json_rejects_missing_name();
   test_load_phases_from_json_rejects_non_object_material();

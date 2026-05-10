@@ -3,9 +3,11 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <numsim-core/static_indexing.h>
 
+#include "../metadata/info.h"
 #include "bounding_box_base.h"
 
 namespace rvegen {
@@ -40,7 +42,7 @@ public:
   // class's compiler-generated copy ctor calls this one + the GTE base's
   // copy ctor, producing a fully-copied shape with a freshly-cloned bb.
   shape_base(shape_base const& other)
-      : _phase_name{other._phase_name},
+      : _info{other._info},
         _bounding_box{other._bounding_box ? other._bounding_box->clone()
                                           : nullptr} {}
 
@@ -55,7 +57,7 @@ protected:
   // classes invoke these implicitly through their own (public) op=.
   shape_base& operator=(shape_base const& other) {
     if (this != &other) {
-      _phase_name = other._phase_name;
+      _info = other._info;
       _bounding_box = other._bounding_box ? other._bounding_box->clone()
                                           : nullptr;
     }
@@ -106,22 +108,27 @@ public:
     return _bounding_box.get();
   }
 
-  // Phase name attached to this shape — empty by default. Set by
-  // shape_input_base when the input's schema includes a `phase_name`
-  // field, then propagated through clone/translate operations and
-  // consumed by per-phase output writers (gmsh Physical groups, voxel
-  // grid integers, DAMASK material.config). The default empty string
-  // means "no phase tag" — writers that don't care about phases
-  // ignore it; writers that do treat empty as "unassigned".
-  [[nodiscard]] std::string const& phase_name() const noexcept {
-    return _phase_name;
-  }
-  void set_phase_name(std::string name) noexcept {
-    _phase_name = std::move(name);
+  // Generic metadata blob attached to this shape — see `rvegen::info`
+  // for the storage. Defaults to an empty json object. Set by
+  // `shape_input_base` when the input's schema includes metadata fields
+  // (today: `phase_name`; later: orientation, source paths, custom
+  // tags), then propagated through clone/translate operations and
+  // consumed by output writers.
+  //
+  // For the common phase-name case the convenience pair
+  // `phase_name() / set_phase_name()` routes through `_info` so callers
+  // never have to reach into the json blob directly.
+  [[nodiscard]] rvegen::info const& info() const noexcept { return _info; }
+  [[nodiscard]] rvegen::info& info() noexcept { return _info; }
+  void set_info(rvegen::info i) noexcept { _info = std::move(i); }
+
+  [[nodiscard]] std::string phase_name() const { return _info.phase_name(); }
+  void set_phase_name(std::string name) {
+    _info.set_phase_name(std::move(name));
   }
 
 protected:
-  std::string _phase_name;
+  rvegen::info _info;
   std::unique_ptr<bounding_box_base<value_type>> _bounding_box{};
 };
 
