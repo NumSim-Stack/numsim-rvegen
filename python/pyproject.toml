@@ -7,7 +7,7 @@ name = "rvegen"
 version = "0.1.0"
 description = "RVE (Representative Volume Element) generator for FFT/FEM homogenization — Python bindings"
 readme = "README.md"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
 authors = [
     { name = "Peter Lenz", email = "peterlenz89.pl@gmail.com" },
 ]
