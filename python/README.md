@@ -50,6 +50,19 @@ v = rvegen.VoronoiCell(
 print(v.volume())                # 1.0
 ```
 
+## Tests
+
+A pytest suite under `python/tests/` exercises one method per bound
+shape. After an editable install:
+
+```bash
+pip install pytest
+pytest python/tests/
+```
+
+The CI workflow runs this on every PR (see `.github/workflows/ci.yml`
+once it lands).
+
 ## What's NOT exposed yet
 
 - Distributions (need engine reference + GIL handling)
