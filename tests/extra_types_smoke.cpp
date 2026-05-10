@@ -529,6 +529,17 @@ void test_field_list_optional_field_not_required() {
   REQUIRE(s.contains("optional_field"));
 }
 
+void test_field_list_empty_pack() {
+  // A no-parameter type (e.g. a future void_material with no schema
+  // fields) should produce a valid empty schema and an empty tuple.
+  using empty_fields = rvegen::field_list<>;
+  auto s = empty_fields::schema();
+  rvegen::parameter_handler_t h;
+  auto values = empty_fields::extract(h);
+  static_assert(std::tuple_size_v<decltype(values)> == 0);
+  (void)s;
+}
+
 } // namespace
 
 int main() {
@@ -554,6 +565,7 @@ int main() {
   test_oriented_uniform_concentrated_regime();
   test_field_list_schema_round_trip();
   test_field_list_optional_field_not_required();
+  test_field_list_empty_pack();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
