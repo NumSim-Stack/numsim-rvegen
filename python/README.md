@@ -27,6 +27,15 @@ CMAKE_ARGS="-DCMAKE_CXX_FLAGS=-I/path/to/numsim-core/include" \
   pip install -e .
 ```
 
+### Editable vs. non-editable install
+
+- `pip install -e .` — editable, recommended for **development**.
+  Source edits are picked up without re-installing. Used by the local
+  pytest workflow above.
+- `pip install ./python` — non-editable, matches what users will get
+  from a wheel. **CI uses this** so a regression in the install path
+  itself is caught. Requires re-install after every source edit.
+
 ## Usage
 
 ```python
