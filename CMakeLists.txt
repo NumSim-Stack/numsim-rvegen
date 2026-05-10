@@ -259,3 +259,16 @@ if(RVEGEN_BUILD_DOCS)
     VERBATIM
   )
 endif()
+
+# ---------------------------------------------------------------------------
+# Python bindings (opt-in)
+#
+# `cmake -DRVEGEN_BUILD_PYTHON=ON` enables the pybind11 module under
+# python/. Default OFF because pybind11 is a non-trivial fetch on minimal
+# CI images and most C++-only builds don't need it. The python/ directory
+# also functions standalone via scikit-build-core (`pip install ./python`).
+# ---------------------------------------------------------------------------
+option(RVEGEN_BUILD_PYTHON "Build the pybind11 Python bindings" OFF)
+if(RVEGEN_BUILD_PYTHON)
+  add_subdirectory(python)
+endif()
