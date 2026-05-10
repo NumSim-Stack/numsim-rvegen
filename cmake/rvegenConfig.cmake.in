@@ -18,6 +18,7 @@ include(CMakeFindDependencyMacro)
 
 find_dependency(Boost)
 find_dependency(Eigen3)
+find_dependency(nlohmann_json)
 
 # Optional numsim-core resolution — silent if not yet packaged.
 find_package(numsim-core CONFIG QUIET)

@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(rvegen LANGUAGES CXX)
+project(rvegen
+    VERSION 0.1.0
+    LANGUAGES CXX
+)
 
 include(FetchContent)
 
@@ -81,10 +84,16 @@ endif()
 # tree (vcpkg / conda-forge / `find_package(rvegen)`) get
 # INSTALL_INTERFACE paths so the CMake config relocates correctly.
 #
-# numsim-core is treated as an installed dependency: rvegen's installed
-# CMake config does `find_dependency(numsim-core)` so users don't have to
-# wire it manually. The vendored GTE headers are installed alongside
-# rvegen's own headers.
+# numsim-core: rvegen depends on numsim-core's headers. The installed
+# rvegen CMake config attempts to find numsim-core via a CMake config,
+# but until numsim-core itself ships one (its own packaging is a
+# separate concern), consumers must put numsim-core's include path on
+# the compiler search path themselves. The rvegen install does NOT
+# bundle numsim-core headers — that would be a relicensing concern
+# and goes against single-source-of-truth packaging.
+#
+# The vendored GTE headers ARE installed alongside rvegen's own
+# headers (separately licenced under Boost; bundling is fine).
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
@@ -105,6 +114,7 @@ target_include_directories(rvegen_lib INTERFACE
 target_link_libraries(rvegen_lib INTERFACE
     Eigen3::Eigen
     Boost::headers
+    nlohmann_json::nlohmann_json
 )
 target_compile_features(rvegen_lib INTERFACE cxx_std_23)
 
@@ -246,14 +256,11 @@ install(EXPORT rvegenTargets
 
 include(CMakePackageConfigHelpers)
 
-# Project version: read from cmake/version.cmake or default to 0.1.0.
-# (A CHANGELOG-driven version bump is a separate concern; 0.1.0 is the
-# baseline matching the packaging metadata's placeholder.)
-set(RVEGEN_VERSION 0.1.0)
-
+# Version comes from `project(rvegen VERSION ...)` at the top of this
+# file — single source of truth shared with packaging metadata.
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfigVersion.cmake
-    VERSION ${RVEGEN_VERSION}
+    VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion
 )
 
