@@ -65,7 +65,11 @@ public:
             *distributions.at(handler.template get<std::string>("end_x_dist")),
             *distributions.at(handler.template get<std::string>("end_y_dist")),
             *distributions.at(handler.template get<std::string>("end_z_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {}
+            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+    if (handler.contains("phase_name")) {
+      this->set_phase_name(handler.template get<std::string>("phase_name"));
+    }
+  }
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -90,13 +94,18 @@ public:
     s.template insert<std::string>("radius_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the tube radius">>();
+    s.template insert<std::string>("phase_name")
+        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
     return s;
   }
 
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     std::vector<std::array<value_type, 3>> centerline{
         {{_sx(), _sy(), _sz()}}, {{_ex(), _ey(), _ez()}}};
-    return std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+    auto shape =
+        std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+    this->tag(*shape);
+    return shape;
   }
 
 private:

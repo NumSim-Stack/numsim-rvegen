@@ -33,7 +33,11 @@ public:
             *distributions.at(handler.template get<std::string>("pos_x_dist")),
             *distributions.at(handler.template get<std::string>("pos_y_dist")),
             *distributions.at(handler.template get<std::string>("pos_z_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {}
+            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+    if (handler.contains("phase_name")) {
+      this->set_phase_name(handler.template get<std::string>("phase_name"));
+    }
+  }
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -49,12 +53,16 @@ public:
     s.template insert<std::string>("radius_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the sphere radius">>();
+    s.template insert<std::string>("phase_name")
+        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
     return s;
   }
 
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    return std::make_unique<sphere<value_type>>(_pos_x(), _pos_y(), _pos_z(),
-                                                _radius());
+    auto shape = std::make_unique<sphere<value_type>>(_pos_x(), _pos_y(),
+                                                       _pos_z(), _radius());
+    this->tag(*shape);
+    return shape;
   }
 
 private:

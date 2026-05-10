@@ -2,6 +2,7 @@
 
 #include <array>
 #include <memory>
+#include <string>
 
 #include <numsim-core/static_indexing.h>
 
@@ -39,7 +40,8 @@ public:
   // class's compiler-generated copy ctor calls this one + the GTE base's
   // copy ctor, producing a fully-copied shape with a freshly-cloned bb.
   shape_base(shape_base const& other)
-      : _bounding_box{other._bounding_box ? other._bounding_box->clone()
+      : _phase_name{other._phase_name},
+        _bounding_box{other._bounding_box ? other._bounding_box->clone()
                                           : nullptr} {}
 
   shape_base(shape_base&&) noexcept = default;
@@ -53,6 +55,7 @@ protected:
   // classes invoke these implicitly through their own (public) op=.
   shape_base& operator=(shape_base const& other) {
     if (this != &other) {
+      _phase_name = other._phase_name;
       _bounding_box = other._bounding_box ? other._bounding_box->clone()
                                           : nullptr;
     }
@@ -103,7 +106,22 @@ public:
     return _bounding_box.get();
   }
 
+  // Phase name attached to this shape — empty by default. Set by
+  // shape_input_base when the input's schema includes a `phase_name`
+  // field, then propagated through clone/translate operations and
+  // consumed by per-phase output writers (gmsh Physical groups, voxel
+  // grid integers, DAMASK material.config). The default empty string
+  // means "no phase tag" — writers that don't care about phases
+  // ignore it; writers that do treat empty as "unassigned".
+  [[nodiscard]] std::string const& phase_name() const noexcept {
+    return _phase_name;
+  }
+  void set_phase_name(std::string name) noexcept {
+    _phase_name = std::move(name);
+  }
+
 protected:
+  std::string _phase_name;
   std::unique_ptr<bounding_box_base<value_type>> _bounding_box{};
 };
 
