@@ -19,10 +19,18 @@
 //   Binary STL files start with an 80-byte header that *often*
 //   contains the literal word "solid" — meaning a naive ASCII parser
 //   may walk into a binary file and silently consume garbage tokens.
-//   We sniff the first ~80 bytes: if more than a small fraction look
+//   We sniff the first ~256 bytes: if more than a small fraction look
 //   like non-printable / non-whitespace characters, we refuse with a
 //   clear error rather than producing nonsense. This is heuristic but
 //   is the standard convention.
+//
+//   Caveat: detection requires a SEEKABLE stream (we read the head
+//   then `seekg(0)` back to the start). For non-seekable inputs
+//   (pipes, sockets) the sniff is silently skipped and a binary
+//   payload will fall into the parse-error path instead — still
+//   throws, just with a less helpful message. Consumers piping
+//   in-memory data should wrap it in `std::stringstream`, which is
+//   seekable; `std::ifstream` of a real file is also seekable.
 //
 // Tolerances:
 //   The reader is forgiving — extra whitespace, mixed case keywords,
