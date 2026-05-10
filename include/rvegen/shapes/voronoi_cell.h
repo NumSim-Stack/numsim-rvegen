@@ -28,6 +28,17 @@
 //     centroid.
 //   * Standard `shape_base` overrides + `static_indexing` shape_id.
 //
+// Convexity contract:
+//   The implementation assumes the cell is convex. `is_inside` uses
+//   the half-space test against each face plane, which is correct
+//   only for convex polyhedra. Voronoi cells of *interior* seeds in
+//   a *convex* domain are always convex, so this is the natural
+//   regime. If a future tessellator emits non-convex cells (e.g. at
+//   periodic boundaries or non-convex domains), they need to be
+//   either decomposed into convex sub-cells or wrapped with a
+//   different shape. The constructor does NOT verify convexity —
+//   that's the producer's responsibility.
+//
 // Out of scope here, ships in follow-up PRs against #8:
 //   * `voronoi_polycrystal_generator` — produces N tessellated cells
 //     for a given seed-point distribution. Needs Voro++ or CGAL; pick
@@ -38,6 +49,11 @@
 //     data is heterogeneous; needs careful schema design).
 //   * Precise `collision_details(voronoi_cell, X)` overloads — falls
 //     back to AABB until then.
+//   * Renaming to `convex_polyhedron` — the type is genuinely a
+//     generic convex polyhedron; "voronoi_cell" implies a particular
+//     producer. A rename would happen alongside the tessellator PR
+//     so the rename and the new name's user (the generator) land
+//     together.
 
 #include <algorithm>
 #include <array>
@@ -76,12 +92,14 @@ public:
   // ---- shape_base contract ----------------------------------------------
   [[nodiscard]] T area() const override { return T{0}; }   // 3D shape
 
-  // Volume via signed tetrahedra from the cell centroid. For each face,
-  // form a fan of triangles by tessellating the face polygon with the
-  // first vertex of the face as a fan apex; sum (1/6) · |a · (b × c)|
-  // for each triangle, where a/b/c are vertex offsets from centroid.
-  // Returns the sum without an absolute value at the end — convex
-  // polyhedra with consistent face winding produce a positive sum.
+  // Volume via signed tetrahedra from the cell centroid. For each
+  // face, form a fan of triangles using the face's first vertex as
+  // fan apex; accumulate the SIGNED tet volume `(1/6) · apex · (b ×
+  // d)`. With consistent outward face winding all signed tets have
+  // the same sign, so a single `std::abs` at the end recovers the
+  // positive cell volume. Per-term abs would have summed magnitudes
+  // and silently masked a mis-wound input — the at-end abs lets a
+  // mis-wound mesh expose itself via a small or zero result.
   [[nodiscard]] T volume() const override {
     if (_vertices.empty() || _faces.empty()) return T{0};
     const auto c = _centroid;
@@ -92,14 +110,13 @@ public:
       for (std::size_t i = 1; i + 1 < face.size(); ++i) {
         const vector_type b = _vertices[face[i]] - c;
         const vector_type d = _vertices[face[i + 1]] - c;
-        // Tetrahedron volume = (1/6) |apex · (b × d)|.
         const T cx = b[1] * d[2] - b[2] * d[1];
         const T cy = b[2] * d[0] - b[0] * d[2];
         const T cz = b[0] * d[1] - b[1] * d[0];
-        sum += std::abs(apex[0] * cx + apex[1] * cy + apex[2] * cz);
+        sum += apex[0] * cx + apex[1] * cy + apex[2] * cz;
       }
     }
-    return sum / T{6};
+    return std::abs(sum) / T{6};
   }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {
@@ -177,6 +194,13 @@ private:
   // requiring the centroid to lie on the negative side. The centroid
   // itself is the mean of all vertices — fine for the convex-cell
   // case here.
+  //
+  // If the first three face vertices happen to be collinear, the
+  // (b-a) × (c-a) cross product is zero. We walk the rest of the
+  // face polygon to find a non-degenerate triple before giving up.
+  // A face whose vertices are entirely collinear (i.e. degenerate to
+  // a line) is silently dropped — emitting it would assign a zero
+  // normal, which would always evaluate as inside in `is_inside`.
   void rebuild_face_planes() {
     _centroid = vector_type::Zero();
     if (_vertices.empty()) return;
@@ -185,19 +209,28 @@ private:
 
     _face_planes.clear();
     _face_planes.reserve(_faces.size());
+    constexpr T mag_eps =
+        std::numeric_limits<T>::epsilon() * T{1024};
     for (auto const& face : _faces) {
       if (face.size() < 3) continue;
       const auto& a = _vertices[face[0]];
-      const auto& b = _vertices[face[1]];
-      const auto& c = _vertices[face[2]];
-      const vector_type e1 = b - a;
-      const vector_type e2 = c - a;
       vector_type n;
-      n[0] = e1[1] * e2[2] - e1[2] * e2[1];
-      n[1] = e1[2] * e2[0] - e1[0] * e2[2];
-      n[2] = e1[0] * e2[1] - e1[1] * e2[0];
-      const T mag = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-      if (mag > T{0}) n /= mag;
+      T mag = T{0};
+      // Walk pairs (i, i+1) starting from i=1 looking for a
+      // non-collinear triple.
+      for (std::size_t i = 1; i + 1 < face.size(); ++i) {
+        const auto& b = _vertices[face[i]];
+        const auto& c = _vertices[face[i + 1]];
+        const vector_type e1 = b - a;
+        const vector_type e2 = c - a;
+        n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+        n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+        n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        mag = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (mag > mag_eps) break;
+      }
+      if (mag <= mag_eps) continue;   // entirely collinear face — drop
+      n /= mag;
       // Flip outward if the centroid is on the positive side.
       const T offset0 = n[0] * a[0] + n[1] * a[1] + n[2] * a[2];
       const T centroid_side = n[0] * _centroid[0] + n[1] * _centroid[1] +

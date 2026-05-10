@@ -509,13 +509,18 @@ void test_voronoi_cell_unit_cube_volume_and_inside() {
   verts[6] = V{}; verts[6][0]= 0.5; verts[6][1]= 0.5; verts[6][2]= 0.5;
   verts[7] = V{}; verts[7][0]=-0.5; verts[7][1]= 0.5; verts[7][2]= 0.5;
 
+  // Consistent outward-CCW winding — each face's (v1-v0)×(v2-v0)
+  // cross product points along the outward normal of the cube. This
+  // is what real producers (Voro++, CGAL) emit; the previous fixture
+  // had inconsistent winding which the per-term-abs in volume() was
+  // silently masking.
   std::vector<std::vector<std::size_t>> faces{
-      {0, 1, 2, 3},   // -z
-      {4, 5, 6, 7},   // +z
-      {0, 1, 5, 4},   // -y
-      {3, 2, 6, 7},   // +y
-      {0, 3, 7, 4},   // -x
-      {1, 2, 6, 5}    // +x
+      {0, 3, 2, 1},   // -z (cross → -ẑ)
+      {4, 5, 6, 7},   // +z (cross → +ẑ)
+      {0, 1, 5, 4},   // -y (cross → -ŷ)
+      {3, 7, 6, 2},   // +y (cross → +ŷ)
+      {0, 4, 7, 3},   // -x (cross → -x̂)
+      {1, 2, 6, 5}    // +x (cross → +x̂)
   };
 
   rvegen::voronoi_cell<double> cell{verts, faces};
@@ -527,6 +532,45 @@ void test_voronoi_cell_unit_cube_volume_and_inside() {
   REQUIRE(cell.is_inside({0.0, 0.0, 0.0}));
   REQUIRE(!cell.is_inside({0.6, 0.0, 0.0}));
   REQUIRE(!cell.is_inside({0.51, 0.51, 0.51}));
+}
+
+void test_voronoi_cell_face_with_collinear_first_three_vertices() {
+  // A face whose first three vertices are collinear used to silently
+  // produce a zero face normal — the half-space test then evaluated
+  // every point as 'inside' along that face. Walk-the-polygon logic
+  // in rebuild_face_planes() now finds a non-collinear triple deeper
+  // in the face. Test: square face whose vertex 1 lies on the
+  // segment 0→2 (collinear), but vertex 3 makes the face well-defined.
+  using V = gte::Vector<3, double>;
+  std::vector<V> verts(8);
+  verts[0] = V{}; verts[0][0]=-0.5; verts[0][1]=-0.5; verts[0][2]=-0.5;
+  verts[1] = V{}; verts[1][0]= 0.0; verts[1][1]=-0.5; verts[1][2]=-0.5;  // mid-edge
+  verts[2] = V{}; verts[2][0]= 0.5; verts[2][1]=-0.5; verts[2][2]=-0.5;
+  verts[3] = V{}; verts[3][0]= 0.5; verts[3][1]= 0.5; verts[3][2]=-0.5;
+  verts[4] = V{}; verts[4][0]=-0.5; verts[4][1]= 0.5; verts[4][2]=-0.5;
+  verts[5] = V{}; verts[5][0]=-0.5; verts[5][1]=-0.5; verts[5][2]= 0.5;
+  verts[6] = V{}; verts[6][0]= 0.5; verts[6][1]=-0.5; verts[6][2]= 0.5;
+  verts[7] = V{}; verts[7][0]= 0.5; verts[7][1]= 0.5; verts[7][2]= 0.5;
+  // -z face uses {0, 1, 2, 3, 4} where 0,1,2 are collinear.
+  // The walker should find the (0, 2, 3) triple and use that.
+  std::vector<std::vector<std::size_t>> faces{
+      {0, 1, 2, 3, 4},   // collinear-first-three on -z
+      // Skip the rest of the cube; this test only verifies the face
+      // plane comes out non-zero. Half-space test against the single
+      // face is enough — outside of the face = below = is_inside true
+      // for any point above z = -0.5 (since outward normal is -ẑ,
+      // "side > 0" means "below the face", which would reject points
+      // there). The other faces would normally bound the cell from
+      // the other 5 sides.
+  };
+  rvegen::voronoi_cell<double> cell{verts, faces};
+
+  // The single face's plane was derived from (0, 2, 3) — a real,
+  // non-degenerate triple. A point well below the face must be
+  // rejected; a point above the face is "inside" with respect to
+  // this single half-space.
+  REQUIRE(!cell.is_inside({0.0, 0.0, -1.0}));    // far below the -z face
+  REQUIRE(cell.is_inside({0.0, 0.0, 1.0}));      // above the -z face
 }
 
 void test_voronoi_cell_translate_via_set_middle_point() {
@@ -577,6 +621,7 @@ int main() {
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
   test_voronoi_cell_unit_cube_volume_and_inside();
+  test_voronoi_cell_face_with_collinear_first_three_vertices();
   test_voronoi_cell_translate_via_set_middle_point();
 
   if (failures > 0) {
