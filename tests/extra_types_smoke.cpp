@@ -1058,6 +1058,78 @@ void test_field_list_empty_pack() {
   (void)s;
 }
 
+// Helper: probe a parameter_controller slot for the hint side-bases that
+// `description_label`, `unit_label`, and `min_only`/`range` attach. Mirrors
+// the discovery pattern in tests/schema_audit_test.cpp; pulled inline here
+// so the field_list tests can verify annotations actually landed.
+struct field_list_hint_probe {
+  bool has_description = false;
+  bool has_range = false;
+  bool has_units = false;
+};
+
+template <typename T>
+field_list_hint_probe probe_field(rvegen::parameter_controller_t const& s,
+                                  std::string const& name) {
+  using typed_t = numsim_core::input_parameter<
+      T, std::string, rvegen::parameter_handler_t>;
+  field_list_hint_probe hp;
+  for (auto const& [field_key, param_ptr] : s) {
+    if (field_key != name) continue;
+    auto const* typed = dynamic_cast<typed_t const*>(param_ptr.get());
+    if (!typed) return hp;
+    for (auto const& check : typed->checks()) {
+      if (dynamic_cast<numsim_core::description_hint_base const*>(check.get()))
+        hp.has_description = true;
+      if (dynamic_cast<numsim_core::range_hint_base const*>(check.get()))
+        hp.has_range = true;
+      if (dynamic_cast<numsim_core::units_hint_base const*>(check.get()))
+        hp.has_units = true;
+    }
+    return hp;
+  }
+  return hp;
+}
+
+void test_field_list_carries_description_and_unit_annotations() {
+  // A field with description + unit annotations must have both side-bases
+  // reachable from the controller slot — same hint discovery the
+  // schema_audit_test uses to enforce schema-quality coverage.
+  using fields = rvegen::field_list<
+      rvegen::field<"radius", double, /*Required=*/true,
+                    numsim_core::description_label<"sphere radius">,
+                    numsim_core::unit_label<"m">>>;
+  auto s = fields::schema();
+  REQUIRE(s.contains("radius"));
+  const auto hp = probe_field<double>(s, std::string{"radius"});
+  REQUIRE(hp.has_description);
+  REQUIRE(hp.has_units);
+  REQUIRE(!hp.has_range);
+}
+
+void test_field_list_carries_range_annotation() {
+  // A field with min_only<>/range<> picks up the range_hint_base side-base.
+  using fields = rvegen::field_list<
+      rvegen::field<"n_samples", std::size_t, true,
+                    rvegen::min_only<std::size_t{1}>,
+                    numsim_core::description_label<"number of samples">>>;
+  auto s = fields::schema();
+  const auto hp = probe_field<std::size_t>(s, "n_samples");
+  REQUIRE(hp.has_range);
+  REQUIRE(hp.has_description);
+}
+
+void test_field_list_no_annotations_no_hint_bases() {
+  // A bare field (no annotation pack) must NOT spuriously attach any of
+  // the hint side-bases — annotation transport is opt-in.
+  using fields = rvegen::field_list<rvegen::field<"x", double>>;
+  auto s = fields::schema();
+  const auto hp = probe_field<double>(s, "x");
+  REQUIRE(!hp.has_description);
+  REQUIRE(!hp.has_range);
+  REQUIRE(!hp.has_units);
+}
+
 // ----------------------------------------------------------------------------
 // bingham_distribution: 3D unit-vector sampler. Three regimes verified.
 // ----------------------------------------------------------------------------
@@ -2042,6 +2114,9 @@ int main() {
   test_field_list_schema_round_trip();
   test_field_list_optional_field_not_required();
   test_field_list_empty_pack();
+  test_field_list_carries_description_and_unit_annotations();
+  test_field_list_carries_range_annotation();
+  test_field_list_no_annotations_no_hint_bases();
   test_bingham_uniform_regime_unit_length();
   test_bingham_uniform_kappa_zero_spreads_over_sphere();
   test_bingham_operator_call_matches_sample();
