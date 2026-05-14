@@ -857,6 +857,144 @@ void test_mesh_inclusion_translate_via_set_middle_point() {
   REQUIRE(mesh.is_inside({10.0, 5.0, 0.0}));
 }
 
+// ----------------------------------------------------------------------------
+// ASCII PLY reader (#9 follow-up).
+// ----------------------------------------------------------------------------
+
+// Unit cube as ASCII PLY — 8 vertices, 6 quad faces. The reader
+// must fan-triangulate the quads into 12 triangles to match the STL
+// fixture, so downstream `mesh_inclusion` consumes the same geometry.
+constexpr char const* unit_cube_ply = R"(ply
+format ascii 1.0
+comment unit cube
+element vertex 8
+property float x
+property float y
+property float z
+element face 6
+property list uchar int vertex_indices
+end_header
+-0.5 -0.5 -0.5
+ 0.5 -0.5 -0.5
+ 0.5  0.5 -0.5
+-0.5  0.5 -0.5
+-0.5 -0.5  0.5
+ 0.5 -0.5  0.5
+ 0.5  0.5  0.5
+-0.5  0.5  0.5
+4 0 3 2 1
+4 4 5 6 7
+4 0 1 5 4
+4 1 2 6 5
+4 2 3 7 6
+4 3 0 4 7
+)";
+
+void test_ply_ascii_reader_triangulates_quad_faces() {
+  std::stringstream ss{unit_cube_ply};
+  auto tris = rvegen::read_ply_ascii<double>(ss);
+  // 6 quads × 2 triangles each via fan-triangulation = 12.
+  REQUIRE(tris.size() == 12);
+}
+
+void test_ply_ascii_reader_round_trips_through_mesh_inclusion() {
+  std::stringstream ss{unit_cube_ply};
+  auto tris = rvegen::read_ply_ascii<double>(ss);
+  rvegen::mesh_inclusion<double> mesh{tris};
+  REQUIRE(mesh.is_inside({0.0, 0.0, 0.0}));   // centre
+  REQUIRE(!mesh.is_inside({2.0, 2.0, 2.0}));  // far away
+  REQUIRE(std::abs(mesh.volume() - 1.0) < 1e-12);
+}
+
+void test_ply_ascii_reader_rejects_binary_format() {
+  // A `binary_little_endian` declaration must be refused with a clear
+  // error — phase-1 reader is ASCII only.
+  constexpr char const* bin_ply = R"(ply
+format binary_little_endian 1.0
+element vertex 0
+element face 0
+end_header
+)";
+  std::stringstream ss{bin_ply};
+  bool threw = false;
+  std::string what;
+  try { (void)rvegen::read_ply_ascii<double>(ss); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("binary") != std::string::npos);
+}
+
+void test_ply_ascii_reader_rejects_missing_xyz() {
+  // Vertex element without all of x/y/z is a hard error — the
+  // consumer can't build geometry without them.
+  constexpr char const* bad_ply = R"(ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+element face 0
+property list uchar int vertex_indices
+end_header
+0.0 0.0
+)";
+  std::stringstream ss{bad_ply};
+  bool threw = false;
+  try { (void)rvegen::read_ply_ascii<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_ply_ascii_reader_skips_extra_vertex_properties() {
+  // A vertex with normals tacked on (nx, ny, nz) and a colour byte
+  // (red) — the reader must skip them silently and still extract
+  // x/y/z correctly. Single triangle face validates index lookup.
+  constexpr char const* with_extras = R"(ply
+format ascii 1.0
+element vertex 3
+property float x
+property float y
+property float z
+property float nx
+property float ny
+property float nz
+property uchar red
+element face 1
+property list uchar int vertex_indices
+end_header
+0.0 0.0 0.0 1.0 0.0 0.0 255
+1.0 0.0 0.0 1.0 0.0 0.0 255
+0.0 1.0 0.0 1.0 0.0 0.0 255
+3 0 1 2
+)";
+  std::stringstream ss{with_extras};
+  auto tris = rvegen::read_ply_ascii<double>(ss);
+  REQUIRE(tris.size() == 1);
+  REQUIRE(tris[0].v[1][0] == 1.0);   // (1, 0, 0)
+  REQUIRE(tris[0].v[2][1] == 1.0);   // (0, 1, 0)
+}
+
+void test_ply_ascii_reader_rejects_out_of_range_index() {
+  // Face references a vertex index that doesn't exist — early-catch
+  // it rather than UB at consumer time.
+  constexpr char const* bad_index = R"(ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+element face 1
+property list uchar int vertex_indices
+end_header
+0.0 0.0 0.0
+3 0 1 2
+)";
+  std::stringstream ss{bad_index};
+  bool threw = false;
+  try { (void)rvegen::read_ply_ascii<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 void test_stl_ascii_reader_rejects_binary_stl() {
   // Binary STL: 80-byte header (often containing the literal "solid"),
   // then 4-byte triangle count, then per-triangle 50 bytes. Synthesise
@@ -2234,6 +2372,12 @@ int main() {
   test_voronoi_cell_scale_invariant_collinear_threshold();
   test_voronoi_cell_translate_via_set_middle_point();
   test_stl_ascii_reader_triangle_count();
+  test_ply_ascii_reader_triangulates_quad_faces();
+  test_ply_ascii_reader_round_trips_through_mesh_inclusion();
+  test_ply_ascii_reader_rejects_binary_format();
+  test_ply_ascii_reader_rejects_missing_xyz();
+  test_ply_ascii_reader_skips_extra_vertex_properties();
+  test_ply_ascii_reader_rejects_out_of_range_index();
   test_stl_binary_reader_basic();
   test_stl_binary_reader_short_file_throws();
   test_stl_binary_reader_sanity_cap_throws();
