@@ -25,12 +25,16 @@
 //     (refcount bump only) and applies the sampled position via the
 //     primitive's O(1) offset — no triangle data is copied per shape.
 //
+// Auto-detect ASCII vs binary STL:
+//   The input loads via `read_stl_file()`, which sniffs the file header
+//   and dispatches to either `read_stl_ascii_file` or `read_stl_binary_file`.
+//   Consumers don't need to know which format their STL is in.
+//
 // Out of scope here, ships in follow-up PRs against #9:
 //   * Per-shape rotation distributions (axis-angle or Bingham
 //     orientation). Needs rotation logic in mesh_inclusion (today the
 //     primitive's offset only encodes translation).
 //   * Per-shape uniform scaling. Same primitive-side gap.
-//   * Binary STL reader hookup once it lands.
 
 #include <memory>
 #include <stdexcept>
@@ -60,7 +64,7 @@ public:
                        distribution_base<value_type>& pz)
       : _stl_path{std::move(stl_path)},
         _shared_triangles{std::make_shared<std::vector<triangle_type> const>(
-            read_stl_ascii_file<value_type>(_stl_path))},
+            read_stl_file<value_type>(_stl_path))},
         _px{px}, _py{py}, _pz{pz} {
     // An empty triangle list yields a `mesh_inclusion` whose
     // `is_inside` is always false. The generator's volume_fraction
