@@ -446,6 +446,100 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
   REQUIRE(txt.find("Coherence") == std::string::npos);
 }
 
+// gmsh_geo_writer with a phase_collection emits one Physical Surface /
+// Physical Volume directive per phase, grouping inclusion entity ids.
+void test_gmsh_geo_writer_2d_physical_groups_per_phase() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");                              // id 1
+  phases.add("fibre");                               // id 2
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto a = std::make_unique<rvegen::circle<double>>(0.3, 0.3, 0.1);
+  a->set_phase_name("fibre");
+  shapes.emplace_back(std::move(a));
+  auto b = std::make_unique<rvegen::circle<double>>(0.7, 0.7, 0.1);
+  b->set_phase_name("fibre");
+  shapes.emplace_back(std::move(b));
+  auto c = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.05);
+  shapes.emplace_back(std::move(c));   // untagged — not in any group
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+
+  const auto txt = out.str();
+  // Two fibre disks → entity ids 2 and 3 (entity 1 is the bounding rect,
+  // entity 4 is the untagged circle).
+  REQUIRE(txt.find("Physical Surface(\"fibre\", 2) = {2, 3};") !=
+          std::string::npos);
+  // Untagged shape must NOT appear in any Physical group.
+  REQUIRE(txt.find("Physical Surface(\"matrix\"") == std::string::npos);
+  REQUIRE(txt.find("Physical Volume") == std::string::npos);  // 2D, no volumes
+}
+
+void test_gmsh_geo_writer_3d_physical_groups_per_phase() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");                              // id 1
+  phases.add("particle");                            // id 2
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto s = std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1);
+  s->set_phase_name("particle");
+  shapes.emplace_back(std::move(s));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 1.0});
+
+  const auto txt = out.str();
+  REQUIRE(txt.find("Physical Volume(\"particle\", 2) = {2};") !=
+          std::string::npos);
+  // 3D file emits Volumes, not Surfaces.
+  REQUIRE(txt.find("Physical Surface") == std::string::npos);
+}
+
+void test_gmsh_geo_writer_without_phases_emits_no_physical_groups() {
+  // Without set_phases() the writer behaves exactly as before — no
+  // Physical directives — to keep existing configs byte-compatible.
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto c = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1);
+  c->set_phase_name("fibre");                        // tagged...
+  shapes.emplace_back(std::move(c));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  REQUIRE(writer.phases() == nullptr);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+
+  // ...but without phases attached on the writer, no group is emitted.
+  REQUIRE(out.str().find("Physical") == std::string::npos);
+}
+
+void test_gmsh_geo_writer_phases_unknown_name_throws() {
+  // Inclusion carries a phase_name that the collection does not declare.
+  // gmsh_geo_writer must throw BEFORE any geometry is written, so a
+  // file-backed caller doesn't see a partial .geo on disk.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto c = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1);
+  c->set_phase_name("typo");
+  shapes.emplace_back(std::move(c));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  std::stringstream out;
+  bool threw = false;
+  try { writer.write(out, shapes, {1.0, 1.0, 0.0}); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  // Partial-write guard: nothing should have been emitted before the throw.
+  REQUIRE(out.str().empty());
+}
+
 // ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
@@ -1917,6 +2011,10 @@ int main() {
   test_gmsh_geo_writer_periodic_2d();
   test_gmsh_geo_writer_periodic_3d();
   test_gmsh_geo_writer_non_periodic_unchanged();
+  test_gmsh_geo_writer_2d_physical_groups_per_phase();
+  test_gmsh_geo_writer_3d_physical_groups_per_phase();
+  test_gmsh_geo_writer_without_phases_emits_no_physical_groups();
+  test_gmsh_geo_writer_phases_unknown_name_throws();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
   test_voronoi_cell_unit_cube_volume_and_inside();

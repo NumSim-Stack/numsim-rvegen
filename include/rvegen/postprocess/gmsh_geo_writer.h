@@ -8,9 +8,13 @@
 #include <string>
 #include <utility>
 
+#include <map>
+#include <vector>
+
 #include <numsim-core/input_parameter_controller.h>
 
 #include "post_process_base.h"
+#include "../phase/phase.h"
 #include "../shapes/box.h"
 #include "../shapes/circle.h"
 #include "../shapes/rectangle.h"
@@ -69,6 +73,22 @@ public:
     return _output_path;
   }
 
+  // Attach a phase_collection so each emitted inclusion entity is added
+  // to a gmsh Physical Surface (2D) / Physical Volume (3D) named after
+  // its `phase_name()`. The numeric tag is the collection's `id_of(name)`.
+  // Untagged shapes (empty phase_name) are not added to any Physical
+  // group — the standard gmsh convention is for them to fall into the
+  // matrix domain via Coherence.
+  //
+  // Caller retains ownership; the pointer must outlive the next run() /
+  // write() call. Passing nullptr clears the attachment.
+  void set_phases(phase_collection<value_type> const* phases) noexcept {
+    _phases = phases;
+  }
+  [[nodiscard]] phase_collection<value_type> const* phases() const noexcept {
+    return _phases;
+  }
+
   void run(shape_vector const& shapes,
            std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
@@ -88,6 +108,22 @@ public:
   void write(std::ostream& out,
              shape_vector const& shapes,
              std::array<value_type, 3> const& box) const {
+    // Validate phase tags BEFORE writing anything. If a shape carries a
+    // phase_name not present in the collection, we throw here rather than
+    // mid-emit — which would otherwise leave a partial .geo on disk with
+    // entities but no Physical groups. Untagged shapes (empty name) are
+    // intentionally allowed; they fall into gmsh's default region.
+    if (_phases) {
+      for (auto const& shape : shapes) {
+        const auto name = shape->phase_name();
+        if (!name.empty() && !_phases->contains(name)) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: shape carries phase_name '" + name +
+              "' which is not declared in the attached phase_collection"};
+        }
+      }
+    }
+
     const bool is_3d = box[2] > value_type{0};
     if (is_3d) {
       write_3d(out, shapes, box);
@@ -110,27 +146,34 @@ private:
     out << "Rectangle(1) = {0, 0, 0, "
         << domain_box[0] << ", " << domain_box[1] << ", 0};\n\n";
 
+    // Track (entity_id, phase_name) per emitted inclusion so we can
+    // later group them into gmsh Physical Surface directives.
+    std::vector<std::pair<std::size_t, std::string>> tagged_entities;
     std::size_t entity_id = 2;
     for (auto const& shape : shapes) {
       auto const* raw = shape.get();
+      std::size_t this_id = 0;
       if (auto const* c = dynamic_cast<circle<value_type> const*>(raw); c) {
         // gmsh: Circle(id) = {x, y, z, r}; via Disk surface for filled inclusion.
         out << "Disk(" << entity_id << ") = {"
             << (*c)(0) << ", " << (*c)(1) << ", 0, "
             << c->radius << ", " << c->radius << "};\n";
-        ++entity_id;
+        this_id = entity_id++;
       } else if (auto const* r = dynamic_cast<rectangle<value_type> const*>(raw); r) {
         const auto half_w = r->width()  * value_type{0.5};
         const auto half_h = r->height() * value_type{0.5};
         out << "Rectangle(" << entity_id << ") = {"
             << (*r)(0) - half_w << ", " << (*r)(1) - half_h << ", 0, "
             << r->width() << ", " << r->height() << ", 0};\n";
-        ++entity_id;
+        this_id = entity_id++;
       } else {
         out << "// (unsupported 2D shape skipped)\n";
+        continue;
       }
+      tagged_entities.emplace_back(this_id, shape->phase_name());
     }
     if (_periodic) write_periodic_2d(out, domain_box);
+    if (_phases) write_physical_groups(out, tagged_entities, "Surface");
   }
 
   void write_3d(std::ostream& out,
@@ -141,14 +184,16 @@ private:
         << domain_box[0] << ", " << domain_box[1] << ", " << domain_box[2]
         << "};\n\n";
 
+    std::vector<std::pair<std::size_t, std::string>> tagged_entities;
     std::size_t entity_id = 2;
     for (auto const& shape : shapes) {
       auto const* raw = shape.get();
+      std::size_t this_id = 0;
       if (auto const* s = dynamic_cast<sphere<value_type> const*>(raw); s) {
         out << "Sphere(" << entity_id << ") = {"
             << (*s)(0) << ", " << (*s)(1) << ", " << (*s)(2) << ", "
             << s->radius << "};\n";
-        ++entity_id;
+        this_id = entity_id++;
       } else if (auto const* b = dynamic_cast<box<value_type> const*>(raw); b) {
         const auto hx = b->width()  * value_type{0.5};
         const auto hy = b->height() * value_type{0.5};
@@ -156,12 +201,47 @@ private:
         out << "Box(" << entity_id << ") = {"
             << (*b)(0) - hx << ", " << (*b)(1) - hy << ", " << (*b)(2) - hz << ", "
             << b->width() << ", " << b->height() << ", " << b->depth() << "};\n";
-        ++entity_id;
+        this_id = entity_id++;
       } else {
         out << "// (unsupported 3D shape skipped)\n";
+        continue;
       }
+      tagged_entities.emplace_back(this_id, shape->phase_name());
     }
     if (_periodic) write_periodic_3d(out, domain_box);
+    if (_phases) write_physical_groups(out, tagged_entities, "Volume");
+  }
+
+  // Group emitted inclusion entities by phase_name and emit one gmsh
+  // `Physical Surface(id, "name") = {e1, e2, ...};` (2D) or
+  // `Physical Volume(id, "name") = {e1, e2, ...};` (3D) directive per
+  // phase that appears in the shape list. Untagged shapes (empty
+  // phase_name) are skipped — they fall through to gmsh's default
+  // unassigned region which downstream solvers typically treat as the
+  // matrix.
+  //
+  // `kind` is the gmsh entity kind word ("Surface" for 2D, "Volume" for
+  // 3D) so we can reuse this routine across write_2d/write_3d.
+  void write_physical_groups(
+      std::ostream& out,
+      std::vector<std::pair<std::size_t, std::string>> const& tagged,
+      char const* kind) const {
+    std::map<std::string, std::vector<std::size_t>> by_phase;
+    for (auto const& [id, name] : tagged) {
+      if (name.empty()) continue;
+      by_phase[name].push_back(id);
+    }
+    if (by_phase.empty()) return;
+    out << "\n// Physical groups — one per phase, keyed off shape.phase_name().\n";
+    for (auto const& [name, ids] : by_phase) {
+      const auto pid = _phases->id_of(name);
+      out << "Physical " << kind << "(\"" << name << "\", " << pid << ") = {";
+      for (std::size_t i = 0; i < ids.size(); ++i) {
+        if (i > 0) out << ", ";
+        out << ids[i];
+      }
+      out << "};\n";
+    }
   }
 
   // Emit gmsh's `Periodic Curve` directives pairing the four boundary
@@ -204,6 +284,7 @@ private:
 
   std::string _output_path;
   bool _periodic{false};
+  phase_collection<value_type> const* _phases{nullptr};
 };
 
 } // namespace rvegen
