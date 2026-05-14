@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build, test, install, smoke-consume
+    runs-on: ubuntu-latest
+    # Hard cap: a stuck FetchContent download or pathological test
+    # shouldn't hold a runner for the GitHub default 6h.
+    timeout-minutes: 30
+
+    steps:
+      # rvegen depends on numsim-core via sibling-tree includes
+      # (../../numsim-core/include). We check both repos out so the
+      # checkout layout matches what rvegen's CMakeLists.txt expects.
+      - name: Checkout rvegen
+        uses: actions/checkout@v4
+        with:
+          path: numsim-rvegen/rvegen
+
+      # numsim-core is pinned to a known-good SHA so a breaking change
+      # on numsim-core's main doesn't cascade into every rvegen PR.
+      # Bump deliberately — see CONTRIBUTING.md for the procedure.
+      - name: Checkout numsim-core (sibling, pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: NumSim-Stack/numsim-core
+          ref: a56bc466f8cfbbdc79936f140166fb60fcaabb90
+          path: numsim-core
+
+      # GCC 14 for `<print>` (numsim-core needs C++23 lib support).
+      # libboost-dev for `Boost::headers` (collision_dispatcher's
+      # boost::container::flat_map). nlohmann-json3-dev for
+      # `nlohmann_json::nlohmann_json` — without it the build falls
+      # back to FetchContent, but the FetchContent'd target isn't in
+      # any export set, so `install(EXPORT rvegenTargets)` fails.
+      # libeigen3-dev keeps Eigen3 on the same find_package-only path.
+      - name: Install toolchain + system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 ninja-build \
+            libboost-dev nlohmann-json3-dev libeigen3-dev
+
+      - name: Configure rvegen
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CXX: g++-14
+          CC: gcc-14
+        run: cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build rvegen
+        working-directory: numsim-rvegen/rvegen
+        run: cmake --build build --parallel
+
+      - name: Test rvegen
+        working-directory: numsim-rvegen/rvegen
+        run: ctest --test-dir build --output-on-failure
+
+      # Install + smoke-consume: verifies the CMake export works
+      # end-to-end. A separate consumer project does
+      # find_package(rvegen CONFIG REQUIRED) and links via
+      # rvegen::rvegen, then compiles a minimal program.
+      - name: Install rvegen to a temp prefix
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          cmake --install build --prefix "$GITHUB_WORKSPACE/install"
+
+      - name: Configure smoke consumer
+        working-directory: numsim-rvegen/rvegen/tests/install_smoke
+        env:
+          CXX: g++-14
+        run: |
+          cmake -G Ninja -B build \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/install" \
+            -DCMAKE_CXX_FLAGS="-I$GITHUB_WORKSPACE/numsim-core/include"
+
+      - name: Build smoke consumer
+        working-directory: numsim-rvegen/rvegen/tests/install_smoke
+        run: cmake --build build
+
+      - name: Run smoke consumer
+        working-directory: numsim-rvegen/rvegen/tests/install_smoke
+        run: ./build/install_smoke
+
+      # Python bindings test — guarded on the existence of the test
+      # file so this workflow degrades gracefully on branches that
+      # haven't yet picked up the pytest fixture (PR #28). Once that
+      # PR lands on main the guard always passes.
+      - name: Set up Python
+        if: hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build & test Python bindings
+        if: hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CXX: g++-14
+          # scikit-build-core forwards CMAKE_ARGS through to the
+          # rvegen CMake configure during `pip install`. We reuse the
+          # same numsim-core include trick as the smoke consumer, plus
+          # `-DBUILD_TESTING=OFF` to skip re-configuring rvegen's ctest
+          # binaries (already built + tested above) — saves ~30s of
+          # redundant configure work in CI.
+          CMAKE_ARGS: "-DCMAKE_CXX_FLAGS=-I${{ github.workspace }}/numsim-core/include -DBUILD_TESTING=OFF"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install -v ./python
+          pytest python/tests/
