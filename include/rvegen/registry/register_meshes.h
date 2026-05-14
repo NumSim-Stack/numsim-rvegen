@@ -3,12 +3,14 @@
 #include "../shapes/box.h"
 #include "../shapes/circle.h"
 #include "../shapes/ellipse.h"
+#include "../shapes/polyline_tube.h"
 #include "../shapes/rectangle.h"
 #include "../shapes/sphere.h"
 #include "../visualization/box_mesh.h"
 #include "../visualization/circle_mesh.h"
 #include "../visualization/ellipse_mesh.h"
 #include "../visualization/mesh_dispatcher.h"
+#include "../visualization/polyline_tube_mesh.h"
 #include "../visualization/rectangle_mesh.h"
 #include "../visualization/sphere_mesh.h"
 
@@ -29,6 +31,7 @@ inline void register_all_meshes() {
   d.template register_shape<circle<T>>();
   d.template register_shape<rectangle<T>>();
   d.template register_shape<ellipse<T>>();
+  d.template register_shape<polyline_tube<T>>();
 }
 
 } // namespace rvegen

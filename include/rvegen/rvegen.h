@@ -73,6 +73,7 @@
 #include "visualization/box_mesh.h"
 #include "visualization/circle_mesh.h"
 #include "visualization/ellipse_mesh.h"
+#include "visualization/polyline_tube_mesh.h"
 #include "visualization/rectangle_mesh.h"
 #include "visualization/sphere_mesh.h"
 
