@@ -1309,6 +1309,91 @@ void test_mesh_inclusion_input_missing_file_throws() {
   REQUIRE(threw);
 }
 
+// mesh_inclusion_input now auto-detects binary vs ASCII STL via
+// read_stl_file. Confirm a binary blob round-trips through the input
+// without callers needing to know which format they have.
+void test_mesh_inclusion_input_accepts_binary_stl() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  // Convert the existing ASCII unit-cube fixture to a binary STL blob so
+  // the test exercises a closed mesh (a 1-triangle blob can't be
+  // probed with is_inside meaningfully).
+  std::vector<gte::Triangle3<double>> ascii_tris;
+  {
+    std::stringstream ss{unit_cube_stl};
+    ascii_tris = rvegen::read_stl_ascii<double>(ss);
+  }
+  REQUIRE(ascii_tris.size() == 12);
+
+  auto write_le_u32 = [](std::ostream& o, std::uint32_t v) {
+    o.put(static_cast<char>(v & 0xff));
+    o.put(static_cast<char>((v >> 8)  & 0xff));
+    o.put(static_cast<char>((v >> 16) & 0xff));
+    o.put(static_cast<char>((v >> 24) & 0xff));
+  };
+  auto write_le_f32 = [](std::ostream& o, float f) {
+    std::uint32_t bits;
+    std::memcpy(&bits, &f, sizeof(bits));
+    o.put(static_cast<char>(bits & 0xff));
+    o.put(static_cast<char>((bits >> 8)  & 0xff));
+    o.put(static_cast<char>((bits >> 16) & 0xff));
+    o.put(static_cast<char>((bits >> 24) & 0xff));
+  };
+
+  const std::string tmp_path = "/tmp/rvegen_test_binary_via_input.stl";
+  {
+    std::ofstream out{tmp_path, std::ios::binary};
+    for (int i = 0; i < 80; ++i) out.put('\0');     // header
+    write_le_u32(out, static_cast<std::uint32_t>(ascii_tris.size()));
+    for (auto const& t : ascii_tris) {
+      // Normal (0,0,1) is fine — the reader skips it (computed from
+      // vertex order anyway).
+      for (float n : {0.f, 0.f, 1.f}) write_le_f32(out, n);
+      for (int v = 0; v < 3; ++v) {
+        for (int c = 0; c < 3; ++c) {
+          write_le_f32(out, static_cast<float>(t.v[v][c]));
+        }
+      }
+      out.put('\0'); out.put('\0');                  // attribute bytes
+    }
+  }
+
+  std::mt19937 engine{23};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec_json = std::string{R"({
+    "type": "mesh_inclusion_input",
+    "stl_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })";
+  const auto input_spec = nlohmann::json::parse(input_spec_json);
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  REQUIRE(input != nullptr);
+
+  // Cross-check the full pipeline: new_shape() must yield a placed
+  // inclusion whose is_inside() actually reflects the cube geometry
+  // (origin inside, far point outside). Catches both the binary-parse
+  // path and the input → mesh_inclusion handoff.
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  REQUIRE(shape->is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(!shape->is_inside({2.0, 2.0, 2.0}));
+
+  std::remove(tmp_path.c_str());
+}
+
 void test_mesh_inclusion_input_empty_stl_throws() {
   // An STL file with zero triangles would yield a `mesh_inclusion`
   // whose `is_inside` is always false. The input ctor must refuse it
@@ -1847,6 +1932,7 @@ int main() {
   test_stl_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_input_via_registry();
   test_mesh_inclusion_input_missing_file_throws();
+  test_mesh_inclusion_input_accepts_binary_stl();
   test_mesh_inclusion_input_empty_stl_throws();
   test_mesh_inclusion_inside_outside_cube();
   test_mesh_inclusion_volume_unit_cube();
