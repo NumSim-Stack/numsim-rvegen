@@ -85,6 +85,7 @@
 
 // io — STL / PLY mesh readers
 #include "io/stl_reader.h"
+#include "io/ply_reader.h"
 // schema scaffolding — collapse name/type duplication into one declaration
 #include "schema/field_list.h"
 
