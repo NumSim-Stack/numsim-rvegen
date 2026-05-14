@@ -519,7 +519,8 @@ void test_gmsh_geo_writer_without_phases_emits_no_physical_groups() {
 
 void test_gmsh_geo_writer_phases_unknown_name_throws() {
   // Inclusion carries a phase_name that the collection does not declare.
-  // gmsh_geo_writer routes through phase_collection::id_of, which throws.
+  // gmsh_geo_writer must throw BEFORE any geometry is written, so a
+  // file-backed caller doesn't see a partial .geo on disk.
   rvegen::phase_collection<double> phases;
   phases.add("matrix");
 
@@ -535,6 +536,8 @@ void test_gmsh_geo_writer_phases_unknown_name_throws() {
   try { writer.write(out, shapes, {1.0, 1.0, 0.0}); }
   catch (std::runtime_error const&) { threw = true; }
   REQUIRE(threw);
+  // Partial-write guard: nothing should have been emitted before the throw.
+  REQUIRE(out.str().empty());
 }
 
 // ----------------------------------------------------------------------------

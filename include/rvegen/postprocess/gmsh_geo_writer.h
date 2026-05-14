@@ -108,6 +108,22 @@ public:
   void write(std::ostream& out,
              shape_vector const& shapes,
              std::array<value_type, 3> const& box) const {
+    // Validate phase tags BEFORE writing anything. If a shape carries a
+    // phase_name not present in the collection, we throw here rather than
+    // mid-emit — which would otherwise leave a partial .geo on disk with
+    // entities but no Physical groups. Untagged shapes (empty name) are
+    // intentionally allowed; they fall into gmsh's default region.
+    if (_phases) {
+      for (auto const& shape : shapes) {
+        const auto name = shape->phase_name();
+        if (!name.empty() && !_phases->contains(name)) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: shape carries phase_name '" + name +
+              "' which is not declared in the attached phase_collection"};
+        }
+      }
+    }
+
     const bool is_3d = box[2] > value_type{0};
     if (is_3d) {
       write_3d(out, shapes, box);
