@@ -100,6 +100,7 @@
 #include "inputs/ellipse_input.h"
 #include "inputs/polyline_tube_directional_input.h"
 #include "inputs/polyline_tube_input.h"
+#include "inputs/mesh_inclusion_input.h"
 
 // termination
 #include "termination/termination_base.h"

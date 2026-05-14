@@ -5,7 +5,9 @@
 // These types are also covered indirectly via the CLI examples; this file
 // gives them direct unit-style coverage so failures point at one piece.
 
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -1228,6 +1230,127 @@ endsolid
   REQUIRE(what.find("byte") != std::string::npos);
 }
 
+void test_mesh_inclusion_input_via_registry() {
+  // Drop the unit-cube STL fixture into a temp file, build a
+  // mesh_inclusion_input via the JSON registry path, and confirm
+  // new_shape() produces a translated mesh_inclusion.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  const std::string tmp_path = "/tmp/rvegen_test_unit_cube.stl";
+  {
+    std::ofstream out{tmp_path};
+    out << unit_cube_stl;
+  }
+
+  std::mt19937 engine{17};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "px": {"type": "constant", "value":  5.0},
+    "py": {"type": "constant", "value":  3.0},
+    "pz": {"type": "constant", "value": -2.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+
+  const auto input_spec_json = std::string{R"({
+    "type": "mesh_inclusion_input",
+    "stl_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "px",
+    "position_y_dist": "py",
+    "position_z_dist": "pz"
+  })";
+  const auto input_spec = nlohmann::json::parse(input_spec_json);
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  REQUIRE(input != nullptr);
+
+  auto shape = input->new_shape();
+  auto* mesh = dynamic_cast<rvegen::mesh_inclusion<double>*>(shape.get());
+  REQUIRE(mesh != nullptr);
+  REQUIRE(mesh->triangle_count() == 12);
+  // Translated to (5, 3, -2): origin should be outside, the new centre inside.
+  REQUIRE(!mesh->is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(mesh->is_inside({5.0, 3.0, -2.0}));
+
+  std::remove(tmp_path.c_str());
+}
+
+void test_mesh_inclusion_input_missing_file_throws() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{18};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "mesh_inclusion_input",
+    "stl_path": "/tmp/rvegen_does_not_exist_xyzzy.stl",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })");
+  bool threw = false;
+  try {
+    auto input = rvegen::build_from_json(
+        rvegen::input_registry_t<>::instance(), input_spec, dists);
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mesh_inclusion_input_empty_stl_throws() {
+  // An STL file with zero triangles would yield a `mesh_inclusion`
+  // whose `is_inside` is always false. The input ctor must refuse it
+  // up front rather than letting the generator's volume-fraction
+  // termination loop forever.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  const std::string tmp_path = "/tmp/rvegen_test_empty.stl";
+  {
+    std::ofstream out{tmp_path};
+    out << "solid empty\nendsolid empty\n";
+  }
+
+  std::mt19937 engine{19};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec_json = std::string{R"({
+    "type": "mesh_inclusion_input",
+    "stl_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })";
+  const auto input_spec = nlohmann::json::parse(input_spec_json);
+  bool threw = false;
+  try {
+    auto input = rvegen::build_from_json(
+        rvegen::input_registry_t<>::instance(), input_spec, dists);
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  std::remove(tmp_path.c_str());
+}
+
 void test_load_phases_from_json_rejects_non_array() {
   bool threw = false;
   try {
@@ -1300,6 +1423,9 @@ int main() {
   test_stl_ascii_reader_triangle_count();
   test_stl_ascii_reader_rejects_binary_stl();
   test_stl_ascii_reader_parse_error_includes_position();
+  test_mesh_inclusion_input_via_registry();
+  test_mesh_inclusion_input_missing_file_throws();
+  test_mesh_inclusion_input_empty_stl_throws();
   test_mesh_inclusion_inside_outside_cube();
   test_mesh_inclusion_volume_unit_cube();
   test_mesh_inclusion_translate_via_set_middle_point();
