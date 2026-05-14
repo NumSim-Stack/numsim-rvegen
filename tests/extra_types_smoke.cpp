@@ -1672,24 +1672,77 @@ void test_voxel_writer_emits_phase_ids_from_phase_collection() {
     shapes.push_back(std::move(untagged));
   }
 
-  rvegen::voxel_writer<double> w{32, 32, 1};
+  constexpr std::size_t N = 32;
+  rvegen::voxel_writer<double> w{N, N, 1};
   w.set_phases(&phases);
 
   const auto grid = w.sample(shapes, std::array<double, 3>{1.0, 1.0, 0.0});
 
   std::size_t n_fibre = 0;
-  std::size_t n_zero = 0;
   bool any_other = false;
   for (auto v : grid) {
-    if (v == 0) ++n_zero;
-    else if (v == fibre_id) ++n_fibre;
-    else any_other = true;
+    if (v == 0 || v == fibre_id) {
+      if (v == fibre_id) ++n_fibre;
+    } else {
+      any_other = true;
+    }
   }
   REQUIRE(matrix_id == 1);
   REQUIRE(fibre_id  == 2);
   REQUIRE(!any_other);     // never the untagged circle's shape index
   REQUIRE(n_fibre > 0);    // tagged circle does contribute voxels
-  REQUIRE(n_zero  > 0);    // both the background and the untagged circle
+
+  // Sample at known voxel coordinates inside each shape to pin down the
+  // mapping unambiguously. The all-zero background satisfies any loose
+  // "n_zero > 0" check on its own, so we instead probe specific voxels.
+  const auto voxel_at = [&](std::size_t i, std::size_t j) {
+    return grid[j * N + i];
+  };
+  // Tagged circle is at (0.25, 0.25) → voxel (8, 8).
+  REQUIRE(voxel_at(8, 8) == fibre_id);
+  // Untagged circle is at (0.75, 0.75) → voxel (24, 24) — must stay at 0
+  // even though the voxel is inside the shape.
+  REQUIRE(voxel_at(24, 24) == 0);
+}
+
+void test_vtk_legacy_writer_emits_phase_ids_from_phase_collection() {
+  // Same scheme as voxel_writer: a phase_collection attached via
+  // set_phases() makes the emitted SCALARS field carry real phase ids
+  // instead of 1-based shape indices.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");                              // id 1
+  const auto fibre_id = phases.add("fibre").id;      // id 2
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto fibre = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2);
+  fibre->set_phase_name("fibre");
+  shapes.push_back(std::move(fibre));
+
+  constexpr std::size_t N = 16;
+  rvegen::vtk_legacy_writer<double> w{N, N, 1};
+  REQUIRE(w.phases() == nullptr);   // legacy default
+  w.set_phases(&phases);
+  REQUIRE(w.phases() == &phases);
+
+  std::stringstream out;
+  w.write(out, shapes, std::array<double, 3>{1.0, 1.0, 0.0});
+  const auto text = out.str();
+
+  // VTK header still announces SCALARS phase int 1 (writer doesn't gain
+  // human-readable phase metadata — ParaView only consumes the binary
+  // field). The body, though, must carry the fibre id, not shape index 1.
+  REQUIRE(text.find("SCALARS phase int 1") != std::string::npos);
+  // Center voxel (8, 8) for a centered radius-0.2 circle in a 16x16 grid
+  // is inside the fibre and must read as `fibre_id` (== 2).
+  REQUIRE(text.find('\n' + std::to_string(fibre_id) + '\n') !=
+          std::string::npos);
+  // And the legacy "1" alone must NOT appear in the body (no shape would
+  // map to it under the new scheme). A targeted check: ensure no line
+  // reading just "1" — easier to verify by scanning the post-header tail.
+  const auto header_end = text.find("LOOKUP_TABLE default\n");
+  REQUIRE(header_end != std::string::npos);
+  const auto body = text.substr(header_end);
+  REQUIRE(body.find("\n1\n") == std::string::npos);
 }
 
 void test_voxel_writer_unknown_phase_name_throws() {
@@ -1830,6 +1883,7 @@ int main() {
   test_load_phases_from_json_rejects_missing_name();
   test_load_phases_from_json_rejects_non_object_material();
   test_voxel_writer_emits_phase_ids_from_phase_collection();
+  test_vtk_legacy_writer_emits_phase_ids_from_phase_collection();
   test_voxel_writer_unknown_phase_name_throws();
   test_voxel_writer_without_phases_keeps_shape_index_mode();
   test_voxel_writer_header_lists_phase_names_when_attached();

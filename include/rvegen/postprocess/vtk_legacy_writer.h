@@ -11,6 +11,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "post_process_base.h"
+#include "../phase/phase.h"
 #include "../types.h"
 #include "voxel_grid.h"
 
@@ -72,6 +73,18 @@ public:
     return _output_path;
   }
 
+  // Same phase-collection plumbing as voxel_writer: when attached, the
+  // emitted `phase` scalar is the real phase id (matrix=0 / untagged,
+  // 1..N from `phase_collection`) instead of the legacy 1-based shape
+  // index. Caller retains ownership; pointer must outlive the next
+  // run()/write() call. Pass nullptr to clear.
+  void set_phases(phase_collection<value_type> const* phases) noexcept {
+    _phases = phases;
+  }
+  [[nodiscard]] phase_collection<value_type> const* phases() const noexcept {
+    return _phases;
+  }
+
   void run(shape_vector const& shapes,
            std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
@@ -90,7 +103,9 @@ public:
   void write(std::ostream& out,
              shape_vector const& shapes,
              std::array<value_type, 3> const& domain_box) const {
-    const auto grid = sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz);
+    const auto grid = _phases
+        ? sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz, *_phases)
+        : sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz);
     const std::size_t nz_eff = effective_nz(domain_box, _nz);
 
     const auto dx = domain_box[0] / static_cast<value_type>(_nx);
@@ -124,6 +139,7 @@ private:
   std::size_t _ny{32};
   std::size_t _nz{32};
   std::string _output_path{};
+  phase_collection<value_type> const* _phases{nullptr};
 };
 
 } // namespace rvegen
