@@ -119,7 +119,12 @@ public:
     const auto grid = sample(shapes, domain_box);
     const std::size_t nz_eff = effective_nz(domain_box, _nz);
 
-    out << "# rvegen voxel grid\n"
+    // File format convention: any number of `#`-prefixed comment lines
+    // (variable count — depends on whether phases are attached), then a
+    // flat sequence of integer voxel values. Parsers MUST skip all
+    // leading `#` lines rather than counting fixed offsets, because the
+    // count changes when `set_phases()` is used.
+    out << "# rvegen voxel grid v2\n"
         << "# nx ny nz: " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'
         << "# Lx Ly Lz: " << domain_box[0] << ' ' << domain_box[1] << ' '
         << domain_box[2] << '\n';
@@ -129,7 +134,7 @@ public:
         out << "# phase " << p->id << " = " << p->name << '\n';
       }
     } else {
-      out << "# 0 = matrix; 1..N = inclusion index (insertion order)\n";
+      out << "# id scheme: 1-based shape index (0 = matrix)\n";
     }
 
     for (std::size_t k = 0; k < nz_eff; ++k) {
