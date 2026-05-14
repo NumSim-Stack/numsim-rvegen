@@ -44,7 +44,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "../distributions/distribution_base.h"
-#include "../io/stl_reader.h"
+#include "../io/mesh_reader.h"
 #include "../shapes/mesh_inclusion.h"
 #include "../types.h"
 #include "circle_input.h"   // distribution_map_t alias
@@ -64,7 +64,7 @@ public:
                        distribution_base<value_type>& pz)
       : _stl_path{std::move(stl_path)},
         _shared_triangles{std::make_shared<std::vector<triangle_type> const>(
-            read_stl_file<value_type>(_stl_path))},
+            read_mesh_file<value_type>(_stl_path))},
         _px{px}, _py{py}, _pz{pz} {
     // An empty triangle list yields a `mesh_inclusion` whose
     // `is_inside` is always false. The generator's volume_fraction
@@ -72,7 +72,7 @@ public:
     // until `max_attempts` (silent timeout) — fail fast instead.
     if (!_shared_triangles || _shared_triangles->empty()) {
       throw std::runtime_error{
-          "mesh_inclusion_input: STL file '" + _stl_path +
+          "mesh_inclusion_input: mesh file '" + _stl_path +
           "' contained no triangles; refusing to construct an "
           "always-empty inclusion."};
     }
@@ -90,7 +90,7 @@ public:
     parameter_controller_t s;
     s.template insert<std::string>("stl_path")
         .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"path to an STL file describing the mesh inclusion; ASCII or binary, format auto-detected from header (read once at input construction)">>();
+        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII) file describing the mesh inclusion; format dispatched by extension (read once at input construction)">>();
     s.template insert<std::string>("position_x_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre x-coordinate">>();
