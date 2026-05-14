@@ -13,6 +13,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "post_process_base.h"
+#include "../phase/phase.h"
 #include "../types.h"
 #include "voxel_grid.h"
 
@@ -84,6 +85,18 @@ public:
     return _output_path;
   }
 
+  // Attach a phase_collection so the writer emits real phase ids (matrix
+  // = 0, fibre = 1, ...) keyed off each shape's `phase_name()` instead of
+  // the 1-based shape index. Caller retains ownership; the pointer must
+  // outlive the writer's next `run()` / `write()` / `sample()` call.
+  // Passing nullptr clears the attachment and restores shape-index mode.
+  void set_phases(phase_collection<value_type> const* phases) noexcept {
+    _phases = phases;
+  }
+  [[nodiscard]] phase_collection<value_type> const* phases() const noexcept {
+    return _phases;
+  }
+
   void run(shape_vector const& shapes,
            std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
@@ -109,8 +122,15 @@ public:
     out << "# rvegen voxel grid\n"
         << "# nx ny nz: " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'
         << "# Lx Ly Lz: " << domain_box[0] << ' ' << domain_box[1] << ' '
-        << domain_box[2] << '\n'
-        << "# 0 = matrix; 1..N = inclusion index (insertion order)\n";
+        << domain_box[2] << '\n';
+    if (_phases) {
+      out << "# id scheme: phase ids from phase_collection (0 = matrix / untagged)\n";
+      for (auto const* p : _phases->ordered()) {
+        out << "# phase " << p->id << " = " << p->name << '\n';
+      }
+    } else {
+      out << "# 0 = matrix; 1..N = inclusion index (insertion order)\n";
+    }
 
     for (std::size_t k = 0; k < nz_eff; ++k) {
       for (std::size_t j = 0; j < _ny; ++j) {
@@ -126,6 +146,9 @@ public:
   [[nodiscard]] std::vector<phase_id>
   sample(shape_vector const& shapes,
          std::array<value_type, 3> const& domain_box) const {
+    if (_phases) {
+      return sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz, *_phases);
+    }
     return sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz);
   }
 
@@ -134,6 +157,7 @@ private:
   std::size_t _ny{32};
   std::size_t _nz{32};
   std::string _output_path{};
+  phase_collection<value_type> const* _phases{nullptr};
 };
 
 } // namespace rvegen

@@ -1647,6 +1647,117 @@ void test_stl_auto_detect_dispatches_correctly() {
   }
 }
 
+// ----------------------------------------------------------------------------
+// voxel_writer + phase_collection: voxels emit phase ids (matrix=0, fibre=1,
+// ...) keyed off each shape's `phase_name`, instead of 1-based shape index.
+// ----------------------------------------------------------------------------
+void test_voxel_writer_emits_phase_ids_from_phase_collection() {
+  // Two phases, two shapes — one tagged "fibre", one untagged. The
+  // tagged shape's voxels carry the fibre id; untagged voxels (including
+  // the background and the second circle) stay at 0 (matrix sentinel).
+  rvegen::phase_collection<double> phases;
+  const auto matrix_id = phases.add("matrix").id;   // id 1
+  const auto fibre_id  = phases.add("fibre").id;    // id 2
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  {
+    auto fibre = std::make_unique<rvegen::circle<double>>(0.25, 0.25, 0.15);
+    fibre->set_phase_name("fibre");
+    shapes.push_back(std::move(fibre));
+  }
+  {
+    // No phase_name set — voxels inside this shape should stay at 0
+    // (the matrix / untagged sentinel) rather than collide with fibre.
+    auto untagged = std::make_unique<rvegen::circle<double>>(0.75, 0.75, 0.15);
+    shapes.push_back(std::move(untagged));
+  }
+
+  rvegen::voxel_writer<double> w{32, 32, 1};
+  w.set_phases(&phases);
+
+  const auto grid = w.sample(shapes, std::array<double, 3>{1.0, 1.0, 0.0});
+
+  std::size_t n_fibre = 0;
+  std::size_t n_zero = 0;
+  bool any_other = false;
+  for (auto v : grid) {
+    if (v == 0) ++n_zero;
+    else if (v == fibre_id) ++n_fibre;
+    else any_other = true;
+  }
+  REQUIRE(matrix_id == 1);
+  REQUIRE(fibre_id  == 2);
+  REQUIRE(!any_other);     // never the untagged circle's shape index
+  REQUIRE(n_fibre > 0);    // tagged circle does contribute voxels
+  REQUIRE(n_zero  > 0);    // both the background and the untagged circle
+}
+
+void test_voxel_writer_unknown_phase_name_throws() {
+  // Shape carries a phase_name that the collection does not declare —
+  // the writer must throw rather than silently dropping voxels to 0.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto fibre = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2);
+  fibre->set_phase_name("typo_fibre");
+  shapes.push_back(std::move(fibre));
+
+  rvegen::voxel_writer<double> w{16, 16, 1};
+  w.set_phases(&phases);
+
+  bool threw = false;
+  try {
+    (void)w.sample(shapes, std::array<double, 3>{1.0, 1.0, 0.0});
+  } catch (std::runtime_error const&) {
+    threw = true;
+  }
+  REQUIRE(threw);
+}
+
+void test_voxel_writer_without_phases_keeps_shape_index_mode() {
+  // Without set_phases, the writer falls back to the legacy 1-based
+  // shape-index scheme — vital to keep existing single-phase smoke
+  // tests green and downstream consumers untouched.
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  shapes.push_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2));
+
+  rvegen::voxel_writer<double> w{16, 16, 1};
+  REQUIRE(w.phases() == nullptr);
+
+  const auto grid = w.sample(shapes, std::array<double, 3>{1.0, 1.0, 0.0});
+  bool saw_one = false;
+  for (auto v : grid) {
+    REQUIRE(v == 0 || v == 1);
+    if (v == 1) saw_one = true;
+  }
+  REQUIRE(saw_one);
+}
+
+void test_voxel_writer_header_lists_phase_names_when_attached() {
+  // When a phase_collection is attached, the writer's header includes a
+  // `# phase <id> = <name>` line per phase so downstream tools can map
+  // IDs back to names without needing the JSON config.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("fibre");
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto fibre = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.15);
+  fibre->set_phase_name("fibre");
+  shapes.push_back(std::move(fibre));
+
+  rvegen::voxel_writer<double> w{8, 8, 1};
+  w.set_phases(&phases);
+
+  std::stringstream out;
+  w.write(out, shapes, std::array<double, 3>{1.0, 1.0, 0.0});
+  const auto text = out.str();
+  REQUIRE(text.find("# phase 1 = matrix") != std::string::npos);
+  REQUIRE(text.find("# phase 2 = fibre")  != std::string::npos);
+  REQUIRE(text.find("phase ids from phase_collection") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -1718,6 +1829,10 @@ int main() {
   test_load_phases_from_json_rejects_non_array();
   test_load_phases_from_json_rejects_missing_name();
   test_load_phases_from_json_rejects_non_object_material();
+  test_voxel_writer_emits_phase_ids_from_phase_collection();
+  test_voxel_writer_unknown_phase_name_throws();
+  test_voxel_writer_without_phases_keeps_shape_index_mode();
+  test_voxel_writer_header_lists_phase_names_when_attached();
 
   if (failures > 0) {
     std::cerr << failures << " extra-types smoke failure(s)\n";
