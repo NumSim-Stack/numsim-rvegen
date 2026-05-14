@@ -26,20 +26,26 @@
 //   * Standalone unit tests that exercise both, with no migration of
 //     existing types.
 //
+// Phase 2 (this PR): per-field annotations. `field` now accepts a
+// trailing pack of annotation types that are applied to the schema
+// slot via `slot.add<A>()` — exactly the same set the hand-written
+// `parameters()` declarations use today. Typical examples:
+//   * `numsim_core::description_label<"...">`
+//   * `numsim_core::unit_label<"...">`
+//   * `min_only<X>` / `max_only<X>` / `range<X, Y>`
+//
+// `is_required` is still expressed via the boolean `Required` template
+// parameter (the canonical way to opt in to required-ness in rvegen);
+// the annotation pack carries everything else.
+//
 // Out of scope here, ships in follow-up PRs against #1:
-//   * Per-field annotations: `description_label<"...">`, `unit_label<"...">`,
-//     `range<Min, Max>`, `min_only<X>` / `max_only<X>`. The current
-//     scaffolding only carries name + type + required-ness; richer
-//     annotations are needed before existing types (which all carry
-//     descriptions and many carry units / ranges) can migrate.
 //   * Migration of registered types one-by-one — circle, sphere,
 //     rectangle, etc. Each migration is a self-contained PR that
 //     verifies its `schema()` output matches the pre-migration schema.
-//   * `make_from_tuple<Derived>(extract(handler))` ergonomic helper
-//     for ctors. Trivial once annotations are sorted.
 //   * Default values for `Required = false` fields. Today an optional
-//     field still throws on missing key in `extract`; richer
-//     annotations will let it return a default instead.
+//     field still throws on missing key in `extract`; a separate
+//     `field_with_default<...>` or `default_value<...>` annotation
+//     will land in a follow-up.
 
 #include <array>
 #include <cstddef>
@@ -56,20 +62,33 @@ namespace rvegen {
 // One field declaration. `Name` is a compile-time string (NTTP via
 // numsim_core::fixed_string), `T` is the value type, `Required`
 // determines whether the field is added with `is_required` in the
-// emitted schema.
+// emitted schema, and `Annotations...` is any pack of annotation tag
+// types that the parameter slot understands (description_label,
+// unit_label, range, min_only, etc.).
 //
 // Default `Required = true` mirrors the rvegen convention that nearly
 // every schema field is required (matches the explicit `is_required`
 // add()s in every existing `parameters()` declaration). Pass
 // `Required=false` for the rare optional field — note that today
 // `extract()` will still throw on a missing key, so optional fields
-// need defaults to be useful (annotation work is the next phase
-// against #1).
-template <numsim_core::fixed_string Name, typename T, bool Required = true>
+// need defaults to be useful (follow-up work against #1).
+//
+// Annotation types must be valid arguments to `slot.add<A>()` — they
+// are folded into the slot at schema-build time. Example:
+//
+//   using fields = field_list<
+//     field<"radius", double, true,
+//           numsim_core::description_label<"sphere radius">,
+//           numsim_core::unit_label<"m">,
+//           min_only<0.0>>,
+//     ...>;
+template <numsim_core::fixed_string Name, typename T, bool Required = true,
+          typename... Annotations>
 struct field {
   static constexpr auto name = Name;
   using value_type = T;
   static constexpr bool required = Required;
+  using annotations = std::tuple<Annotations...>;
 };
 
 namespace detail {
@@ -129,6 +148,14 @@ private:
     if constexpr (F::required) {
       slot.template add<numsim_core::is_required>();
     }
+    apply_annotations<F>(slot, typename F::annotations{});
+  }
+
+  // Fold the annotation pack — held as `std::tuple<A...>` inside the
+  // field — into individual `slot.add<A>()` calls.
+  template <typename F, typename Slot, typename... A>
+  static void apply_annotations(Slot& slot, std::tuple<A...>) {
+    (slot.template add<A>(), ...);
   }
 };
 
