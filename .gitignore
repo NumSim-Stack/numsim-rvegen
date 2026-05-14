@@ -27,3 +27,8 @@ Makefile
 *.so
 *.dylib
 *.dll
+python/tests/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
