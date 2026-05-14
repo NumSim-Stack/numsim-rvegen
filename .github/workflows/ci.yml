@@ -33,11 +33,14 @@ jobs:
           ref: a56bc466f8cfbbdc79936f140166fb60fcaabb90
           path: numsim-core
 
-      # GCC 14 for `<print>` (numsim-core needs C++23 lib support).
-      - name: Install g++-14
+      # GCC 14 for `<print>` (numsim-core needs C++23 lib support);
+      # libboost-dev for `Boost::headers` (collision_dispatcher's
+      # boost::container::flat_map). Eigen3 + nlohmann_json are
+      # FetchContent'd if not found, so they don't need apt.
+      - name: Install toolchain + Boost
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-14 ninja-build
+          sudo apt-get install -y g++-14 ninja-build libboost-dev
 
       - name: Configure rvegen
         working-directory: numsim-rvegen/rvegen
