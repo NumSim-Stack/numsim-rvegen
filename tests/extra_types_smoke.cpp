@@ -1393,6 +1393,169 @@ void test_load_phases_from_json_round_trip() {
   REQUIRE(ord[1]->name == "fibre");
 }
 
+// ----------------------------------------------------------------------------
+// Phase-name tagging: a `phase_name` field in an input's JSON config gets
+// stamped onto every shape produced by that input.
+// ----------------------------------------------------------------------------
+void test_input_stamps_phase_name_on_produced_shape() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  std::mt19937 engine{77};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "x": {"type": "constant", "value": 0.5},
+    "y": {"type": "constant", "value": 0.5},
+    "r": {"type": "constant", "value": 0.1}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "circle_input",
+    "pos_x_dist": "x",
+    "pos_y_dist": "y",
+    "radius_dist": "r",
+    "phase_name": "fibre"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  REQUIRE(shape->phase_name() == "fibre");
+}
+
+void test_input_phase_name_default_is_empty() {
+  // Same circle_input but without `phase_name` in the JSON. Default is empty.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{78};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "x": {"type": "constant", "value": 0.5},
+    "y": {"type": "constant", "value": 0.5},
+    "r": {"type": "constant", "value": 0.1}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "circle_input",
+    "pos_x_dist": "x",
+    "pos_y_dist": "y",
+    "radius_dist": "r"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape->phase_name().empty());
+}
+
+void test_input_metadata_json_field_merges_into_info() {
+  // The `metadata` schema field accepts a JSON-encoded string of
+  // arbitrary key/value pairs that get merged into the produced
+  // shape's info blob. Combined with `phase_name`, both fields
+  // round-trip and metadata can also override phase_name on its own.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{121};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "x": {"type": "constant", "value": 0.5},
+    "y": {"type": "constant", "value": 0.5},
+    "r": {"type": "constant", "value": 0.1}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  // phase_name + a metadata blob with custom keys + a numeric value.
+  // The schema requires `metadata` to be a JSON-encoded string (not a
+  // nested object) until the parameter visitor learns object passthrough.
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "circle_input",
+    "pos_x_dist": "x",
+    "pos_y_dist": "y",
+    "radius_dist": "r",
+    "phase_name": "fibre",
+    "metadata": "{\"orientation_deg\": 42.5, \"source\": \"a.stl\", \"active\": true}"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape->phase_name() == "fibre");
+  REQUIRE(shape->info().get<double>("orientation_deg") == 42.5);
+  REQUIRE(shape->info().get<std::string>("source") == "a.stl");
+  REQUIRE(shape->info().get<bool>("active") == true);
+}
+
+void test_input_metadata_overrides_phase_name() {
+  // Documented behaviour: `metadata` is merged AFTER `phase_name`,
+  // so a `phase_name` key inside the metadata object wins.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{909};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "x": {"type": "constant", "value": 0.5},
+    "y": {"type": "constant", "value": 0.5},
+    "r": {"type": "constant", "value": 0.1}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "circle_input",
+    "pos_x_dist": "x",
+    "pos_y_dist": "y",
+    "radius_dist": "r",
+    "phase_name": "matrix",
+    "metadata": "{\"phase_name\": \"fibre\"}"
+  })");
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape->phase_name() == "fibre");
+}
+
+void test_info_generic_metadata_round_trip() {
+  // Verify the info container behaves as a generic key-value store
+  // beyond the phase_name shortcut: write multiple typed values,
+  // confirm they round-trip, and confirm propagation through tag().
+  rvegen::info i;
+  i.set("phase_name", std::string{"matrix"});
+  i.set("orientation_deg", 42.5);
+  i.set("source_id", 7);
+  i.set("active", true);
+
+  REQUIRE(i.phase_name() == "matrix");
+  REQUIRE(i.get<double>("orientation_deg") == 42.5);
+  REQUIRE(i.get<int>("source_id") == 7);
+  REQUIRE(i.get<bool>("active") == true);
+  REQUIRE(i.contains("orientation_deg"));
+  REQUIRE(!i.contains("missing"));
+  REQUIRE(i.get_or<int>("missing", -1) == -1);
+
+  // Stamp onto a shape via direct ctor + set_info; clone propagates it.
+  rvegen::circle<double> c{0.5, 0.5, 0.1};
+  c.set_info(i);
+  REQUIRE(c.info().get<double>("orientation_deg") == 42.5);
+  auto cloned = c.clone();
+  REQUIRE(cloned->info().phase_name() == "matrix");
+  REQUIRE(cloned->info().get<bool>("active") == true);
+}
+
 } // namespace
 
 int main() {
@@ -1452,6 +1615,11 @@ int main() {
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
   test_load_phases_from_json_round_trip();
+  test_input_stamps_phase_name_on_produced_shape();
+  test_input_phase_name_default_is_empty();
+  test_input_metadata_json_field_merges_into_info();
+  test_input_metadata_overrides_phase_name();
+  test_info_generic_metadata_round_trip();
   test_load_phases_from_json_rejects_non_array();
   test_load_phases_from_json_rejects_missing_name();
   test_load_phases_from_json_rejects_non_object_material();

@@ -79,6 +79,9 @@
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
 
+// metadata — generic string-to-value container attached to shapes and inputs
+#include "metadata/info.h"
+
 // io — STL / PLY mesh readers
 #include "io/stl_reader.h"
 // schema scaffolding — collapse name/type duplication into one declaration

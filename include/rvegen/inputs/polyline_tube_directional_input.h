@@ -77,7 +77,9 @@ public:
             *d.at(handler.template get<std::string>("direction_y_dist")),
             *d.at(handler.template get<std::string>("direction_z_dist")),
             *d.at(handler.template get<std::string>("length_dist")),
-            *d.at(handler.template get<std::string>("radius_dist"))) {}
+            *d.at(handler.template get<std::string>("radius_dist"))) {
+    this->read_metadata(handler);
+  }
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -105,6 +107,10 @@ public:
     s.template insert<std::string>("radius_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the tube radius">>();
+    s.template insert<std::string>("phase_name")
+        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
+    s.template insert<std::string>("metadata")
+        .template add<numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>();
     return s;
   }
 
@@ -124,7 +130,10 @@ public:
     std::vector<std::array<value_type, 3>> centerline{
         {{cx - half * dx, cy - half * dy, cz - half * dz}},
         {{cx + half * dx, cy + half * dy, cz + half * dz}}};
-    return std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+    auto shape =
+        std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+    this->tag(*shape);
+    return shape;
   }
 
 private:
