@@ -1316,8 +1316,16 @@ void test_mesh_inclusion_input_accepts_binary_stl() {
   rvegen::register_all_distributions<>();
   rvegen::register_all_inputs<>();
 
-  // Build a 1-triangle binary STL blob inline (same recipe as the
-  // direct-reader test, with a stronger but still tiny inclusion).
+  // Convert the existing ASCII unit-cube fixture to a binary STL blob so
+  // the test exercises a closed mesh (a 1-triangle blob can't be
+  // probed with is_inside meaningfully).
+  std::vector<gte::Triangle3<double>> ascii_tris;
+  {
+    std::stringstream ss{unit_cube_stl};
+    ascii_tris = rvegen::read_stl_ascii<double>(ss);
+  }
+  REQUIRE(ascii_tris.size() == 12);
+
   auto write_le_u32 = [](std::ostream& o, std::uint32_t v) {
     o.put(static_cast<char>(v & 0xff));
     o.put(static_cast<char>((v >> 8)  & 0xff));
@@ -1337,12 +1345,18 @@ void test_mesh_inclusion_input_accepts_binary_stl() {
   {
     std::ofstream out{tmp_path, std::ios::binary};
     for (int i = 0; i < 80; ++i) out.put('\0');     // header
-    write_le_u32(out, 1);                            // 1 triangle
-    // normal (0,0,1) + verts (0,0,0)(1,0,0)(0,1,0) + 2 attr bytes
-    for (float f : {0.f, 0.f, 1.f}) write_le_f32(out, f);
-    for (float f : {0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f})
-      write_le_f32(out, f);
-    out.put('\0'); out.put('\0');
+    write_le_u32(out, static_cast<std::uint32_t>(ascii_tris.size()));
+    for (auto const& t : ascii_tris) {
+      // Normal (0,0,1) is fine — the reader skips it (computed from
+      // vertex order anyway).
+      for (float n : {0.f, 0.f, 1.f}) write_le_f32(out, n);
+      for (int v = 0; v < 3; ++v) {
+        for (int c = 0; c < 3; ++c) {
+          write_le_f32(out, static_cast<float>(t.v[v][c]));
+        }
+      }
+      out.put('\0'); out.put('\0');                  // attribute bytes
+    }
   }
 
   std::mt19937 engine{23};
@@ -1367,6 +1381,16 @@ void test_mesh_inclusion_input_accepts_binary_stl() {
   auto input = rvegen::build_from_json(
       rvegen::input_registry_t<>::instance(), input_spec, dists);
   REQUIRE(input != nullptr);
+
+  // Cross-check the full pipeline: new_shape() must yield a placed
+  // inclusion whose is_inside() actually reflects the cube geometry
+  // (origin inside, far point outside). Catches both the binary-parse
+  // path and the input → mesh_inclusion handoff.
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  REQUIRE(shape->is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(!shape->is_inside({2.0, 2.0, 2.0}));
+
   std::remove(tmp_path.c_str());
 }
 
