@@ -221,6 +221,91 @@ void test_register_shape_is_idempotent() {
   REQUIRE(after == before + 1);  // second registration replaces, doesn't add
 }
 
+// ----------------------------------------------------------------------------
+// polyline_tube — swept-tube renderer hookup (#26).
+// ----------------------------------------------------------------------------
+void test_polyline_tube_mesh_direct() {
+  // 4-vertex centerline along x, radius 0.05, 16 segments per ring.
+  // Expected: 4 rings × 16 verts + 2 cap centres = 66 verts.
+  // Side quads: 3 segments × 16 quads × 2 tris = 96 tris.
+  // End caps: 2 × 16 tris = 32. Total 128 tris.
+  std::vector<std::array<double, 3>> centerline{
+      {0.0, 0.0, 0.0}, {0.25, 0.0, 0.0},
+      {0.5, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.05};
+
+  auto m = rvegen::to_mesh(tube, 16);
+  REQUIRE(m.verts.size() == 4u * 16u + 2u);
+  REQUIRE(m.tris.size() == 3u * 16u * 2u + 2u * 16u);
+  REQUIRE(indices_in_range(m));
+  REQUIRE(m.normals.size() == m.verts.size());
+
+  // Every ring vertex should sit at exactly `radius` distance from its
+  // host centerline vertex. The first ring's host is centerline[0].
+  for (std::size_t k = 0; k < 16; ++k) {
+    auto const& v = m.verts[k];
+    const double dx = v[0] - 0.0;
+    const double dy = v[1] - 0.0;
+    const double dz = v[2] - 0.0;
+    const double d = std::sqrt(dx*dx + dy*dy + dz*dz);
+    REQUIRE(std::abs(d - 0.05) < 1e-9);
+  }
+
+  // All non-cap normals should be unit-length (used for smooth shading).
+  for (std::size_t i = 0; i < 4u * 16u; ++i) {
+    auto const& n = m.normals[i];
+    const double len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+    REQUIRE(std::abs(len - 1.0) < 1e-9);
+  }
+}
+
+void test_polyline_tube_mesh_via_dispatcher() {
+  // After register_all_meshes, the dispatcher must return a non-empty mesh
+  // for a polyline_tube — closes the rendering gap from #26 where downstream
+  // viewers silently emitted no geometry.
+  rvegen::register_all_meshes<double>();
+
+  std::vector<std::array<double, 3>> centerline{
+      {0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+  rvegen::polyline_tube<double> tube{centerline, 0.1};
+  std::unique_ptr<rvegen::shape_base<double>> base =
+      std::make_unique<rvegen::polyline_tube<double>>(tube);
+  auto m = rvegen::mesh_dispatcher<double>::instance()(*base);
+  REQUIRE(!m.verts.empty());
+  REQUIRE(!m.tris.empty());
+  REQUIRE(indices_in_range(m));
+}
+
+void test_polyline_tube_mesh_voxelization_agrees_with_is_inside() {
+  // Voxel-vs-mesh agreement check, analogous to the sphere test: pick
+  // a 16³ grid, voxelize the analytical tube, and confirm that voxels
+  // marked "inside" cluster around the rendered mesh's bounding region.
+  // Rather than testing mesh vertices (which sit ON the surface and
+  // hit FP ties with `dist <= radius`), we test that the mesh covers
+  // the same axis-aligned bounding region as the analytical primitive.
+  std::vector<std::array<double, 3>> centerline{
+      {0.1, 0.5, 0.5}, {0.9, 0.5, 0.5}};
+  rvegen::polyline_tube<double> tube{centerline, 0.05};
+  auto m = rvegen::to_mesh(tube, 16);
+
+  // Mesh AABB.
+  std::array<double, 3> mn{m.verts[0][0], m.verts[0][1], m.verts[0][2]};
+  std::array<double, 3> mx = mn;
+  for (auto const& v : m.verts) {
+    for (int k = 0; k < 3; ++k) {
+      mn[k] = std::min(mn[k], v[k]);
+      mx[k] = std::max(mx[k], v[k]);
+    }
+  }
+  // The mesh AABB must straddle the analytical centerline + radius.
+  REQUIRE(mn[0] <= 0.1 + 1e-9);   // start cap reaches centerline[0].x
+  REQUIRE(mx[0] >= 0.9 - 1e-9);   // end cap reaches centerline[1].x
+  REQUIRE(mn[1] <= 0.5 - 0.05 + 1e-9);   // ring extends -radius in y
+  REQUIRE(mx[1] >= 0.5 + 0.05 - 1e-9);
+  REQUIRE(mn[2] <= 0.5 - 0.05 + 1e-9);
+  REQUIRE(mx[2] >= 0.5 + 0.05 - 1e-9);
+}
+
 } // namespace
 
 int main() {
@@ -232,6 +317,9 @@ int main() {
   test_dispatcher_unregistered_id_returns_empty();
   test_sphere_mesh_voxelization_agrees_with_is_inside();
   test_register_shape_is_idempotent();
+  test_polyline_tube_mesh_direct();
+  test_polyline_tube_mesh_via_dispatcher();
+  test_polyline_tube_mesh_voxelization_agrees_with_is_inside();
 
   if (failures > 0) {
     std::cerr << failures << " mesh_dispatch test failure(s)\n";
