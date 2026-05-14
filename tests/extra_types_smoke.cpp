@@ -1556,6 +1556,97 @@ void test_info_generic_metadata_round_trip() {
   REQUIRE(cloned->info().get<bool>("active") == true);
 }
 
+// ----------------------------------------------------------------------------
+// Binary STL reader (#9 follow-up).
+// ----------------------------------------------------------------------------
+
+// Build a minimal binary STL blob containing `n` identical unit-triangle
+// records. Returns a std::string so it can be wrapped in stringstream.
+namespace {
+std::string make_binary_stl_blob(std::uint32_t n_tris) {
+  std::string blob;
+  blob.resize(80, '\0');                          // header
+  blob.push_back(static_cast<char>(n_tris & 0xff));
+  blob.push_back(static_cast<char>((n_tris >> 8)  & 0xff));
+  blob.push_back(static_cast<char>((n_tris >> 16) & 0xff));
+  blob.push_back(static_cast<char>((n_tris >> 24) & 0xff));
+  for (std::uint32_t t = 0; t < n_tris; ++t) {
+    // Normal (0,0,1) — 12 zero bytes for x,y then 0x3f800000 for z=1.0.
+    const std::array<unsigned char, 12> normal{
+        0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x80, 0x3f};
+    for (auto b : normal) blob.push_back(static_cast<char>(b));
+    // 3 vertices: (0,0,0), (1,0,0), (0,1,0).
+    const std::array<float, 9> verts{
+        0.f, 0.f, 0.f,
+        1.f, 0.f, 0.f,
+        0.f, 1.f, 0.f};
+    for (float f : verts) {
+      std::uint32_t bits;
+      std::memcpy(&bits, &f, sizeof(bits));
+      blob.push_back(static_cast<char>(bits & 0xff));
+      blob.push_back(static_cast<char>((bits >> 8)  & 0xff));
+      blob.push_back(static_cast<char>((bits >> 16) & 0xff));
+      blob.push_back(static_cast<char>((bits >> 24) & 0xff));
+    }
+    blob.push_back('\0');                         // attribute byte count lo
+    blob.push_back('\0');                         // attribute byte count hi
+  }
+  return blob;
+}
+}
+
+void test_stl_binary_reader_basic() {
+  auto blob = make_binary_stl_blob(3);
+  std::stringstream ss{blob};
+  auto tris = rvegen::read_stl_binary<double>(ss);
+  REQUIRE(tris.size() == 3);
+  // Each record uses the same vertex pattern.
+  for (auto const& t : tris) {
+    REQUIRE(std::abs(t.v[1][0] - 1.0) < 1e-7);
+    REQUIRE(std::abs(t.v[2][1] - 1.0) < 1e-7);
+  }
+}
+
+void test_stl_binary_reader_short_file_throws() {
+  // Only 60 bytes — less than the 80-byte header.
+  std::stringstream ss{std::string(60, '\0')};
+  bool threw = false;
+  try { (void)rvegen::read_stl_binary<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_stl_binary_reader_sanity_cap_throws() {
+  // Header (80 NULs) + a triangle count of 200M (above the 100M cap).
+  std::string blob(80, '\0');
+  std::uint32_t huge = 200'000'000;
+  blob.push_back(static_cast<char>(huge & 0xff));
+  blob.push_back(static_cast<char>((huge >> 8)  & 0xff));
+  blob.push_back(static_cast<char>((huge >> 16) & 0xff));
+  blob.push_back(static_cast<char>((huge >> 24) & 0xff));
+  std::stringstream ss{blob};
+  bool threw = false;
+  try { (void)rvegen::read_stl_binary<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_stl_auto_detect_dispatches_correctly() {
+  // Binary input → read_stl picks read_stl_binary.
+  {
+    auto blob = make_binary_stl_blob(2);
+    std::stringstream ss{blob};
+    auto tris = rvegen::read_stl<double>(ss);
+    REQUIRE(tris.size() == 2);
+  }
+  // ASCII input → read_stl picks read_stl_ascii.
+  {
+    std::stringstream ss{unit_cube_stl};
+    auto tris = rvegen::read_stl<double>(ss);
+    REQUIRE(tris.size() == 12);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -1584,6 +1675,10 @@ int main() {
   test_voronoi_cell_scale_invariant_collinear_threshold();
   test_voronoi_cell_translate_via_set_middle_point();
   test_stl_ascii_reader_triangle_count();
+  test_stl_binary_reader_basic();
+  test_stl_binary_reader_short_file_throws();
+  test_stl_binary_reader_sanity_cap_throws();
+  test_stl_auto_detect_dispatches_correctly();
   test_stl_ascii_reader_rejects_binary_stl();
   test_stl_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_input_via_registry();
