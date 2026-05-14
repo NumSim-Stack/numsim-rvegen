@@ -1163,6 +1163,113 @@ void test_circle_schema_driven_ctor_via_field_list() {
   REQUIRE(c.radius == 0.1);
 }
 
+// Same regression coverage for sphere / rectangle / box / ellipse after
+// the field_list migration: each schema field must keep its description
+// and unit annotations; size/extent fields keep their min_only<0> range
+// hint; rotation keeps its unit (rad) without a range.
+void test_sphere_schema_post_field_list_migration() {
+  auto s = rvegen::sphere<double>::parameters();
+  for (auto const& name : {std::string{"x"}, std::string{"y"},
+                           std::string{"z"}, std::string{"radius"}}) {
+    const auto hp = probe_field<double>(s, name);
+    REQUIRE(hp.has_description);
+    REQUIRE(hp.has_units);
+  }
+  REQUIRE(probe_field<double>(s, std::string{"radius"}).has_range);
+  REQUIRE(!probe_field<double>(s, std::string{"x"}).has_range);
+}
+
+void test_sphere_schema_driven_ctor_via_field_list() {
+  rvegen::parameter_handler_t h;
+  h.insert<double>("x", 1.0);
+  h.insert<double>("y", 2.0);
+  h.insert<double>("z", 3.0);
+  h.insert<double>("radius", 0.5);
+  rvegen::sphere<double> s{h};
+  REQUIRE(s.center[0] == 1.0);
+  REQUIRE(s.center[2] == 3.0);
+  REQUIRE(s.radius == 0.5);
+}
+
+void test_rectangle_schema_post_field_list_migration() {
+  auto s = rvegen::rectangle<double>::parameters();
+  for (auto const& name : {std::string{"x"}, std::string{"y"},
+                           std::string{"width"}, std::string{"height"}}) {
+    const auto hp = probe_field<double>(s, name);
+    REQUIRE(hp.has_description);
+    REQUIRE(hp.has_units);
+  }
+  REQUIRE(probe_field<double>(s, std::string{"width"}).has_range);
+  REQUIRE(probe_field<double>(s, std::string{"height"}).has_range);
+}
+
+void test_rectangle_schema_driven_ctor_via_field_list() {
+  rvegen::parameter_handler_t h;
+  h.insert<double>("x", 0.5);
+  h.insert<double>("y", 0.25);
+  h.insert<double>("width", 0.2);
+  h.insert<double>("height", 0.1);
+  rvegen::rectangle<double> r{h};
+  // width() / height() recompute via max - min, picking up FP rounding —
+  // hence the tolerance rather than exact equality.
+  REQUIRE(std::abs(r.width()  - 0.2) < 1e-12);
+  REQUIRE(std::abs(r.height() - 0.1) < 1e-12);
+  REQUIRE(r(0) == 0.5);
+}
+
+void test_box_schema_post_field_list_migration() {
+  auto s = rvegen::box<double>::parameters();
+  for (auto const& name :
+       {std::string{"x"}, std::string{"y"}, std::string{"z"},
+        std::string{"width"}, std::string{"height"}, std::string{"depth"}}) {
+    const auto hp = probe_field<double>(s, name);
+    REQUIRE(hp.has_description);
+    REQUIRE(hp.has_units);
+  }
+  REQUIRE(probe_field<double>(s, std::string{"width"}).has_range);
+  REQUIRE(probe_field<double>(s, std::string{"depth"}).has_range);
+}
+
+void test_box_schema_driven_ctor_via_field_list() {
+  rvegen::parameter_handler_t h;
+  h.insert<double>("x", 0.5);
+  h.insert<double>("y", 0.25);
+  h.insert<double>("z", 0.125);
+  h.insert<double>("width", 0.2);
+  h.insert<double>("height", 0.1);
+  h.insert<double>("depth", 0.05);
+  rvegen::box<double> b{h};
+  REQUIRE(std::abs(b.width()  - 0.2)  < 1e-12);
+  REQUIRE(std::abs(b.height() - 0.1)  < 1e-12);
+  REQUIRE(std::abs(b.depth()  - 0.05) < 1e-12);
+}
+
+void test_ellipse_schema_post_field_list_migration() {
+  auto s = rvegen::ellipse<double>::parameters();
+  for (auto const& name :
+       {std::string{"x"}, std::string{"y"}, std::string{"radius_a"},
+        std::string{"radius_b"}, std::string{"rotation"}}) {
+    const auto hp = probe_field<double>(s, name);
+    REQUIRE(hp.has_description);
+    REQUIRE(hp.has_units);
+  }
+  REQUIRE(probe_field<double>(s, std::string{"radius_a"}).has_range);
+  REQUIRE(probe_field<double>(s, std::string{"radius_b"}).has_range);
+  REQUIRE(!probe_field<double>(s, std::string{"rotation"}).has_range);
+}
+
+void test_ellipse_schema_driven_ctor_via_field_list() {
+  rvegen::parameter_handler_t h;
+  h.insert<double>("x", 0.0);
+  h.insert<double>("y", 0.0);
+  h.insert<double>("radius_a", 0.3);
+  h.insert<double>("radius_b", 0.1);
+  h.insert<double>("rotation", 0.0);
+  rvegen::ellipse<double> e{h};
+  REQUIRE(e.radius_a() == 0.3);
+  REQUIRE(e.radius_b() == 0.1);
+}
+
 // ----------------------------------------------------------------------------
 // bingham_distribution: 3D unit-vector sampler. Three regimes verified.
 // ----------------------------------------------------------------------------
@@ -2152,6 +2259,14 @@ int main() {
   test_field_list_no_annotations_no_hint_bases();
   test_circle_schema_post_field_list_migration();
   test_circle_schema_driven_ctor_via_field_list();
+  test_sphere_schema_post_field_list_migration();
+  test_sphere_schema_driven_ctor_via_field_list();
+  test_rectangle_schema_post_field_list_migration();
+  test_rectangle_schema_driven_ctor_via_field_list();
+  test_box_schema_post_field_list_migration();
+  test_box_schema_driven_ctor_via_field_list();
+  test_ellipse_schema_post_field_list_migration();
+  test_ellipse_schema_driven_ctor_via_field_list();
   test_bingham_uniform_regime_unit_length();
   test_bingham_uniform_kappa_zero_spreads_over_sphere();
   test_bingham_operator_call_matches_sample();

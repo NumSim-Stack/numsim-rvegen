@@ -5,10 +5,13 @@
 #include <cstddef>
 #include <numbers>
 
+#include <tuple>
+
 #include <Eigen/Geometry>
 #include <Mathematics/Hyperellipsoid.h>
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "rectangle_bounding.h"
 #include "shape_base.h"
@@ -42,33 +45,30 @@ public:
     this->axis[1] = {b[0], b[1]};
   }
 
+  using fields = field_list<
+      field<"x", T, true,
+            numsim_core::description_label<"x-coordinate of the ellipse centre">,
+            numsim_core::unit_label<"m">>,
+      field<"y", T, true,
+            numsim_core::description_label<"y-coordinate of the ellipse centre">,
+            numsim_core::unit_label<"m">>,
+      field<"radius_a", T, true,
+            numsim_core::description_label<"first semi-axis length (must be positive)">,
+            numsim_core::unit_label<"m">,
+            min_only<T{0}>>,
+      field<"radius_b", T, true,
+            numsim_core::description_label<"second semi-axis length (must be positive)">,
+            numsim_core::unit_label<"m">,
+            min_only<T{0}>>,
+      field<"rotation", T, true,
+            numsim_core::description_label<"CCW rotation of the first semi-axis from +x">,
+            numsim_core::unit_label<"rad">>>;
+
   explicit ellipse(parameter_handler_t const& handler)
-      : ellipse(handler.template get<T>("x"),
-                handler.template get<T>("y"),
-                handler.template get<T>("radius_a"),
-                handler.template get<T>("radius_b"),
-                handler.template get<T>("rotation")) {}
+      : ellipse(fields::extract(handler)) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<T>("x").template add<numsim_core::is_required>()
-        .template add<numsim_core::unit_label<"m">>()
-        .template add<numsim_core::description_label<"x-coordinate of the ellipse centre">>();
-    s.template insert<T>("y").template add<numsim_core::is_required>()
-        .template add<numsim_core::unit_label<"m">>()
-        .template add<numsim_core::description_label<"y-coordinate of the ellipse centre">>();
-    s.template insert<T>("radius_a").template add<numsim_core::is_required>()
-        .template add<min_only<T{0}>>()
-        .template add<numsim_core::unit_label<"m">>()
-        .template add<numsim_core::description_label<"first semi-axis length (must be positive)">>();
-    s.template insert<T>("radius_b").template add<numsim_core::is_required>()
-        .template add<min_only<T{0}>>()
-        .template add<numsim_core::unit_label<"m">>()
-        .template add<numsim_core::description_label<"second semi-axis length (must be positive)">>();
-    s.template insert<T>("rotation").template add<numsim_core::is_required>()
-        .template add<numsim_core::unit_label<"rad">>()
-        .template add<numsim_core::description_label<"CCW rotation of the first semi-axis from +x">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] T operator()(size_type idx) const noexcept {
@@ -139,6 +139,11 @@ public:
   [[nodiscard]] numsim_core::type_id shape_id() const noexcept override {
     return ellipse::m_id;
   }
+
+private:
+  explicit ellipse(std::tuple<T, T, T, T, T> v)
+      : ellipse(std::get<0>(v), std::get<1>(v), std::get<2>(v),
+                std::get<3>(v), std::get<4>(v)) {}
 };
 
 } // namespace rvegen
