@@ -90,7 +90,7 @@ public:
     parameter_controller_t s;
     s.template insert<std::string>("stl_path")
         .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"path to an ASCII STL file describing the mesh inclusion (read once at input construction)">>();
+        .template add<numsim_core::description_label<"path to an STL file describing the mesh inclusion; ASCII or binary, format auto-detected from header (read once at input construction)">>();
     s.template insert<std::string>("position_x_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre x-coordinate">>();
