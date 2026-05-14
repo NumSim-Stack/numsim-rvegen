@@ -4,9 +4,12 @@
 #include <cstddef>
 #include <numbers>
 
+#include <tuple>
+
 #include <Mathematics/Hypersphere.h>
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "rectangle_bounding.h"
 #include "shape_base.h"
@@ -37,25 +40,29 @@ public:
     this->radius = r;
   }
 
-  // Schema-driven ctor — the rvegen addition.
+  // Declarative schema. Name + type + required-ness + annotations live
+  // in a single declaration here; both `parameters()` and the
+  // schema-driven ctor read from this list, so adding / renaming /
+  // re-typing a field needs exactly one edit.
+  using fields = field_list<
+      field<"x", T, true,
+            numsim_core::description_label<"x-coordinate of the circle centre">,
+            numsim_core::unit_label<"m">>,
+      field<"y", T, true,
+            numsim_core::description_label<"y-coordinate of the circle centre">,
+            numsim_core::unit_label<"m">>,
+      field<"radius", T, true,
+            numsim_core::description_label<"circle radius (must be positive)">,
+            numsim_core::unit_label<"m">,
+            min_only<T{0}>>>;
+
+  // Schema-driven ctor — the rvegen addition. Delegates to the
+  // tuple-taking helper which unpacks `fields::extract(handler)`.
   explicit circle(parameter_handler_t const& handler)
-      : circle(handler.template get<T>("x"),
-               handler.template get<T>("y"),
-               handler.template get<T>("radius")) {}
+      : circle(fields::extract(handler)) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<T>("x").template add<numsim_core::is_required>()
-        .template add<numsim_core::unit_label<"m">>()
-        .template add<numsim_core::description_label<"x-coordinate of the circle centre">>();
-    s.template insert<T>("y").template add<numsim_core::is_required>()
-        .template add<numsim_core::unit_label<"m">>()
-        .template add<numsim_core::description_label<"y-coordinate of the circle centre">>();
-    s.template insert<T>("radius").template add<numsim_core::is_required>()
-        .template add<min_only<T{0}>>()
-        .template add<numsim_core::unit_label<"m">>()
-        .template add<numsim_core::description_label<"circle radius (must be positive)">>();
-    return s;
+    return fields::schema();
   }
 
   // Convenience subscript access to centre coordinates.
@@ -106,6 +113,13 @@ public:
   [[nodiscard]] numsim_core::type_id shape_id() const noexcept override {
     return circle::m_id;
   }
+
+private:
+  // Tuple-taking helper used by the schema-driven ctor. Lets us delegate
+  // through `fields::extract(handler)` without re-extracting per element.
+  explicit circle(std::tuple<T, T, T> values)
+      : circle(std::get<0>(values), std::get<1>(values),
+               std::get<2>(values)) {}
 };
 
 } // namespace rvegen
