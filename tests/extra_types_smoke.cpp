@@ -1130,6 +1130,39 @@ void test_field_list_no_annotations_no_hint_bases() {
   REQUIRE(!hp.has_units);
 }
 
+// First in-tree migration of a shape to declarative field_list (circle).
+// Regression-locks the post-migration schema: all 3 fields must carry a
+// description label + unit label, and `radius` must additionally carry
+// a range hint from min_only<T{0}>. If a future schema change drops one
+// of these, this test catches it.
+void test_circle_schema_post_field_list_migration() {
+  auto s = rvegen::circle<double>::parameters();
+  for (auto const& name :
+       {std::string{"x"}, std::string{"y"}, std::string{"radius"}}) {
+    const auto hp = probe_field<double>(s, name);
+    REQUIRE(hp.has_description);
+    REQUIRE(hp.has_units);
+  }
+  // radius is the only field with a range constraint (min_only<0>).
+  REQUIRE(probe_field<double>(s, std::string{"radius"}).has_range);
+  REQUIRE(!probe_field<double>(s, std::string{"x"}).has_range);
+  REQUIRE(!probe_field<double>(s, std::string{"y"}).has_range);
+}
+
+// Schema-driven ctor still parses correctly after the field_list
+// migration — fields::extract(handler) unpacks into the (x, y, radius)
+// tuple-taking delegating ctor.
+void test_circle_schema_driven_ctor_via_field_list() {
+  rvegen::parameter_handler_t h;
+  h.insert<double>("x", 0.25);
+  h.insert<double>("y", 0.75);
+  h.insert<double>("radius", 0.1);
+  rvegen::circle<double> c{h};
+  REQUIRE(c.center[0] == 0.25);
+  REQUIRE(c.center[1] == 0.75);
+  REQUIRE(c.radius == 0.1);
+}
+
 // ----------------------------------------------------------------------------
 // bingham_distribution: 3D unit-vector sampler. Three regimes verified.
 // ----------------------------------------------------------------------------
@@ -2117,6 +2150,8 @@ int main() {
   test_field_list_carries_description_and_unit_annotations();
   test_field_list_carries_range_annotation();
   test_field_list_no_annotations_no_hint_bases();
+  test_circle_schema_post_field_list_migration();
+  test_circle_schema_driven_ctor_via_field_list();
   test_bingham_uniform_regime_unit_length();
   test_bingham_uniform_kappa_zero_spreads_over_sphere();
   test_bingham_operator_call_matches_sample();
