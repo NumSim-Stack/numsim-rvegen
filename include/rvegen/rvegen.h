@@ -90,8 +90,9 @@
 // schema scaffolding — collapse name/type duplication into one declaration
 #include "schema/field_list.h"
 
-// homogenization — analytical bounds (Voigt / Reuss / Hill)
+// homogenization — analytical bounds (Voigt / Reuss / Hill / MT / HS / SC)
 #include "homogenization/mean_field.h"
+#include "homogenization/phase_bridge.h"
 
 // phase model — named regions with opaque material_config blobs that
 // downstream solvers (numsim-materials) interpret.
