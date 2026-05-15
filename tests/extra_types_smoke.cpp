@@ -2380,6 +2380,27 @@ void test_voronoi_to_shapes_helper_returns_shape_vector() {
   }
 }
 
+// svg_writer dispatch for convex_polygon: emit a <polygon> element with
+// SVG-flipped y-coordinates. Mirrors the gmsh dispatch added for the
+// Voronoi pipeline.
+void test_svg_writer_emits_polygon_element_for_convex_polygon() {
+  rvegen::svg_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::convex_polygon<double>>(
+      std::vector<std::array<double, 2>>{{0.1, 0.2}, {0.4, 0.2},
+                                          {0.4, 0.6}, {0.1, 0.6}}));
+
+  rvegen::svg_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  REQUIRE(txt.find("<polygon points=\"") != std::string::npos);
+  // SVG y is top-down so each vertex's y must be Ly - input_y.
+  // Bottom-left input (0.1, 0.2) → SVG (0.1, 0.8).
+  REQUIRE(txt.find("0.1,0.8") != std::string::npos);
+  REQUIRE(txt.find("(skipped 3D / unsupported shape)") == std::string::npos);
+}
+
 // ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
@@ -3493,6 +3514,7 @@ int main() {
   test_gmsh_geo_writer_emits_plane_surface_for_convex_polygon();
   test_gmsh_geo_writer_polygon_id_appears_in_physical_group();
   test_voronoi_to_shapes_helper_returns_shape_vector();
+  test_svg_writer_emits_polygon_element_for_convex_polygon();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
