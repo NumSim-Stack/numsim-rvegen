@@ -56,8 +56,10 @@
 #include <random>
 
 #include <Mathematics/Vector3.h>
+#include <numsim-core/input_parameter_controller.h>
 
 #include "direction_distribution_base.h"
+#include "../types.h"
 
 namespace rvegen {
 
@@ -78,6 +80,36 @@ public:
   bingham_distribution(std::array<T, 3> const& mean_axis, T kappa,
                        engine_type& engine)
       : bingham_distribution{vector_to_gte(mean_axis), kappa, engine} {}
+
+  // Schema-driven ctor for the JSON registry path. Mean axis is
+  // declared as three scalar fields rather than a vector field
+  // because `parameter_handler<string, any>` doesn't carry a typed
+  // array slot — three scalars is the rvegen idiom (matches
+  // polyline_tube_directional_input). The axis is renormalised
+  // inside the helper ctor, so the user can drop unit-vector
+  // hygiene from their config.
+  bingham_distribution(parameter_handler_t const& handler,
+                       engine_type& engine)
+      : bingham_distribution(
+            std::array<T, 3>{
+                handler.template get<T>("mean_axis_x"),
+                handler.template get<T>("mean_axis_y"),
+                handler.template get<T>("mean_axis_z")},
+            handler.template get<T>("kappa"),
+            engine) {}
+
+  [[nodiscard]] static parameter_controller_t parameters() {
+    parameter_controller_t s;
+    s.template insert<T>("mean_axis_x").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"x-component of the Bingham mean axis (renormalised internally)">>();
+    s.template insert<T>("mean_axis_y").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"y-component of the Bingham mean axis (renormalised internally)">>();
+    s.template insert<T>("mean_axis_z").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"z-component of the Bingham mean axis (renormalised internally)">>();
+    s.template insert<T>("kappa").template add<numsim_core::is_required>()
+        .template add<numsim_core::description_label<"Bingham concentration: κ > 0 = prolate (samples cluster on ±mean_axis), κ < 0 = oblate (samples lie near the great circle perpendicular to mean_axis), κ ≈ 0 = uniform on the sphere">>();
+    return s;
+  }
 
   // Draws one unit 3-vector. Uses rejection sampling: for κ > 0 (prolate)
   // and κ < 0 (oblate) the marginal density of x = cos(θ) is exp(κ·x²)

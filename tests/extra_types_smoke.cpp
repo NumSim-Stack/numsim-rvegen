@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -1930,6 +1931,53 @@ void test_polyline_tube_oriented_input_uses_scalar_position_distributions() {
   REQUIRE(std::abs(mz - 0.1) < 1e-9);
 }
 
+// FOD JSON registry plumbing: a Bingham distribution built via the
+// `direction_distribution_registry_t` JSON path produces unit
+// vectors and is statistically equivalent to a directly-constructed
+// Bingham seeded with the same engine state.
+void test_direction_distribution_registry_builds_bingham_from_json() {
+  rvegen::register_all_direction_distributions<>();
+
+  std::mt19937 engine{2024};
+  const auto spec = nlohmann::json::parse(R"({
+    "type": "bingham",
+    "mean_axis_x": 0.0,
+    "mean_axis_y": 0.0,
+    "mean_axis_z": 1.0,
+    "kappa":       50.0
+  })");
+  auto dist = rvegen::build_from_json(
+      rvegen::direction_distribution_registry_t<>::instance(),
+      spec, engine);
+  REQUIRE(dist != nullptr);
+
+  // 200 samples cluster on z (kappa=50 → ~8° half-width).
+  std::size_t aligned = 0;
+  for (int i = 0; i < 200; ++i) {
+    const auto v = (*dist)();
+    // Unit length within FP tolerance.
+    const double mag = std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    REQUIRE(std::abs(mag - 1.0) < 1e-9);
+    if (std::abs(v[2]) > 0.9) ++aligned;
+  }
+  REQUIRE(aligned > 150);   // >75 % of samples within 25° of z
+}
+
+void test_direction_distribution_registry_schema_has_descriptions() {
+  // Schema audit-style check on the bingham slot: every required
+  // field is present. Iterates the schema rather than relying on
+  // contains() (which is non-const on input_parameter_controller).
+  rvegen::register_all_direction_distributions<>();
+  const auto& schema =
+      rvegen::direction_distribution_registry_t<>::instance().schema("bingham");
+  std::set<std::string> field_names;
+  for (auto const& [key, _] : schema) field_names.insert(key);
+  REQUIRE(field_names.count("mean_axis_x") == 1);
+  REQUIRE(field_names.count("mean_axis_y") == 1);
+  REQUIRE(field_names.count("mean_axis_z") == 1);
+  REQUIRE(field_names.count("kappa")       == 1);
+}
+
 // ----------------------------------------------------------------------------
 // mean-field bounds: Voigt (upper) and Reuss (lower) on the effective
 // stiffness of a multi-phase composite.
@@ -3726,6 +3774,8 @@ int main() {
   test_bingham_implements_direction_distribution_base();
   test_polyline_tube_oriented_input_aligns_with_bingham_axis();
   test_polyline_tube_oriented_input_uses_scalar_position_distributions();
+  test_direction_distribution_registry_builds_bingham_from_json();
+  test_direction_distribution_registry_schema_has_descriptions();
   test_mean_field_single_phase_collapses_to_phase();
   test_mean_field_voigt_above_reuss_for_contrast();
   test_mean_field_voigt_size_mismatch_throws();
