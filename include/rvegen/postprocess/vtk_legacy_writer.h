@@ -129,13 +129,19 @@ public:
     // without re-reading the rvegen config that generated the file.
     // The VTK legacy format's title-line is also pressed into service
     // as a short scheme note for the same reason.
+    //
+    // rvegen-vtk-format v2: the SCALARS field was renamed from a
+    // single fixed name ("phase") in v1 to one of
+    // "phase_id" / "shape_index" depending on writer state. The token
+    // "rvegen-vtk-format: v2" embedded in the title line lets a
+    // downstream parser detect the schema change unambiguously.
     const char* const field_name  = _phases ? "phase_id" : "shape_index";
     const char* const title_suffix = _phases
         ? " (phase_id from phase_collection, 0 = matrix/untagged)"
         : " (1-based shape index, 0 = matrix)";
 
     out << "# vtk DataFile Version 3.0\n"
-        << "rvegen voxel grid" << title_suffix << "\n"
+        << "rvegen voxel grid [rvegen-vtk-format: v2]" << title_suffix << "\n"
         << "ASCII\n"
         << "DATASET STRUCTURED_POINTS\n"
         << "DIMENSIONS " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'

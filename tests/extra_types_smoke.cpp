@@ -391,6 +391,9 @@ void test_vtk_legacy_writer_header_and_size() {
   REQUIRE(txt.find("# vtk DataFile Version 3.0")  != std::string::npos);
   REQUIRE(txt.find("DATASET STRUCTURED_POINTS")    != std::string::npos);
   REQUIRE(txt.find("DIMENSIONS 16 16 1")           != std::string::npos);
+  // Title carries an `rvegen-vtk-format: v2` marker so downstream
+  // tools can detect the SCALARS field-name change unambiguously.
+  REQUIRE(txt.find("[rvegen-vtk-format: v2]")     != std::string::npos);
   // Field name encodes id scheme — `shape_index` when no
   // phase_collection is attached, `phase_id` when it is.
   REQUIRE(txt.find("SCALARS shape_index int 1")    != std::string::npos);
@@ -539,7 +542,10 @@ void test_gmsh_geo_writer_periodic_and_phases_combine() {
   writer.write(out, shapes, {1.0, 1.0, 0.0});
   const auto txt = out.str();
 
-  const auto entity_pos    = txt.find("Disk(2)");
+  // Use generic substrings (no hardcoded entity ids) so a future
+  // change to the id-allocation scheme doesn't silently break this
+  // order check.
+  const auto entity_pos    = txt.find("Disk(");
   const auto periodic_pos  = txt.find("Periodic Curve");
   const auto coherence_pos = txt.find("Coherence;");
   const auto physical_pos  = txt.find("Physical Surface(\"fibre\"");
@@ -582,6 +588,9 @@ void test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order() {
   REQUIRE(ceramic_pos != std::string::npos);
   REQUIRE(fibre_pos   != std::string::npos);
   REQUIRE(ceramic_pos < fibre_pos);
+  // Declared but untagged "matrix" phase must NOT appear — no shape
+  // carries it, so it shouldn't be in any Physical group.
+  REQUIRE(txt.find("Physical Surface(\"matrix\"") == std::string::npos);
 }
 
 void test_gmsh_geo_writer_phases_unknown_name_throws() {
