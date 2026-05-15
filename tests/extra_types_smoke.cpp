@@ -2275,6 +2275,129 @@ void test_self_consistent_size_mismatch_throws() {
 }
 
 // ----------------------------------------------------------------------------
+// Bridge: phase_collection + shape vector → homogenization inputs.
+// ----------------------------------------------------------------------------
+void test_phase_bridge_volume_fractions_match_geometry() {
+  // Centered radius-0.2 circle in a 1×1 domain — analytical area is
+  // π·0.04 ≈ 0.1257. With a fine voxel grid the sampled fraction
+  // should land within ~1 % of analytical.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("fibre");
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto fibre = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2);
+  fibre->set_phase_name("fibre");
+  shapes.push_back(std::move(fibre));
+
+  const auto v = rvegen::homogenization::compute_phase_volume_fractions(
+      shapes, phases, std::array<double, 3>{1.0, 1.0, 0.0},
+      /*nx=*/128, /*ny=*/128, /*nz=*/1);
+
+  // Two phases, "matrix" then "fibre" — matches phases.ordered() order.
+  REQUIRE(v.per_phase.size() == 2);
+  // No shapes carry the "matrix" tag, so its sampled fraction is 0.
+  REQUIRE(v.per_phase[0] == 0.0);
+  // Background (outside the fibre) is untagged.
+  const double analytic_fibre = M_PI * 0.2 * 0.2;
+  REQUIRE(std::abs(v.per_phase[1] - analytic_fibre) < 0.005);
+  REQUIRE(std::abs(v.untagged_fraction - (1.0 - analytic_fibre)) < 0.005);
+  // All voxels accounted for.
+  double sum = v.untagged_fraction;
+  for (auto f : v.per_phase) sum += f;
+  REQUIRE(std::abs(sum - 1.0) < 1e-12);
+}
+
+void test_phase_bridge_extract_isotropic_moduli_round_trips() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 1.6e9}, {"G", 0.8e9}});
+  phases.add("fibre",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 5.0e10}, {"G", 3.0e10}});
+
+  const auto m = rvegen::homogenization::extract_isotropic_moduli(phases);
+  REQUIRE(m.K.size() == 2);
+  REQUIRE(m.G.size() == 2);
+  REQUIRE(m.K[0] == 1.6e9);
+  REQUIRE(m.G[1] == 3.0e10);
+}
+
+void test_phase_bridge_extract_throws_on_missing_K_G() {
+  rvegen::phase_collection<double> phases;
+  phases.add("incomplete",
+      nlohmann::json{{"type", "linear_elasticity"}, {"K", 1.0e9}});
+  bool threw = false;
+  try { (void)rvegen::homogenization::extract_isotropic_moduli(phases); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_phase_bridge_extract_throws_on_anisotropic_type() {
+  rvegen::phase_collection<double> phases;
+  phases.add("aniso",
+      nlohmann::json{{"type", "transversely_isotropic"},
+                     {"K", 1.0e9}, {"G", 0.5e9}});
+  bool threw = false;
+  std::string what;
+  try { (void)rvegen::homogenization::extract_isotropic_moduli(phases); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("linear_elasticity") != std::string::npos);
+}
+
+void test_phase_bridge_extract_throws_on_missing_material_config() {
+  rvegen::phase_collection<double> phases;
+  phases.add("bare");   // no material_config — default empty json
+  bool threw = false;
+  try { (void)rvegen::homogenization::extract_isotropic_moduli(phases); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_phase_bridge_compose_into_mori_tanaka() {
+  // End-to-end: build a 2-phase RVE, compute volume fractions via the
+  // bridge, extract isotropic K/G via the bridge, feed into Mori-
+  // Tanaka. The result should sit between Reuss and Voigt for the
+  // resolved fractions — sanity check that the bridge plumbing is
+  // wired up correctly.
+  using namespace rvegen::homogenization;
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 1.0e9}, {"G", 0.5e9}});
+  phases.add("fibre",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 5.0e10}, {"G", 3.0e10}});
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto fibre = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.25);
+  fibre->set_phase_name("fibre");
+  shapes.push_back(std::move(fibre));
+
+  const auto vols = compute_phase_volume_fractions(
+      shapes, phases, std::array<double, 3>{1.0, 1.0, 0.0},
+      128, 128, 1);
+  const auto moduli = extract_isotropic_moduli(phases);
+
+  // Treat untagged voxels as matrix (only matrix carries no shape).
+  const double f_matrix = vols.untagged_fraction + vols.per_phase[0];
+  const double f_fibre  = vols.per_phase[1];
+  REQUIRE(std::abs(f_matrix + f_fibre - 1.0) < 1e-12);
+
+  const auto [K_mt, G_mt] = mori_tanaka_moduli<double>(
+      moduli.K[0], moduli.G[0],
+      {moduli.K[1]}, {moduli.G[1]}, {f_fibre});
+
+  // Reuss / Voigt sanity-bracket.
+  const double K_voigt = f_matrix * moduli.K[0] + f_fibre * moduli.K[1];
+  const double K_reuss = 1.0 / (f_matrix / moduli.K[0] + f_fibre / moduli.K[1]);
+  REQUIRE(K_mt > K_reuss);
+  REQUIRE(K_mt < K_voigt);
+}
+
+// ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
 void test_phase_collection_basics_and_ids() {
@@ -3388,6 +3511,12 @@ int main() {
   test_self_consistent_dilute_limit_approaches_matrix();
   test_self_consistent_throws_on_non_convergence();
   test_self_consistent_size_mismatch_throws();
+  test_phase_bridge_volume_fractions_match_geometry();
+  test_phase_bridge_extract_isotropic_moduli_round_trips();
+  test_phase_bridge_extract_throws_on_missing_K_G();
+  test_phase_bridge_extract_throws_on_anisotropic_type();
+  test_phase_bridge_extract_throws_on_missing_material_config();
+  test_phase_bridge_compose_into_mori_tanaka();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
