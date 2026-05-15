@@ -564,6 +564,41 @@ void test_gmsh_geo_writer_periodic_and_phases_combine() {
   REQUIRE(coherence_pos < physical_pos);
 }
 
+// 3D variant of the periodic + phases combination test. Catches the
+// same refactor-swap regression for the write_3d path that the 2D
+// test catches for write_2d. The original review of #35/#46 flagged
+// this 3D case as a coverage gap.
+void test_gmsh_geo_writer_periodic_and_phases_combine_3d() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("particle");
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto s = std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1);
+  s->set_phase_name("particle");
+  shapes.emplace_back(std::move(s));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_periodic(true);
+  writer.set_phases(&phases);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 1.0});
+  const auto txt = out.str();
+
+  const auto entity_pos    = txt.find("Sphere(");
+  const auto periodic_pos  = txt.find("Periodic Surface");
+  const auto coherence_pos = txt.find("Coherence;");
+  const auto physical_pos  = txt.find("Physical Volume(\"particle\"");
+  REQUIRE(entity_pos    != std::string::npos);
+  REQUIRE(periodic_pos  != std::string::npos);
+  REQUIRE(coherence_pos != std::string::npos);
+  REQUIRE(physical_pos  != std::string::npos);
+  // Strict order: entity < periodic < coherence < physical.
+  REQUIRE(entity_pos    < periodic_pos);
+  REQUIRE(periodic_pos  < coherence_pos);
+  REQUIRE(coherence_pos < physical_pos);
+}
+
 void test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order() {
   // Documented invariant: Physical directives come out in
   // alphabetical order of phase_name, not phase_collection insertion
@@ -1120,30 +1155,43 @@ end_header
   REQUIRE(what.find("binary") != std::string::npos);
 }
 
-// Helpers for building binary-PLY blobs inline. The data section is
-// declared little-endian by the header; on a LE host (the CI runner)
-// these write little-endian by memcpy.
-namespace ply_binary_fixture {
+// Shared little-endian byte writers. Used by every binary-format
+// fixture in this file (STL + PLY) — previously duplicated as inline
+// lambdas inside each test, surfaced as a review nit in the binary
+// PLY follow-up. Lives in the file's anonymous namespace so it
+// doesn't leak symbols out of this TU.
+namespace le_writers {
 
 inline void write_le_u8(std::ostream& o, std::uint8_t v) {
   o.put(static_cast<char>(v));
 }
+inline void write_le_u32(std::ostream& o, std::uint32_t v) {
+  o.put(static_cast<char>(v & 0xff));
+  o.put(static_cast<char>((v >> 8)  & 0xff));
+  o.put(static_cast<char>((v >> 16) & 0xff));
+  o.put(static_cast<char>((v >> 24) & 0xff));
+}
 inline void write_le_i32(std::ostream& o, std::int32_t v) {
   std::uint32_t u;
   std::memcpy(&u, &v, sizeof(u));
-  o.put(static_cast<char>(u & 0xff));
-  o.put(static_cast<char>((u >> 8)  & 0xff));
-  o.put(static_cast<char>((u >> 16) & 0xff));
-  o.put(static_cast<char>((u >> 24) & 0xff));
+  write_le_u32(o, u);
 }
 inline void write_le_f32(std::ostream& o, float v) {
   std::uint32_t bits;
   std::memcpy(&bits, &v, sizeof(bits));
-  o.put(static_cast<char>(bits & 0xff));
-  o.put(static_cast<char>((bits >> 8)  & 0xff));
-  o.put(static_cast<char>((bits >> 16) & 0xff));
-  o.put(static_cast<char>((bits >> 24) & 0xff));
+  write_le_u32(o, bits);
 }
+
+} // namespace le_writers
+
+// PLY-blob fixture builders. The le_writers namespace handles the
+// byte-level encoding; this layer adds the PLY-specific header and
+// element structure.
+namespace ply_binary_fixture {
+
+using le_writers::write_le_f32;
+using le_writers::write_le_i32;
+using le_writers::write_le_u8;
 
 // Emit a unit-cube binary-LE PLY blob mirroring `unit_cube_ply` (the
 // ASCII fixture). 8 vertices (float x/y/z), 6 quad faces (uchar count
@@ -2963,33 +3011,19 @@ void test_mesh_inclusion_input_accepts_binary_stl() {
   }
   REQUIRE(ascii_tris.size() == 12);
 
-  auto write_le_u32 = [](std::ostream& o, std::uint32_t v) {
-    o.put(static_cast<char>(v & 0xff));
-    o.put(static_cast<char>((v >> 8)  & 0xff));
-    o.put(static_cast<char>((v >> 16) & 0xff));
-    o.put(static_cast<char>((v >> 24) & 0xff));
-  };
-  auto write_le_f32 = [](std::ostream& o, float f) {
-    std::uint32_t bits;
-    std::memcpy(&bits, &f, sizeof(bits));
-    o.put(static_cast<char>(bits & 0xff));
-    o.put(static_cast<char>((bits >> 8)  & 0xff));
-    o.put(static_cast<char>((bits >> 16) & 0xff));
-    o.put(static_cast<char>((bits >> 24) & 0xff));
-  };
-
   const std::string tmp_path = "/tmp/rvegen_test_binary_via_input.stl";
   {
     std::ofstream out{tmp_path, std::ios::binary};
     for (int i = 0; i < 80; ++i) out.put('\0');     // header
-    write_le_u32(out, static_cast<std::uint32_t>(ascii_tris.size()));
+    le_writers::write_le_u32(out,
+        static_cast<std::uint32_t>(ascii_tris.size()));
     for (auto const& t : ascii_tris) {
       // Normal (0,0,1) is fine — the reader skips it (computed from
       // vertex order anyway).
-      for (float n : {0.f, 0.f, 1.f}) write_le_f32(out, n);
+      for (float n : {0.f, 0.f, 1.f}) le_writers::write_le_f32(out, n);
       for (int v = 0; v < 3; ++v) {
         for (int c = 0; c < 3; ++c) {
-          write_le_f32(out, static_cast<float>(t.v[v][c]));
+          le_writers::write_le_f32(out, static_cast<float>(t.v[v][c]));
         }
       }
       out.put('\0'); out.put('\0');                  // attribute bytes
@@ -3717,6 +3751,7 @@ int main() {
   test_gmsh_geo_writer_3d_physical_groups_per_phase();
   test_gmsh_geo_writer_without_phases_emits_no_physical_groups();
   test_gmsh_geo_writer_periodic_and_phases_combine();
+  test_gmsh_geo_writer_periodic_and_phases_combine_3d();
   test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order();
   test_gmsh_geo_writer_phases_unknown_name_throws();
   test_gmsh_geo_writer_strict_mode_rejects_untagged_shape();
