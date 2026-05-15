@@ -43,13 +43,31 @@
 
 namespace py = pybind11;
 
+// Add the shape_base phase_name accessors to a bound shape. Used at
+// the tail of every shape's binding chain so Python users can tag
+// shapes for the per-phase output story (gmsh Physical groups,
+// voxel phase IDs). Templated on the concrete shape type so the
+// lambda captures pick the right `phase_name()` / `set_phase_name`
+// overload through normal name lookup.
+//
+// Takes the bound class by value so the entire `py::class_<X>(...).def(...)
+// ....def(...)` chain can be passed inline at the call site —
+// pybind11's `py::class_` wraps a Python type handle, so the copy is
+// cheap and registers methods on the same underlying Python type.
+template <typename Shape>
+void add_phase_name(py::class_<Shape> cls) {
+  cls.def_property("phase_name",
+      [](Shape const& s) { return s.phase_name(); },
+      [](Shape& s, std::string const& n) { s.set_phase_name(n); });
+}
+
 PYBIND11_MODULE(_core, m) {
   m.doc() =
       "rvegen — Representative Volume Element generator (Python bindings, "
       "phase-2 shape surface: Circle, Sphere, Rectangle, Box, Ellipse, "
       "PolylineTube, MeshInclusion, VoronoiCell).";
 
-  py::class_<rvegen::circle<double>>(m, "Circle")
+  add_phase_name(py::class_<rvegen::circle<double>>(m, "Circle")
       .def(py::init<double, double, double>(), py::arg("x"), py::arg("y"),
            py::arg("radius"))
       .def_property_readonly("x",
@@ -60,9 +78,9 @@ PYBIND11_MODULE(_core, m) {
           "radius", [](rvegen::circle<double> const& c) { return c.radius; })
       .def("is_inside", [](rvegen::circle<double> const& c, double x,
                            double y) { return c.is_inside({x, y, 0.0}); })
-      .def("area", &rvegen::circle<double>::area);
+      .def("area", &rvegen::circle<double>::area));
 
-  py::class_<rvegen::sphere<double>>(m, "Sphere")
+  add_phase_name(py::class_<rvegen::sphere<double>>(m, "Sphere")
       .def(py::init<double, double, double, double>(), py::arg("x"),
            py::arg("y"), py::arg("z"), py::arg("radius"))
       .def_property_readonly("x",
@@ -77,9 +95,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::sphere<double> const& s, double x, double y, double z) {
              return s.is_inside({x, y, z});
            })
-      .def("volume", &rvegen::sphere<double>::volume);
+      .def("volume", &rvegen::sphere<double>::volume));
 
-  py::class_<rvegen::rectangle<double>>(m, "Rectangle")
+  add_phase_name(py::class_<rvegen::rectangle<double>>(m, "Rectangle")
       .def(py::init<double, double, double, double>(), py::arg("x"),
            py::arg("y"), py::arg("width"), py::arg("height"))
       .def_property_readonly(
@@ -95,9 +113,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::rectangle<double> const& r, double x, double y) {
              return r.is_inside({x, y, 0.0});
            })
-      .def("area", &rvegen::rectangle<double>::area);
+      .def("area", &rvegen::rectangle<double>::area));
 
-  py::class_<rvegen::box<double>>(m, "Box")
+  add_phase_name(py::class_<rvegen::box<double>>(m, "Box")
       .def(py::init<double, double, double, double, double, double>(),
            py::arg("x"), py::arg("y"), py::arg("z"), py::arg("width"),
            py::arg("height"), py::arg("depth"))
@@ -117,9 +135,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::box<double> const& b, double x, double y, double z) {
              return b.is_inside({x, y, z});
            })
-      .def("volume", &rvegen::box<double>::volume);
+      .def("volume", &rvegen::box<double>::volume));
 
-  py::class_<rvegen::ellipse<double>>(m, "Ellipse")
+  add_phase_name(py::class_<rvegen::ellipse<double>>(m, "Ellipse")
       .def(py::init<double, double, double, double, double>(),
            py::arg("x"), py::arg("y"), py::arg("radius_a"),
            py::arg("radius_b"), py::arg("rotation_rad"))
@@ -137,9 +155,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::ellipse<double> const& e, double x, double y) {
              return e.is_inside({x, y, 0.0});
            })
-      .def("area", &rvegen::ellipse<double>::area);
+      .def("area", &rvegen::ellipse<double>::area));
 
-  py::class_<rvegen::polyline_tube<double>>(m, "PolylineTube")
+  add_phase_name(py::class_<rvegen::polyline_tube<double>>(m, "PolylineTube")
       // Centerline as a Python list of (x, y, z) tuples — converted to
       // std::vector<std::array<double, 3>> via pybind11/stl.h.
       .def(py::init<std::vector<std::array<double, 3>> const&, double>(),
@@ -160,9 +178,9 @@ PYBIND11_MODULE(_core, m) {
       .def("is_inside",
            [](rvegen::polyline_tube<double> const& t, double x, double y,
               double z) { return t.is_inside({x, y, z}); })
-      .def("volume", &rvegen::polyline_tube<double>::volume);
+      .def("volume", &rvegen::polyline_tube<double>::volume));
 
-  py::class_<rvegen::mesh_inclusion<double>>(m, "MeshInclusion")
+  add_phase_name(py::class_<rvegen::mesh_inclusion<double>>(m, "MeshInclusion")
       // `from_stl_file(path)` factory — the natural Python entry point.
       // Direct ctor from a Python triangle list is more painful (would
       // need to bind gte::Triangle3) and offers no win over loading via
@@ -184,9 +202,9 @@ PYBIND11_MODULE(_core, m) {
       .def("volume", &rvegen::mesh_inclusion<double>::volume)
       .def("set_middle_point",
            [](rvegen::mesh_inclusion<double>& m, double x, double y,
-              double z) { m.set_middle_point({x, y, z}); });
+              double z) { m.set_middle_point({x, y, z}); }));
 
-  py::class_<rvegen::voronoi_cell<double>>(m, "VoronoiCell")
+  add_phase_name(py::class_<rvegen::voronoi_cell<double>>(m, "VoronoiCell")
       // Vertices: list of (x, y, z) tuples.
       // Faces: list of vertex-index lists per face.
       .def(py::init([](std::vector<std::array<double, 3>> const& verts,
@@ -217,11 +235,11 @@ PYBIND11_MODULE(_core, m) {
       .def("is_inside",
            [](rvegen::voronoi_cell<double> const& c, double x, double y,
               double z) { return c.is_inside({x, y, z}); })
-      .def("volume", &rvegen::voronoi_cell<double>::volume);
+      .def("volume", &rvegen::voronoi_cell<double>::volume));
 
   // 2D convex polygon — Voronoi-cell-ready, full shape_base contract
   // on the C++ side.
-  py::class_<rvegen::convex_polygon<double>>(m, "ConvexPolygon")
+  add_phase_name(py::class_<rvegen::convex_polygon<double>>(m, "ConvexPolygon")
       .def(py::init<std::vector<std::array<double, 2>>>(),
            py::arg("vertices"),
            "Construct from a CCW-ordered list of (x, y) tuples; ≥ 3 "
@@ -246,7 +264,7 @@ PYBIND11_MODULE(_core, m) {
       .def("set_middle_point",
            [](rvegen::convex_polygon<double>& p, double x, double y) {
              p.set_middle_point({x, y, 0.0});
-           });
+           }));
 
   // Bounded 2D Voronoi tessellation by seed points (#114 phase 1).
   // build_polygons() returns the raw vertex lists; build_cells()
