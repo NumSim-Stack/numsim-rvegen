@@ -119,6 +119,7 @@
 #include "generators/only_inside_generator.h"
 #include "generators/periodic_generator.h"
 #include "generators/random_generator.h"
+#include "generators/weave_generator.h"
 
 // postprocess (writers + the base they inherit from)
 #include "postprocess/post_process_base.h"
