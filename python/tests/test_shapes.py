@@ -132,6 +132,25 @@ def test_module_exports():
         assert hasattr(rvegen, name), f"rvegen.{name} missing from public API"
 
 
+def test_phase_name_round_trip_on_every_shape():
+    """Every bound shape exposes a phase_name property that round-trips."""
+    shapes = [
+        rvegen.Circle(0.5, 0.5, 0.1),
+        rvegen.Sphere(0.0, 0.0, 0.0, 0.5),
+        rvegen.Rectangle(0.0, 0.0, 0.2, 0.4),
+        rvegen.Box(0.0, 0.0, 0.0, 0.2, 0.4, 0.5),
+        rvegen.Ellipse(0.0, 0.0, 0.5, 0.2, 0.0),
+        rvegen.PolylineTube([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], radius=0.1),
+        rvegen.ConvexPolygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+    ]
+    for s in shapes:
+        # Default is empty.
+        assert s.phase_name == ""
+        # Setter + getter round-trip.
+        s.phase_name = "fibre"
+        assert s.phase_name == "fibre"
+
+
 def test_convex_polygon_unit_square():
     """Direct ConvexPolygon construction + area / is_inside / centroid."""
     sq = rvegen.ConvexPolygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
