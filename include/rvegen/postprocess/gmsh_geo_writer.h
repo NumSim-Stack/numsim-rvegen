@@ -251,6 +251,13 @@ private:
   //
   // `kind` is the gmsh entity kind word ("Surface" for 2D, "Volume" for
   // 3D) so we can reuse this routine across write_2d/write_3d.
+  //
+  // Output ordering: `Physical` directives are emitted in alphabetical
+  // order of phase_name (the `std::map` key order). Inside each group,
+  // entity IDs are in the shape-vector's insertion order. Gmsh itself
+  // is order-insensitive for these directives, but downstream
+  // .geo-diffing tools will see name-keyed sorted output, which is the
+  // deterministic invariant pinned by the regression tests.
   void write_physical_groups(
       std::ostream& out,
       std::vector<std::pair<std::size_t, std::string>> const& tagged,
