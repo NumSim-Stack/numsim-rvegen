@@ -1838,6 +1838,86 @@ void test_mesh_inclusion_input_accepts_binary_stl() {
   std::remove(tmp_path.c_str());
 }
 
+// `read_mesh_file` dispatches by file extension. Once mesh_inclusion_input
+// uses it, a `.ply` path Just Works the same way `.stl` does — the
+// canonical "STL or PLY in the same field" promise of #9.
+void test_read_mesh_file_dispatches_stl_and_ply() {
+  // Drop the existing ASCII unit-cube fixtures to temp files with the
+  // matching extension and confirm each round-trips through dispatch.
+  const std::string stl_tmp = "/tmp/rvegen_test_mesh_dispatch.stl";
+  {
+    std::ofstream out{stl_tmp};
+    out << unit_cube_stl;
+  }
+  const std::string ply_tmp = "/tmp/rvegen_test_mesh_dispatch.ply";
+  {
+    std::ofstream out{ply_tmp};
+    out << unit_cube_ply;
+  }
+  auto from_stl = rvegen::read_mesh_file<double>(stl_tmp);
+  auto from_ply = rvegen::read_mesh_file<double>(ply_tmp);
+  REQUIRE(from_stl.size() == 12);
+  REQUIRE(from_ply.size() == 12);
+
+  std::remove(stl_tmp.c_str());
+  std::remove(ply_tmp.c_str());
+}
+
+void test_read_mesh_file_unknown_extension_throws() {
+  const std::string bad = "/tmp/rvegen_test_mesh_dispatch.xyz";
+  { std::ofstream out{bad}; out << "irrelevant"; }
+  bool threw = false;
+  std::string what;
+  try { (void)rvegen::read_mesh_file<double>(bad); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("unsupported extension") != std::string::npos);
+  std::remove(bad.c_str());
+}
+
+void test_mesh_inclusion_input_accepts_ply_via_dispatch() {
+  // Same setup as the binary-STL test, but feeding a PLY file. Proves
+  // the registry → input → mesh_inclusion path consumes either format.
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  const std::string tmp_path = "/tmp/rvegen_test_ply_via_input.ply";
+  {
+    std::ofstream out{tmp_path};
+    out << unit_cube_ply;
+  }
+
+  std::mt19937 engine{29};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec_json = std::string{R"({
+    "type": "mesh_inclusion_input",
+    "stl_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })";
+  const auto input_spec = nlohmann::json::parse(input_spec_json);
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  REQUIRE(input != nullptr);
+
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  REQUIRE(shape->is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(!shape->is_inside({2.0, 2.0, 2.0}));
+
+  std::remove(tmp_path.c_str());
+}
+
 void test_mesh_inclusion_input_empty_stl_throws() {
   // An STL file with zero triangles would yield a `mesh_inclusion`
   // whose `is_inside` is always false. The input ctor must refuse it
@@ -2387,6 +2467,9 @@ int main() {
   test_mesh_inclusion_input_via_registry();
   test_mesh_inclusion_input_missing_file_throws();
   test_mesh_inclusion_input_accepts_binary_stl();
+  test_read_mesh_file_dispatches_stl_and_ply();
+  test_read_mesh_file_unknown_extension_throws();
+  test_mesh_inclusion_input_accepts_ply_via_dispatch();
   test_mesh_inclusion_input_empty_stl_throws();
   test_mesh_inclusion_inside_outside_cube();
   test_mesh_inclusion_volume_unit_cube();
