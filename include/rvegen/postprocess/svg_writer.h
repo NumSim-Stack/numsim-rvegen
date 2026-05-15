@@ -25,6 +25,7 @@
 
 #include "post_process_base.h"
 #include "../shapes/circle.h"
+#include "../shapes/convex_polygon.h"
 #include "../shapes/ellipse.h"
 #include "../shapes/rectangle.h"
 #include "../types.h"
@@ -143,6 +144,18 @@ public:
             << "rx=\"" << rx << "\" ry=\"" << ry << "\" "
             << "transform=\"rotate(" << deg << ' ' << cx << ' ' << cy << ")\" "
             << "fill=\""   << fill   << "\" fill-opacity=\"0.7\" "
+            << "stroke=\"#222\" stroke-width=\"" << stroke_w << "\"/>\n";
+      } else if (auto const* p = dynamic_cast<convex_polygon<value_type> const*>(raw); p) {
+        // SVG <polygon> takes a space-separated points list. Flip y
+        // for each vertex to keep SVG's top-down y-axis convention.
+        out << "  <polygon points=\"";
+        bool first = true;
+        for (auto const& v : p->vertices()) {
+          if (!first) out << ' ';
+          out << v[0] << ',' << (Ly - v[1]);
+          first = false;
+        }
+        out << "\" fill=\""   << fill   << "\" fill-opacity=\"0.7\" "
             << "stroke=\"#222\" stroke-width=\"" << stroke_w << "\"/>\n";
       } else {
         out << "  <!-- (skipped 3D / unsupported shape) -->\n";
