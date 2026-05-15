@@ -2389,6 +2389,27 @@ void test_gmsh_geo_writer_emits_mesh_size_directives_when_set() {
   REQUIRE(txt.find("// Mesh.CharacteristicLengthMax = 0.1;")  == std::string::npos);
 }
 
+void test_gmsh_geo_writer_emits_element_order_when_set() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_element_order(2);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  REQUIRE(out.str().find("Mesh.ElementOrder = 2;") != std::string::npos);
+}
+
+void test_gmsh_geo_writer_omits_element_order_when_default() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  REQUIRE(out.str().find("Mesh.ElementOrder") == std::string::npos);
+}
+
 void test_gmsh_geo_writer_keeps_placeholders_when_mesh_size_default() {
   // Default ctor leaves the mesh-size knobs at 0 → commented
   // placeholders remain. Back-compat for callers that haven't
@@ -3554,6 +3575,8 @@ int main() {
   test_gmsh_geo_writer_emits_plane_surface_for_convex_polygon();
   test_gmsh_geo_writer_polygon_id_appears_in_physical_group();
   test_gmsh_geo_writer_emits_mesh_size_directives_when_set();
+  test_gmsh_geo_writer_emits_element_order_when_set();
+  test_gmsh_geo_writer_omits_element_order_when_default();
   test_gmsh_geo_writer_keeps_placeholders_when_mesh_size_default();
   test_voronoi_to_shapes_helper_returns_shape_vector();
   test_svg_writer_emits_polygon_element_for_convex_polygon();

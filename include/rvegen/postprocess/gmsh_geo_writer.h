@@ -67,7 +67,10 @@ public:
                              : value_type{0}},
         _char_length_max{handler.contains("char_length_max")
                              ? handler.template get<value_type>("char_length_max")
-                             : value_type{0}} {}
+                             : value_type{0}},
+        _element_order{handler.contains("element_order")
+                           ? handler.template get<int>("element_order")
+                           : 0} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -86,6 +89,9 @@ public:
         .template add<numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMin = <value> in the .geo header (controls minimum element size). Default 0 = no directive emitted.">>();
     s.template insert<value_type>("char_length_max")
         .template add<numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMax = <value> in the .geo header (controls maximum element size). Default 0 = no directive emitted.">>();
+    s.template insert<int>("element_order")
+        .template add<numsim_core::description_label<"if > 0, emits Mesh.ElementOrder = <value> in the .geo header — 1 for linear elements (gmsh default), 2 for quadratic (better accuracy on elliptic FE problems). Default 0 = no directive emitted.">>()
+        .template add<numsim_core::range<0, 5>>();
     return s;
   }
 
@@ -109,6 +115,14 @@ public:
   [[nodiscard]] value_type characteristic_length_max() const noexcept {
     return _char_length_max;
   }
+
+  // Optional gmsh element-order knob. 0 (default) → no directive
+  // emitted, gmsh uses its built-in default (linear). 1 → linear
+  // elements (triangles / tetrahedra). 2 → quadratic elements
+  // (6-node triangles / 10-node tetrahedra), which converge faster
+  // on elliptic FE problems at the cost of more DOFs per element.
+  void set_element_order(int order) noexcept { _element_order = order; }
+  [[nodiscard]] int element_order() const noexcept { return _element_order; }
 
   [[nodiscard]] std::string const& output_path() const noexcept {
     return _output_path;
@@ -210,6 +224,9 @@ private:
       out << "Mesh.CharacteristicLengthMax = " << _char_length_max << ";\n";
     } else {
       out << "// Mesh.CharacteristicLengthMax = 0.1;\n";
+    }
+    if (_element_order > 0) {
+      out << "Mesh.ElementOrder = " << _element_order << ";\n";
     }
     out << "\n";
   }
@@ -399,6 +416,7 @@ private:
   bool _phase_strict{false};
   value_type _char_length_min{0};
   value_type _char_length_max{0};
+  int _element_order{0};
 };
 
 } // namespace rvegen
