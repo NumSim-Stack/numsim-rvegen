@@ -45,9 +45,21 @@
 // frees callers from picking a matrix and makes the variational
 // bracket on the effective moduli direct.
 //
+// N-phase HS bounds (`hashin_shtrikman_lower_n` / `_upper_n` /
+// `_bounds_n`) use the Berryman / Walpole closed form:
+//
+//   K_HS = (Σ v_i / (K_i + 4G*/3))^{-1} - 4G*/3
+//   G_HS = (Σ v_i / (G_i + ξ*))^{-1} - ξ*
+//     ξ* = G* · (9K* + 8G*) / (6 (K* + 2G*))
+//
+// where (K*, G*) is the comparison medium — the soft phase's moduli
+// for HS- and the stiff phase's for HS+. Defined only when the phases
+// sort consistently in K and G (one phase has both the smallest K
+// and the smallest G; another has both the largest K and the largest
+// G). The 2-phase HS routines remain available; for `n == 2` the
+// N-phase form is exactly equivalent and is cross-checked in tests.
+//
 // Out of scope here, ships in follow-up PRs against #5:
-//   * N-phase HS bounds (Walpole / Berryman form) — well-defined
-//     only when the phases sort consistently in K and G.
 //   * Mori-Tanaka for anisotropic phases / non-spherical inclusions
 //     (needs a per-shape Eshelby tensor).
 //   * Self-consistent (Hill) scheme — requires iterative solve.
@@ -55,7 +67,9 @@
 //     process consumes per-phase numsim-materials configs.
 //   * 2D plane-stress / plane-strain reductions of the 3D bounds.
 
+#include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -344,6 +358,122 @@ template <typename T = double>
 hashin_shtrikman_bounds(T K_1, T G_1, T K_2, T G_2, T volume_fraction_2) {
   return {hashin_shtrikman_lower<T>(K_1, G_1, K_2, G_2, volume_fraction_2),
           hashin_shtrikman_upper<T>(K_1, G_1, K_2, G_2, volume_fraction_2)};
+}
+
+// N-phase Hashin-Shtrikman bounds via the Berryman / Walpole closed
+// form. `K_phases`, `G_phases`, and `volume_fractions` must all be
+// equal-sized; volume fractions must sum to 1 (with small float slop
+// absorbed). The phases must sort consistently — for HS- the soft
+// phase needs both the smallest K and the smallest G; for HS+ the
+// stiff phase needs both the largest K and the largest G.
+//
+// Implementation note: the comparison medium (K_star, G_star) is
+// derived per-bound, so the same input vector yields a well-defined
+// lower bound iff `min_K_phase == min_G_phase` (one phase is the
+// softest in both moduli) and similarly for the upper bound. We
+// detect the cross-ordering case and throw with a clear message.
+namespace detail {
+
+template <typename T>
+[[nodiscard]] std::pair<T, T> hashin_shtrikman_n_impl(
+    std::vector<T> const& K_phases,
+    std::vector<T> const& G_phases,
+    std::vector<T> const& volume_fractions,
+    T K_star, T G_star) {
+  // Eshelby-spherical comparison medium resolvents.
+  const T four_g_over_3 = T{4} * G_star / T{3};
+  const T xi_star = G_star * (T{9} * K_star + T{8} * G_star) /
+                    (T{6} * (K_star + T{2} * G_star));
+  T inv_K_sum{0};
+  T inv_G_sum{0};
+  for (std::size_t i = 0; i < K_phases.size(); ++i) {
+    inv_K_sum += volume_fractions[i] / (K_phases[i] + four_g_over_3);
+    inv_G_sum += volume_fractions[i] / (G_phases[i] + xi_star);
+  }
+  return {T{1} / inv_K_sum - four_g_over_3,
+          T{1} / inv_G_sum - xi_star};
+}
+
+template <typename T>
+void hashin_shtrikman_n_validate(
+    std::vector<T> const& K_phases,
+    std::vector<T> const& G_phases,
+    std::vector<T> const& volume_fractions) {
+  if (K_phases.empty()) {
+    throw std::runtime_error{
+        "hashin_shtrikman_n: at least one phase required"};
+  }
+  if (K_phases.size() != G_phases.size() ||
+      K_phases.size() != volume_fractions.size()) {
+    throw std::runtime_error{
+        "hashin_shtrikman_n: K_phases / G_phases / volume_fractions "
+        "size mismatch"};
+  }
+  T sum{0};
+  for (auto v : volume_fractions) {
+    if (v < T{0}) {
+      throw std::runtime_error{
+          "hashin_shtrikman_n: negative volume fraction"};
+    }
+    sum += v;
+  }
+  if (sum < T{1} - T{1e-9} || sum > T{1} + T{1e-9}) {
+    throw std::runtime_error{
+        "hashin_shtrikman_n: volume fractions must sum to 1"};
+  }
+}
+
+} // namespace detail
+
+template <typename T = double>
+[[nodiscard]] std::pair<T, T> hashin_shtrikman_lower_n(
+    std::vector<T> const& K_phases,
+    std::vector<T> const& G_phases,
+    std::vector<T> const& volume_fractions) {
+  detail::hashin_shtrikman_n_validate(K_phases, G_phases, volume_fractions);
+  const auto min_K_it = std::min_element(K_phases.begin(), K_phases.end());
+  const auto min_G_it = std::min_element(G_phases.begin(), G_phases.end());
+  const auto min_K_idx = std::distance(K_phases.begin(), min_K_it);
+  const auto min_G_idx = std::distance(G_phases.begin(), min_G_it);
+  if (min_K_idx != min_G_idx) {
+    throw std::runtime_error{
+        "hashin_shtrikman_lower_n: phases don't sort consistently — "
+        "the softest-in-K phase must also be softest in G; "
+        "current input has the K minimum on a different phase than "
+        "the G minimum"};
+  }
+  return detail::hashin_shtrikman_n_impl<T>(
+      K_phases, G_phases, volume_fractions, *min_K_it, *min_G_it);
+}
+
+template <typename T = double>
+[[nodiscard]] std::pair<T, T> hashin_shtrikman_upper_n(
+    std::vector<T> const& K_phases,
+    std::vector<T> const& G_phases,
+    std::vector<T> const& volume_fractions) {
+  detail::hashin_shtrikman_n_validate(K_phases, G_phases, volume_fractions);
+  const auto max_K_it = std::max_element(K_phases.begin(), K_phases.end());
+  const auto max_G_it = std::max_element(G_phases.begin(), G_phases.end());
+  const auto max_K_idx = std::distance(K_phases.begin(), max_K_it);
+  const auto max_G_idx = std::distance(G_phases.begin(), max_G_it);
+  if (max_K_idx != max_G_idx) {
+    throw std::runtime_error{
+        "hashin_shtrikman_upper_n: phases don't sort consistently — "
+        "the stiffest-in-K phase must also be stiffest in G; "
+        "current input has the K maximum on a different phase than "
+        "the G maximum"};
+  }
+  return detail::hashin_shtrikman_n_impl<T>(
+      K_phases, G_phases, volume_fractions, *max_K_it, *max_G_it);
+}
+
+template <typename T = double>
+[[nodiscard]] std::pair<std::pair<T, T>, std::pair<T, T>>
+hashin_shtrikman_bounds_n(std::vector<T> const& K_phases,
+                          std::vector<T> const& G_phases,
+                          std::vector<T> const& volume_fractions) {
+  return {hashin_shtrikman_lower_n<T>(K_phases, G_phases, volume_fractions),
+          hashin_shtrikman_upper_n<T>(K_phases, G_phases, volume_fractions)};
 }
 
 } // namespace rvegen::homogenization
