@@ -907,8 +907,8 @@ void test_ply_ascii_reader_round_trips_through_mesh_inclusion() {
 }
 
 void test_ply_ascii_reader_rejects_binary_format() {
-  // A `binary_little_endian` declaration must be refused with a clear
-  // error — phase-1 reader is ASCII only.
+  // The explicit ASCII reader still refuses binary input — callers
+  // who need binary should use read_ply / read_ply_binary instead.
   constexpr char const* bin_ply = R"(ply
 format binary_little_endian 1.0
 element vertex 0
@@ -922,6 +922,126 @@ end_header
   catch (std::runtime_error const& e) { threw = true; what = e.what(); }
   REQUIRE(threw);
   REQUIRE(what.find("binary") != std::string::npos);
+}
+
+// Helpers for building binary-PLY blobs inline. The data section is
+// declared little-endian by the header; on a LE host (the CI runner)
+// these write little-endian by memcpy.
+namespace ply_binary_fixture {
+
+inline void write_le_u8(std::ostream& o, std::uint8_t v) {
+  o.put(static_cast<char>(v));
+}
+inline void write_le_i32(std::ostream& o, std::int32_t v) {
+  std::uint32_t u;
+  std::memcpy(&u, &v, sizeof(u));
+  o.put(static_cast<char>(u & 0xff));
+  o.put(static_cast<char>((u >> 8)  & 0xff));
+  o.put(static_cast<char>((u >> 16) & 0xff));
+  o.put(static_cast<char>((u >> 24) & 0xff));
+}
+inline void write_le_f32(std::ostream& o, float v) {
+  std::uint32_t bits;
+  std::memcpy(&bits, &v, sizeof(bits));
+  o.put(static_cast<char>(bits & 0xff));
+  o.put(static_cast<char>((bits >> 8)  & 0xff));
+  o.put(static_cast<char>((bits >> 16) & 0xff));
+  o.put(static_cast<char>((bits >> 24) & 0xff));
+}
+
+// Emit a unit-cube binary-LE PLY blob mirroring `unit_cube_ply` (the
+// ASCII fixture). 8 vertices (float x/y/z), 6 quad faces (uchar count
+// + int indices). Same fan-triangulation expectation: 12 triangles.
+inline std::string make_unit_cube_blob() {
+  std::ostringstream out;
+  out << "ply\n"
+         "format binary_little_endian 1.0\n"
+         "element vertex 8\n"
+         "property float x\n"
+         "property float y\n"
+         "property float z\n"
+         "element face 6\n"
+         "property list uchar int vertex_indices\n"
+         "end_header\n";
+  constexpr float verts[8][3] = {
+      {-0.5f, -0.5f, -0.5f}, { 0.5f, -0.5f, -0.5f},
+      { 0.5f,  0.5f, -0.5f}, {-0.5f,  0.5f, -0.5f},
+      {-0.5f, -0.5f,  0.5f}, { 0.5f, -0.5f,  0.5f},
+      { 0.5f,  0.5f,  0.5f}, {-0.5f,  0.5f,  0.5f}};
+  for (auto const& v : verts) {
+    for (auto c : v) write_le_f32(out, c);
+  }
+  // Same outward-winding face index sets as the ASCII fixture.
+  constexpr std::array<std::array<int, 4>, 6> faces{{
+      {0, 3, 2, 1}, {4, 5, 6, 7},
+      {0, 1, 5, 4}, {1, 2, 6, 5},
+      {2, 3, 7, 6}, {3, 0, 4, 7}}};
+  for (auto const& f : faces) {
+    write_le_u8(out, 4);
+    for (auto i : f) write_le_i32(out, i);
+  }
+  return out.str();
+}
+
+} // namespace ply_binary_fixture
+
+void test_ply_binary_reader_round_trips_unit_cube() {
+  const auto blob = ply_binary_fixture::make_unit_cube_blob();
+  std::stringstream ss{blob};
+  auto tris = rvegen::read_ply_binary<double>(ss);
+  REQUIRE(tris.size() == 12);  // 6 quads × 2 fan-triangles each
+  rvegen::mesh_inclusion<double> mesh{tris};
+  REQUIRE(mesh.is_inside({0.0, 0.0, 0.0}));
+  REQUIRE(!mesh.is_inside({2.0, 2.0, 2.0}));
+  REQUIRE(std::abs(mesh.volume() - 1.0) < 1e-7);  // float-precision verts
+}
+
+void test_ply_auto_detect_routes_binary_and_ascii() {
+  // Binary blob → read_ply picks read_ply_binary.
+  {
+    const auto blob = ply_binary_fixture::make_unit_cube_blob();
+    std::stringstream ss{blob};
+    auto tris = rvegen::read_ply<double>(ss);
+    REQUIRE(tris.size() == 12);
+  }
+  // ASCII text → read_ply picks read_ply_ascii.
+  {
+    std::stringstream ss{unit_cube_ply};
+    auto tris = rvegen::read_ply<double>(ss);
+    REQUIRE(tris.size() == 12);
+  }
+}
+
+void test_ply_binary_reader_rejects_ascii_format() {
+  // The explicit binary reader refuses an ASCII-declared file —
+  // callers who want auto-detect should use read_ply instead.
+  std::stringstream ss{unit_cube_ply};
+  bool threw = false;
+  try { (void)rvegen::read_ply_binary<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_ply_binary_reader_short_read_throws() {
+  // Header announces 8 vertices but the payload only carries the
+  // first vertex's bytes — the reader must throw on the short read.
+  std::ostringstream truncated;
+  truncated << "ply\n"
+               "format binary_little_endian 1.0\n"
+               "element vertex 8\n"
+               "property float x\n"
+               "property float y\n"
+               "property float z\n"
+               "element face 0\n"
+               "property list uchar int vertex_indices\n"
+               "end_header\n";
+  // Only 12 bytes of vertex data — one float triple, not eight.
+  for (float c : {1.0f, 2.0f, 3.0f}) ply_binary_fixture::write_le_f32(truncated, c);
+  std::stringstream ss{truncated.str()};
+  bool threw = false;
+  try { (void)rvegen::read_ply_binary<double>(ss); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
 }
 
 void test_ply_ascii_reader_rejects_missing_xyz() {
@@ -2455,6 +2575,10 @@ int main() {
   test_ply_ascii_reader_triangulates_quad_faces();
   test_ply_ascii_reader_round_trips_through_mesh_inclusion();
   test_ply_ascii_reader_rejects_binary_format();
+  test_ply_binary_reader_round_trips_unit_cube();
+  test_ply_auto_detect_routes_binary_and_ascii();
+  test_ply_binary_reader_rejects_ascii_format();
+  test_ply_binary_reader_short_read_throws();
   test_ply_ascii_reader_rejects_missing_xyz();
   test_ply_ascii_reader_skips_extra_vertex_properties();
   test_ply_ascii_reader_rejects_out_of_range_index();
