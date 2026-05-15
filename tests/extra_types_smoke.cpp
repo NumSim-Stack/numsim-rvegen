@@ -2220,6 +2220,108 @@ void test_mesh_inclusion_input_via_registry() {
   std::remove(tmp_path.c_str());
 }
 
+// Canonical `mesh_path` JSON field works the same as the legacy
+// `stl_path` alias.
+void test_mesh_inclusion_input_accepts_canonical_mesh_path() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+
+  const std::string tmp_path = "/tmp/rvegen_test_mesh_path_canonical.stl";
+  {
+    std::ofstream out{tmp_path};
+    out << unit_cube_stl;
+  }
+
+  std::mt19937 engine{31};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec_json = std::string{R"({
+    "type": "mesh_inclusion_input",
+    "mesh_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })";
+  const auto input_spec = nlohmann::json::parse(input_spec_json);
+  auto input = rvegen::build_from_json(
+      rvegen::input_registry_t<>::instance(), input_spec, dists);
+  REQUIRE(input != nullptr);
+  auto shape = input->new_shape();
+  REQUIRE(shape != nullptr);
+  REQUIRE(shape->is_inside({0.0, 0.0, 0.0}));
+  std::remove(tmp_path.c_str());
+}
+
+void test_mesh_inclusion_input_rejects_both_mesh_and_stl_path() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{32};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "mesh_inclusion_input",
+    "mesh_path": "/tmp/a.stl",
+    "stl_path":  "/tmp/b.stl",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })");
+  bool threw = false;
+  std::string what;
+  try {
+    (void)rvegen::build_from_json(
+        rvegen::input_registry_t<>::instance(), input_spec, dists);
+  } catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("both 'mesh_path' and") != std::string::npos);
+}
+
+void test_mesh_inclusion_input_rejects_neither_mesh_nor_stl_path() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{33};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto input_spec = nlohmann::json::parse(R"({
+    "type": "mesh_inclusion_input",
+    "position_x_dist": "p",
+    "position_y_dist": "p",
+    "position_z_dist": "p"
+  })");
+  bool threw = false;
+  std::string what;
+  try {
+    (void)rvegen::build_from_json(
+        rvegen::input_registry_t<>::instance(), input_spec, dists);
+  } catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("mesh_path") != std::string::npos);
+}
+
 void test_mesh_inclusion_input_missing_file_throws() {
   rvegen::register_all_distributions<>();
   rvegen::register_all_inputs<>();
@@ -3050,6 +3152,9 @@ int main() {
   test_stl_ascii_reader_rejects_binary_stl();
   test_stl_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_input_via_registry();
+  test_mesh_inclusion_input_accepts_canonical_mesh_path();
+  test_mesh_inclusion_input_rejects_both_mesh_and_stl_path();
+  test_mesh_inclusion_input_rejects_neither_mesh_nor_stl_path();
   test_mesh_inclusion_input_missing_file_throws();
   test_mesh_inclusion_input_accepts_binary_stl();
   test_read_mesh_file_dispatches_stl_and_ply();
