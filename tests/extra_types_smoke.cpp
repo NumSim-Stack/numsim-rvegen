@@ -540,6 +540,121 @@ void test_gmsh_geo_writer_phases_unknown_name_throws() {
   REQUIRE(out.str().empty());
 }
 
+void test_gmsh_geo_writer_strict_mode_rejects_untagged_shape() {
+  // Default (strict=false): an untagged shape is silently dropped from
+  // Physical groups and only the tagged shape gets one. With strict
+  // mode on, the same setup must throw before any geometry is emitted.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("fibre");
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto a = std::make_unique<rvegen::circle<double>>(0.3, 0.3, 0.1);
+  a->set_phase_name("fibre");
+  shapes.emplace_back(std::move(a));
+  auto b = std::make_unique<rvegen::circle<double>>(0.7, 0.7, 0.1);
+  // intentionally left untagged
+  shapes.emplace_back(std::move(b));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+
+  // Default: untagged shape just doesn't appear in any Physical group.
+  REQUIRE(writer.phase_strict() == false);
+  std::stringstream lenient_out;
+  writer.write(lenient_out, shapes, {1.0, 1.0, 0.0});
+  const auto lenient_text = lenient_out.str();
+  REQUIRE(lenient_text.find("Physical Surface(\"fibre\"") != std::string::npos);
+
+  // Strict: same input throws, and nothing is written.
+  writer.set_phase_strict(true);
+  std::stringstream strict_out;
+  bool threw = false;
+  std::string what;
+  try { writer.write(strict_out, shapes, {1.0, 1.0, 0.0}); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("strict mode") != std::string::npos);
+  REQUIRE(strict_out.str().empty());
+}
+
+void test_gmsh_geo_writer_strict_mode_no_phases_attached_is_noop() {
+  // Without set_phases attached, strict mode is irrelevant — no phase
+  // grouping happens anyway. Toggling strict must not throw and must
+  // not change output.
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phase_strict(true);
+  std::stringstream out;
+  // Explicitly confirm write() does NOT throw — an empty stream from a
+  // thrown exception would pass the "no Physical" check below otherwise.
+  bool threw = false;
+  try { writer.write(out, shapes, {1.0, 1.0, 0.0}); }
+  catch (...) { threw = true; }
+  REQUIRE(!threw);
+  // No Physical groups emitted without set_phases.
+  REQUIRE(out.str().find("Physical") == std::string::npos);
+  // Stream should still carry the entity geometry — sanity-check that
+  // the lenient path actually emitted something.
+  REQUIRE(!out.str().empty());
+}
+
+void test_voxel_writer_strict_mode_rejects_untagged_shape() {
+  // Same untagged-shape bug-of-omission guard as gmsh, but on the
+  // voxel grid path. Lenient (default): untagged shape's voxels stay
+  // at 0. Strict: sample() throws.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("fibre");
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto a = std::make_unique<rvegen::circle<double>>(0.25, 0.25, 0.15);
+  a->set_phase_name("fibre");
+  shapes.push_back(std::move(a));
+  auto b = std::make_unique<rvegen::circle<double>>(0.75, 0.75, 0.15);
+  // intentionally untagged
+  shapes.push_back(std::move(b));
+
+  rvegen::voxel_writer<double> w{16, 16, 1};
+  w.set_phases(&phases);
+  REQUIRE(w.phase_strict() == false);
+  // Default: lenient — sample succeeds, untagged voxels are 0.
+  (void)w.sample(shapes, std::array<double, 3>{1.0, 1.0, 0.0});
+
+  // Strict: sample must throw.
+  w.set_phase_strict(true);
+  bool threw = false;
+  try { (void)w.sample(shapes, std::array<double, 3>{1.0, 1.0, 0.0}); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_vtk_legacy_writer_strict_mode_rejects_untagged_shape() {
+  // Same coverage on the VTK path.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("fibre");
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto a = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2);
+  a->set_phase_name("fibre");
+  shapes.push_back(std::move(a));
+  auto b = std::make_unique<rvegen::circle<double>>(0.1, 0.1, 0.05);
+  // untagged
+  shapes.push_back(std::move(b));
+
+  rvegen::vtk_legacy_writer<double> w{16, 16, 1};
+  w.set_phases(&phases);
+  w.set_phase_strict(true);
+  std::stringstream out;
+  bool threw = false;
+  try { w.write(out, shapes, std::array<double, 3>{1.0, 1.0, 0.0}); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 // ----------------------------------------------------------------------------
 // oriented_uniform_distribution: von-Mises sampler. Two regime checks:
 //   κ = 0:    behaviour collapses to uniform on a 2π interval.
@@ -2746,6 +2861,10 @@ int main() {
   test_gmsh_geo_writer_3d_physical_groups_per_phase();
   test_gmsh_geo_writer_without_phases_emits_no_physical_groups();
   test_gmsh_geo_writer_phases_unknown_name_throws();
+  test_gmsh_geo_writer_strict_mode_rejects_untagged_shape();
+  test_gmsh_geo_writer_strict_mode_no_phases_attached_is_noop();
+  test_voxel_writer_strict_mode_rejects_untagged_shape();
+  test_vtk_legacy_writer_strict_mode_rejects_untagged_shape();
   test_oriented_uniform_uniform_regime();
   test_oriented_uniform_concentrated_regime();
   test_voronoi_cell_unit_cube_volume_and_inside();

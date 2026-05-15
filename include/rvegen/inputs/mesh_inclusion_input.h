@@ -14,21 +14,23 @@
 //   is O(1) instead of O(N_triangles). For 1000 placements of a 10k-tri
 //   mesh: one triangle allocation, not 1000.
 //
-// What this header lands today (phase 2 of #9, after the
-// mesh_inclusion shape + STL reader in PR #23):
+// What this header provides:
 //   * `mesh_inclusion_input<T>` — schema-driven (`stl_path`,
 //     `position_x_dist`, `position_y_dist`, `position_z_dist`).
 //   * Registered as `"mesh_inclusion_input"` in `register_inputs.h`.
-//   * STL is read once at input construction and wrapped in a
+//   * The mesh file is read once at input construction and wrapped in a
 //     `std::shared_ptr<vector<triangle_type> const>`. `new_shape()`
 //     constructs a `mesh_inclusion` that captures the same shared_ptr
 //     (refcount bump only) and applies the sampled position via the
 //     primitive's O(1) offset — no triangle data is copied per shape.
 //
-// Auto-detect ASCII vs binary STL:
-//   The input loads via `read_stl_file()`, which sniffs the file header
-//   and dispatches to either `read_stl_ascii_file` or `read_stl_binary_file`.
-//   Consumers don't need to know which format their STL is in.
+// Mesh-file format dispatch:
+//   The input loads via `read_mesh_file()`, which picks STL vs PLY by
+//   the path's extension and then auto-detects ASCII vs binary for
+//   each. Both `.stl` and `.ply` consumer files work transparently.
+//   The JSON field is still called `stl_path` for back-compat with
+//   existing configs even though it now accepts both formats — a
+//   rename + alias is a deliberate follow-up.
 //
 // Out of scope here, ships in follow-up PRs against #9:
 //   * Per-shape rotation distributions (axis-angle or Bingham

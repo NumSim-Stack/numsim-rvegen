@@ -35,6 +35,13 @@ namespace rvegen {
 //
 // Supported shapes: circle, sphere, rectangle, box. Adding a shape: extend
 // the dispatch chain in write().
+//
+// Gmsh version requirement:
+//   The phase-aware path (set_phases attached) emits
+//   `Physical Surface("name", id) = {...};` — the string-named form
+//   that gmsh added in 4.0 alongside the OpenCASCADE kernel.
+//   Pre-4.0 gmsh consumes only `Physical Surface(id) = {...};` (no
+//   name). If you target an older toolchain, leave set_phases empty.
 template <typename T = double>
 class gmsh_geo_writer final : public post_process_base<T> {
 public:
@@ -89,6 +96,19 @@ public:
     return _phases;
   }
 
+  // Strict mode: when set_phases is attached AND strict==true, any
+  // shape carrying an empty `phase_name` makes `write()` throw before
+  // emitting geometry. Default (strict==false) silently drops
+  // untagged shapes from the Physical groups, which is the intended
+  // fallback for "treat as matrix" but also masks the bug-of-omission
+  // when a user *meant* to tag a shape and forgot. Use strict mode
+  // when your generation pipeline guarantees every shape gets tagged.
+  //
+  // When no `phase_collection` is attached, strict mode is silently a
+  // no-op — the writer has no phase grouping to refuse against.
+  void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
+  [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
+
   void run(shape_vector const& shapes,
            std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
@@ -116,7 +136,16 @@ public:
     if (_phases) {
       for (auto const& shape : shapes) {
         const auto name = shape->phase_name();
-        if (!name.empty() && !_phases->contains(name)) {
+        if (name.empty()) {
+          if (_phase_strict) {
+            throw std::runtime_error{
+                "gmsh_geo_writer: shape has empty phase_name and "
+                "strict mode is enabled (set_phase_strict(true)). "
+                "Tag every shape's phase, or disable strict mode."};
+          }
+          continue;
+        }
+        if (!_phases->contains(name)) {
           throw std::runtime_error{
               "gmsh_geo_writer: shape carries phase_name '" + name +
               "' which is not declared in the attached phase_collection"};
@@ -285,6 +314,7 @@ private:
   std::string _output_path;
   bool _periodic{false};
   phase_collection<value_type> const* _phases{nullptr};
+  bool _phase_strict{false};
 };
 
 } // namespace rvegen
