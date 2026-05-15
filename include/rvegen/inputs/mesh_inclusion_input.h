@@ -15,7 +15,7 @@
 //   mesh: one triangle allocation, not 1000.
 //
 // What this header provides:
-//   * `mesh_inclusion_input<T>` — schema-driven (`stl_path`,
+//   * `mesh_inclusion_input<T>` — schema-driven (`mesh_path`,
 //     `position_x_dist`, `position_y_dist`, `position_z_dist`).
 //   * Registered as `"mesh_inclusion_input"` in `register_inputs.h`.
 //   * The mesh file is read once at input construction and wrapped in a
@@ -28,9 +28,12 @@
 //   The input loads via `read_mesh_file()`, which picks STL vs PLY by
 //   the path's extension and then auto-detects ASCII vs binary for
 //   each. Both `.stl` and `.ply` consumer files work transparently.
-//   The JSON field is still called `stl_path` for back-compat with
-//   existing configs even though it now accepts both formats — a
-//   rename + alias is a deliberate follow-up.
+//
+// JSON field name:
+//   The canonical field is `mesh_path`. `stl_path` is kept as a
+//   deprecated alias for back-compat with configs written when STL
+//   was the only supported format. Exactly one of the two must be
+//   present; supplying both is rejected as ambiguous.
 //
 // Out of scope here, ships in follow-up PRs against #9:
 //   * Per-shape rotation distributions (axis-angle or Bingham
@@ -60,13 +63,13 @@ public:
   using value_type = T;
   using triangle_type = typename mesh_inclusion<T>::triangle_type;
 
-  mesh_inclusion_input(std::string stl_path,
+  mesh_inclusion_input(std::string mesh_path,
                        distribution_base<value_type>& px,
                        distribution_base<value_type>& py,
                        distribution_base<value_type>& pz)
-      : _stl_path{std::move(stl_path)},
+      : _mesh_path{std::move(mesh_path)},
         _shared_triangles{std::make_shared<std::vector<triangle_type> const>(
-            read_mesh_file<value_type>(_stl_path))},
+            read_mesh_file<value_type>(_mesh_path))},
         _px{px}, _py{py}, _pz{pz} {
     // An empty triangle list yields a `mesh_inclusion` whose
     // `is_inside` is always false. The generator's volume_fraction
@@ -74,7 +77,7 @@ public:
     // until `max_attempts` (silent timeout) — fail fast instead.
     if (!_shared_triangles || _shared_triangles->empty()) {
       throw std::runtime_error{
-          "mesh_inclusion_input: mesh file '" + _stl_path +
+          "mesh_inclusion_input: mesh file '" + _mesh_path +
           "' contained no triangles; refusing to construct an "
           "always-empty inclusion."};
     }
@@ -83,16 +86,21 @@ public:
   mesh_inclusion_input(parameter_handler_t const& handler,
                        distribution_map_t<value_type> const& d)
       : mesh_inclusion_input(
-            handler.template get<std::string>("stl_path"),
+            resolve_mesh_path(handler),
             *d.at(handler.template get<std::string>("position_x_dist")),
             *d.at(handler.template get<std::string>("position_y_dist")),
             *d.at(handler.template get<std::string>("position_z_dist"))) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
+    // `mesh_path` is the canonical name. `stl_path` is the deprecated
+    // alias kept for back-compat — exactly one of the two must be
+    // present (enforced at ctor time, not by the schema layer, since
+    // a "one of N" group constraint isn't expressible there).
+    s.template insert<std::string>("mesh_path")
+        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias)">>();
     s.template insert<std::string>("stl_path")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII) file describing the mesh inclusion; format dispatched by extension (read once at input construction)">>();
+        .template add<numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>();
     s.template insert<std::string>("position_x_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre x-coordinate">>();
@@ -114,12 +122,32 @@ public:
     return mesh;
   }
 
-  [[nodiscard]] std::string const& stl_path() const noexcept {
-    return _stl_path;
+  [[nodiscard]] std::string const& mesh_path() const noexcept {
+    return _mesh_path;
   }
 
 private:
-  std::string _stl_path;
+  // Pick mesh_path (canonical) or stl_path (deprecated alias) from
+  // the handler; exactly one of the two must be present. Supplying
+  // neither or both is rejected with a clear error.
+  static std::string resolve_mesh_path(parameter_handler_t const& h) {
+    const bool has_mesh = h.contains("mesh_path");
+    const bool has_stl  = h.contains("stl_path");
+    if (has_mesh && has_stl) {
+      throw std::runtime_error{
+          "mesh_inclusion_input: both 'mesh_path' and the deprecated "
+          "'stl_path' alias are set in the JSON config — please use "
+          "only 'mesh_path'."};
+    }
+    if (!has_mesh && !has_stl) {
+      throw std::runtime_error{
+          "mesh_inclusion_input: 'mesh_path' is required (or the "
+          "deprecated 'stl_path' alias for back-compat)."};
+    }
+    return h.template get<std::string>(has_mesh ? "mesh_path" : "stl_path");
+  }
+
+  std::string _mesh_path;
   std::shared_ptr<std::vector<triangle_type> const> _shared_triangles;
   distribution_base<value_type>& _px;
   distribution_base<value_type>& _py;
