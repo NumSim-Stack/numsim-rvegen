@@ -4,6 +4,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
 
@@ -19,22 +20,21 @@ public:
   uniform_real_distribution(value_type a, value_type b, engine_type& engine)
       : _dist(a, b), _engine{engine} {}
 
+  using fields = field_list<
+      field<"a", value_type, true,
+            numsim_core::description_label<"lower bound of the uniform distribution (inclusive)">>,
+      field<"b", value_type, true,
+            numsim_core::description_label<"upper bound of the uniform distribution (inclusive)">>>;
+
   // Schema-driven ctor — what the registry calls. Reads `a`, `b` from the
-  // handler that was previously populated by a parameter_visitor_*.
+  // handler via the field_list `extract` helper.
   uniform_real_distribution(parameter_handler_t const& handler,
                             engine_type& engine)
-      : uniform_real_distribution(handler.template get<value_type>("a"),
-                                  handler.template get<value_type>("b"),
-                                  engine) {}
+      : uniform_real_distribution(fields::extract(handler), engine) {}
 
   // Static schema — co-located with the type. Returned by registry::schema().
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<value_type>("a").template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"lower bound of the uniform distribution (inclusive)">>();
-    s.template insert<value_type>("b").template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"upper bound of the uniform distribution (inclusive)">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] value_type operator()() override { return _dist(_engine); }
@@ -44,6 +44,12 @@ public:
   }
 
 private:
+  // Tuple-taking helper used by the schema-driven ctor. Lets us delegate
+  // through `fields::extract(handler)` without re-extracting per element.
+  uniform_real_distribution(std::tuple<value_type, value_type> ab,
+                            engine_type& engine)
+      : uniform_real_distribution(std::get<0>(ab), std::get<1>(ab), engine) {}
+
   std::uniform_real_distribution<value_type> _dist;
   engine_type& _engine;
 };

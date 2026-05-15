@@ -4,6 +4,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
 
@@ -18,25 +19,30 @@ public:
   normal_distribution(value_type mean, value_type stddev, engine_type& engine)
       : _dist(mean, stddev), _engine{engine} {}
 
+  using fields = field_list<
+      field<"mean", value_type, true,
+            numsim_core::description_label<"mean of the normal distribution">>,
+      field<"stddev", value_type, true,
+            min_only<value_type{0}>,
+            numsim_core::description_label<"standard deviation of the normal distribution">>>;
+
   // Schema-driven ctor — registry calls this.
   normal_distribution(parameter_handler_t const& handler, engine_type& engine)
-      : normal_distribution(handler.template get<value_type>("mean"),
-                            handler.template get<value_type>("stddev"),
-                            engine) {}
+      : normal_distribution(fields::extract(handler), engine) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<value_type>("mean").template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"mean of the normal distribution">>();
-    s.template insert<value_type>("stddev").template add<numsim_core::is_required>()
-        .template add<min_only<value_type{0}>>()
-        .template add<numsim_core::description_label<"standard deviation of the normal distribution">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] value_type operator()() override { return _dist(_engine); }
 
 private:
+  // Tuple-taking helper used by the schema-driven ctor. Lets us delegate
+  // through `fields::extract(handler)` without re-extracting per element.
+  normal_distribution(std::tuple<value_type, value_type> ms,
+                      engine_type& engine)
+      : normal_distribution(std::get<0>(ms), std::get<1>(ms), engine) {}
+
   std::normal_distribution<value_type> _dist;
   engine_type& _engine;
 };
