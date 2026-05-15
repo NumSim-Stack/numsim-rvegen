@@ -2111,6 +2111,114 @@ void test_weave_generator_validation_throws_on_bad_input() {
 }
 
 // ----------------------------------------------------------------------------
+// voronoi_generator_2d (#114 phase 1): bounded 2D Voronoi tessellation
+// via Sutherland-Hodgman half-plane clipping.
+// ----------------------------------------------------------------------------
+void test_voronoi_generator_2d_single_seed_returns_full_domain() {
+  // One seed → its Voronoi cell IS the bounding rectangle.
+  rvegen::voronoi_generator_2d<double> gen{1.0, 1.0, {{0.5, 0.5}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 1);
+  REQUIRE(cells[0].size() == 4);   // bounding rect = 4 vertices
+  REQUIRE(std::abs(rvegen::polygon_area(cells[0]) - 1.0) < 1e-12);
+}
+
+void test_voronoi_generator_2d_two_seeds_split_by_bisector() {
+  // Two seeds symmetric about x = 0.5. Their perpendicular bisector
+  // is the line x = 0.5; cells split the domain into left/right
+  // half-rectangles of area 0.5 each.
+  rvegen::voronoi_generator_2d<double> gen{
+      1.0, 1.0, {{0.25, 0.5}, {0.75, 0.5}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 2);
+  REQUIRE(std::abs(rvegen::polygon_area(cells[0]) - 0.5) < 1e-12);
+  REQUIRE(std::abs(rvegen::polygon_area(cells[1]) - 0.5) < 1e-12);
+}
+
+void test_voronoi_generator_2d_four_corner_seeds_quadrant_split() {
+  // Four seeds, one near each corner. The Voronoi diagram is
+  // symmetric: each cell is a 0.5 × 0.5 quadrant of area 0.25.
+  rvegen::voronoi_generator_2d<double> gen{1.0, 1.0, {
+      {0.25, 0.25}, {0.75, 0.25}, {0.25, 0.75}, {0.75, 0.75}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 4);
+  for (auto const& cell : cells) {
+    REQUIRE(std::abs(rvegen::polygon_area(cell) - 0.25) < 1e-12);
+  }
+}
+
+void test_voronoi_generator_2d_cells_cover_domain() {
+  // For 6 random-ish seeds, the sum of cell areas must equal the
+  // total domain area. This is the partition-of-unity invariant
+  // that a correct Voronoi tessellation must satisfy.
+  rvegen::voronoi_generator_2d<double> gen{2.0, 1.5, {
+      {0.3, 0.4}, {1.7, 0.4}, {0.5, 1.1},
+      {1.2, 0.8}, {1.5, 1.3}, {0.8, 0.2}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 6);
+  double total = 0.0;
+  for (auto const& cell : cells) total += rvegen::polygon_area(cell);
+  REQUIRE(std::abs(total - 2.0 * 1.5) < 1e-10);
+}
+
+void test_voronoi_generator_2d_each_cell_contains_its_seed() {
+  // Defining property: seed `i` lies inside cell `i` (or on its
+  // boundary). Verified by walking the polygon edges and checking
+  // each edge's bisector half-plane: if the seed is inside cell i,
+  // it must satisfy every bisector constraint cell i is built from.
+  // Easier check: the seed must be a non-trivial interior point
+  // of the cell. Use a winding/ray-cast or the simpler "barycentric"
+  // test: the seed is in the convex hull of the cell's vertices.
+  // For convex polygons, that reduces to "for every edge of the
+  // CCW polygon, the seed is to the left of the edge."
+  rvegen::voronoi_generator_2d<double> gen{2.0, 1.5, {
+      {0.3, 0.4}, {1.7, 0.4}, {0.5, 1.1},
+      {1.2, 0.8}, {1.5, 1.3}, {0.8, 0.2}}};
+  auto cells = gen.build();
+  for (std::size_t i = 0; i < cells.size(); ++i) {
+    auto const& cell = cells[i];
+    auto const& seed = std::array<double, 2>{0.3, 0.4};   // placeholder
+    const std::array<double, 2> s =
+        (i == 0) ? std::array<double, 2>{0.3, 0.4} :
+        (i == 1) ? std::array<double, 2>{1.7, 0.4} :
+        (i == 2) ? std::array<double, 2>{0.5, 1.1} :
+        (i == 3) ? std::array<double, 2>{1.2, 0.8} :
+        (i == 4) ? std::array<double, 2>{1.5, 1.3} :
+                   std::array<double, 2>{0.8, 0.2};
+    (void)seed;
+    REQUIRE(cell.size() >= 3);
+    bool inside = true;
+    for (std::size_t k = 0; k < cell.size(); ++k) {
+      auto const& a = cell[k];
+      auto const& b = cell[(k + 1) % cell.size()];
+      // CCW: cross of (b - a) × (s - a) must be ≥ 0 (≥ rather than >
+      // so a seed exactly on an edge still counts as inside).
+      const double cross = (b[0] - a[0]) * (s[1] - a[1])
+                         - (b[1] - a[1]) * (s[0] - a[0]);
+      if (cross < -1e-9) { inside = false; break; }
+    }
+    REQUIRE(inside);
+  }
+}
+
+void test_voronoi_generator_2d_validation_throws() {
+  bool threw_zero_seeds = false;
+  try { rvegen::voronoi_generator_2d<double>{1.0, 1.0, {}}; }
+  catch (std::runtime_error const&) { threw_zero_seeds = true; }
+  REQUIRE(threw_zero_seeds);
+
+  bool threw_zero_Lx = false;
+  try { rvegen::voronoi_generator_2d<double>{0.0, 1.0, {{0.5, 0.5}}}; }
+  catch (std::runtime_error const&) { threw_zero_Lx = true; }
+  REQUIRE(threw_zero_Lx);
+
+  bool threw_zero_Ly = false;
+  try { rvegen::voronoi_generator_2d<double>{1.0, 0.0, {{0.5, 0.5}}}; }
+  catch (std::runtime_error const&) { threw_zero_Ly = true; }
+  REQUIRE(threw_zero_Ly);
+}
+
+// ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
 void test_phase_collection_basics_and_ids() {
@@ -3207,6 +3315,12 @@ int main() {
   test_weave_generator_warp_and_weft_interlace_180_out_of_phase();
   test_weave_generator_phase_tagging();
   test_weave_generator_validation_throws_on_bad_input();
+  test_voronoi_generator_2d_single_seed_returns_full_domain();
+  test_voronoi_generator_2d_two_seeds_split_by_bisector();
+  test_voronoi_generator_2d_four_corner_seeds_quadrant_split();
+  test_voronoi_generator_2d_cells_cover_domain();
+  test_voronoi_generator_2d_each_cell_contains_its_seed();
+  test_voronoi_generator_2d_validation_throws();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
