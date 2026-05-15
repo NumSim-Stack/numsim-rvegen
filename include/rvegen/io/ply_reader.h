@@ -117,6 +117,17 @@ struct ply_element {
   std::vector<property> props;
 };
 
+// Map a PLY `format` keyword to the enum, throwing on unknown values.
+// Shared between `read_ply_header` (full parse) and the auto-detect
+// entry point so the format-name table lives in exactly one place.
+inline ply_format parse_format_keyword(std::string const& fmt) {
+  const auto f = to_lower(fmt);
+  if (f == "ascii")                return ply_format::ascii;
+  if (f == "binary_little_endian") return ply_format::binary_little_endian;
+  if (f == "binary_big_endian")    return ply_format::binary_big_endian;
+  throw std::runtime_error{"read_ply: unknown format '" + fmt + "'"};
+}
+
 // Parse the header up to `end_header`. Reports the format, the
 // element table, and the count of bytes consumed (we don't need that
 // here, but exposed for symmetry with binary support).
@@ -136,17 +147,7 @@ read_ply_header(std::istream& in) {
   std::istringstream fs{format_line};
   std::string ignored, fmt, ver;
   fs >> ignored >> fmt >> ver;
-  ply_format format;
-  if (to_lower(fmt) == "ascii") {
-    format = ply_format::ascii;
-  } else if (to_lower(fmt) == "binary_little_endian") {
-    format = ply_format::binary_little_endian;
-  } else if (to_lower(fmt) == "binary_big_endian") {
-    format = ply_format::binary_big_endian;
-  } else {
-    throw std::runtime_error{
-        "read_ply: unknown format '" + fmt + "'"};
-  }
+  const ply_format format = parse_format_keyword(fmt);
 
   std::vector<ply_element> elems;
   std::string line;
@@ -197,15 +198,35 @@ inline double read_ascii_scalar(std::istream& in) {
   return v;
 }
 
-// Size in bytes of a PLY scalar type name. Returns 0 for unknown
-// types (the caller throws a clearer error with file context).
-inline std::size_t ply_scalar_size(std::string const& type_name) {
+// PLY scalar type, parsed once from the header. The binary reader's
+// inner loop branches on this enum, not on a `to_lower`-ed string,
+// so a 100k-vertex mesh doesn't allocate 300k+ temporary strings.
+enum class scalar_kind {
+  i8, u8, i16, u16, i32, u32, f32, f64
+};
+
+inline scalar_kind parse_scalar_kind(std::string const& type_name) {
   const auto n = to_lower(type_name);
-  if (n == "char"   || n == "int8"   || n == "uchar" || n == "uint8")  return 1;
-  if (n == "short"  || n == "int16"  || n == "ushort"|| n == "uint16") return 2;
-  if (n == "int"    || n == "int32"  || n == "uint"  || n == "uint32"
-   || n == "float"  || n == "float32")                                 return 4;
-  if (n == "double" || n == "float64")                                 return 8;
+  if (n == "char"   || n == "int8")    return scalar_kind::i8;
+  if (n == "uchar"  || n == "uint8")   return scalar_kind::u8;
+  if (n == "short"  || n == "int16")   return scalar_kind::i16;
+  if (n == "ushort" || n == "uint16")  return scalar_kind::u16;
+  if (n == "int"    || n == "int32")   return scalar_kind::i32;
+  if (n == "uint"   || n == "uint32")  return scalar_kind::u32;
+  if (n == "float"  || n == "float32") return scalar_kind::f32;
+  if (n == "double" || n == "float64") return scalar_kind::f64;
+  throw std::runtime_error{
+      "read_ply: unknown scalar type '" + type_name + "'"};
+}
+
+inline std::size_t scalar_kind_size(scalar_kind k) noexcept {
+  switch (k) {
+    case scalar_kind::i8:  case scalar_kind::u8:                return 1;
+    case scalar_kind::i16: case scalar_kind::u16:               return 2;
+    case scalar_kind::i32: case scalar_kind::u32:
+    case scalar_kind::f32:                                      return 4;
+    case scalar_kind::f64:                                      return 8;
+  }
   return 0;
 }
 
@@ -214,19 +235,14 @@ inline std::size_t ply_scalar_size(std::string const& type_name) {
 // straight for LE files and byte-reverse for BE; on a BE host (rare)
 // the reverse. `std::endian::native` decides at compile time.
 inline double read_binary_scalar(std::istream& in, ply_format format,
-                                 std::string const& type_name) {
-  const auto sz = ply_scalar_size(type_name);
-  if (sz == 0) {
-    throw std::runtime_error{
-        "read_ply_binary: unknown scalar type '" + type_name + "'"};
-  }
+                                 scalar_kind kind) {
+  const auto sz = scalar_kind_size(kind);
   std::array<unsigned char, 8> bytes{};
   in.read(reinterpret_cast<char*>(bytes.data()),
           static_cast<std::streamsize>(sz));
   if (static_cast<std::size_t>(in.gcount()) != sz) {
     throw std::runtime_error{
-        "read_ply_binary: short read while parsing scalar of type '" +
-        type_name + "'"};
+        "read_ply_binary: short read while parsing scalar"};
   }
 
   // Normalise so `bytes` holds the value in HOST byte order. PLY's
@@ -238,38 +254,42 @@ inline double read_binary_scalar(std::istream& in, ply_format format,
     std::reverse(bytes.begin(), bytes.begin() + sz);
   }
 
-  const auto n = to_lower(type_name);
-  if (n == "char"   || n == "int8")   {
-    std::int8_t v;  std::memcpy(&v, bytes.data(), sizeof(v));
-    return static_cast<double>(v);
+  switch (kind) {
+    case scalar_kind::i8:  { std::int8_t   v; std::memcpy(&v, bytes.data(), sizeof(v)); return static_cast<double>(v); }
+    case scalar_kind::u8:  { std::uint8_t  v; std::memcpy(&v, bytes.data(), sizeof(v)); return static_cast<double>(v); }
+    case scalar_kind::i16: { std::int16_t  v; std::memcpy(&v, bytes.data(), sizeof(v)); return static_cast<double>(v); }
+    case scalar_kind::u16: { std::uint16_t v; std::memcpy(&v, bytes.data(), sizeof(v)); return static_cast<double>(v); }
+    case scalar_kind::i32: { std::int32_t  v; std::memcpy(&v, bytes.data(), sizeof(v)); return static_cast<double>(v); }
+    case scalar_kind::u32: { std::uint32_t v; std::memcpy(&v, bytes.data(), sizeof(v)); return static_cast<double>(v); }
+    case scalar_kind::f32: { float          v; std::memcpy(&v, bytes.data(), sizeof(v)); return static_cast<double>(v); }
+    case scalar_kind::f64: { double         v; std::memcpy(&v, bytes.data(), sizeof(v)); return v; }
   }
-  if (n == "uchar"  || n == "uint8")  {
-    std::uint8_t v; std::memcpy(&v, bytes.data(), sizeof(v));
-    return static_cast<double>(v);
+  return 0.0;   // unreachable; switch is exhaustive over the enum.
+}
+
+// Precomputed-kind view of an element's properties. Built once
+// per element so the inner read loop branches on the enum value
+// without ever touching the property's `std::string scalar_type`.
+struct typed_property {
+  scalar_kind kind;
+  bool is_list;
+  scalar_kind list_count_kind;   // unused unless is_list == true
+};
+
+inline std::vector<typed_property>
+make_typed_props(ply_element const& e) {
+  std::vector<typed_property> out;
+  out.reserve(e.props.size());
+  for (auto const& p : e.props) {
+    if (p.is_list) {
+      out.push_back({parse_scalar_kind(p.scalar_type), true,
+                     parse_scalar_kind(p.list_count_type)});
+    } else {
+      out.push_back({parse_scalar_kind(p.scalar_type), false,
+                     scalar_kind::u8 /*unused*/});
+    }
   }
-  if (n == "short"  || n == "int16")  {
-    std::int16_t v; std::memcpy(&v, bytes.data(), sizeof(v));
-    return static_cast<double>(v);
-  }
-  if (n == "ushort" || n == "uint16") {
-    std::uint16_t v; std::memcpy(&v, bytes.data(), sizeof(v));
-    return static_cast<double>(v);
-  }
-  if (n == "int"    || n == "int32")  {
-    std::int32_t v; std::memcpy(&v, bytes.data(), sizeof(v));
-    return static_cast<double>(v);
-  }
-  if (n == "uint"   || n == "uint32") {
-    std::uint32_t v; std::memcpy(&v, bytes.data(), sizeof(v));
-    return static_cast<double>(v);
-  }
-  if (n == "float"  || n == "float32") {
-    float v; std::memcpy(&v, bytes.data(), sizeof(v));
-    return static_cast<double>(v);
-  }
-  // double / float64.
-  double v; std::memcpy(&v, bytes.data(), sizeof(v));
-  return v;
+  return out;
 }
 
 // Locate the offsets of x/y/z within a vertex element's property
@@ -460,24 +480,31 @@ template <typename T = double>
   const auto xyz = detail::vertex_xyz_offsets(*vertex);
   const auto face_list_prop = detail::face_list_property_index(*face);
 
+  // Pre-resolve each property's scalar kind into a small enum. The
+  // inner read loops now branch on these, never on a `to_lower`-ed
+  // string — important for million-vertex meshes where the old code
+  // would have made millions of std::string allocations.
+  const auto vtyped = detail::make_typed_props(*vertex);
+  const auto ftyped = detail::make_typed_props(*face);
+
   std::vector<std::array<T, 3>> verts;
   verts.reserve(vertex->count);
   for (std::size_t v = 0; v < vertex->count; ++v) {
     std::array<T, 3> p{};
-    for (std::size_t i = 0; i < vertex->props.size(); ++i) {
-      auto const& prop = vertex->props[i];
+    for (std::size_t i = 0; i < vtyped.size(); ++i) {
+      auto const& prop = vtyped[i];
       if (prop.is_list) {
         // Vertex-level list property — rare. Read count via the
         // declared count type, then skip that many values of the
-        // declared index/scalar type.
+        // declared scalar type.
         const auto n = static_cast<std::size_t>(
-            detail::read_binary_scalar(in, format, prop.list_count_type));
+            detail::read_binary_scalar(in, format, prop.list_count_kind));
         for (std::size_t k = 0; k < n; ++k) {
-          (void)detail::read_binary_scalar(in, format, prop.scalar_type);
+          (void)detail::read_binary_scalar(in, format, prop.kind);
         }
         continue;
       }
-      const auto val = detail::read_binary_scalar(in, format, prop.scalar_type);
+      const auto val = detail::read_binary_scalar(in, format, prop.kind);
       if      (i == xyz[0]) p[0] = static_cast<T>(val);
       else if (i == xyz[1]) p[1] = static_cast<T>(val);
       else if (i == xyz[2]) p[2] = static_cast<T>(val);
@@ -490,24 +517,24 @@ template <typename T = double>
   triangles.reserve(face->count);
   for (std::size_t f = 0; f < face->count; ++f) {
     std::vector<std::size_t> indices;
-    for (std::size_t i = 0; i < face->props.size(); ++i) {
-      auto const& prop = face->props[i];
+    for (std::size_t i = 0; i < ftyped.size(); ++i) {
+      auto const& prop = ftyped[i];
       if (i == face_list_prop) {
         const auto n = static_cast<std::size_t>(
-            detail::read_binary_scalar(in, format, prop.list_count_type));
+            detail::read_binary_scalar(in, format, prop.list_count_kind));
         indices.resize(n);
         for (std::size_t k = 0; k < n; ++k) {
           indices[k] = static_cast<std::size_t>(
-              detail::read_binary_scalar(in, format, prop.scalar_type));
+              detail::read_binary_scalar(in, format, prop.kind));
         }
       } else if (prop.is_list) {
         const auto n = static_cast<std::size_t>(
-            detail::read_binary_scalar(in, format, prop.list_count_type));
+            detail::read_binary_scalar(in, format, prop.list_count_kind));
         for (std::size_t k = 0; k < n; ++k) {
-          (void)detail::read_binary_scalar(in, format, prop.scalar_type);
+          (void)detail::read_binary_scalar(in, format, prop.kind);
         }
       } else {
-        (void)detail::read_binary_scalar(in, format, prop.scalar_type);
+        (void)detail::read_binary_scalar(in, format, prop.kind);
       }
     }
     if (indices.size() < 3) {
@@ -576,11 +603,7 @@ template <typename T = double>
       std::istringstream fs{line};
       std::string ignored, fmt;
       fs >> ignored >> fmt;
-      const auto f = detail::to_lower(fmt);
-      if      (f == "ascii")                 format = detail::ply_format::ascii;
-      else if (f == "binary_little_endian")  format = detail::ply_format::binary_little_endian;
-      else if (f == "binary_big_endian")     format = detail::ply_format::binary_big_endian;
-      else throw std::runtime_error{"read_ply: unknown format '" + fmt + "'"};
+      format = detail::parse_format_keyword(fmt);
       format_found = true;
       break;
     }
