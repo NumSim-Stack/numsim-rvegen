@@ -70,7 +70,13 @@ public:
                              : value_type{0}},
         _element_order{handler.contains("element_order")
                            ? handler.template get<int>("element_order")
-                           : 0} {}
+                           : 0},
+        _algorithm{handler.contains("algorithm")
+                       ? handler.template get<int>("algorithm")
+                       : 0},
+        _recombine_quads{handler.contains("recombine_quads")
+                             ? handler.template get<bool>("recombine_quads")
+                             : false} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -92,6 +98,11 @@ public:
     s.template insert<int>("element_order")
         .template add<numsim_core::description_label<"if > 0, emits Mesh.ElementOrder = <value> in the .geo header — 1 for linear elements (gmsh default), 2 for quadratic (better accuracy on elliptic FE problems). Default 0 = no directive emitted.">>()
         .template add<numsim_core::range<0, 5>>();
+    s.template insert<int>("algorithm")
+        .template add<numsim_core::description_label<"if > 0, emits Mesh.Algorithm = <value> in the .geo header — gmsh 2D meshing algorithm choice (1=MeshAdapt, 2=Auto, 3=Initial only, 5=Delaunay, 6=Frontal-Delaunay, 7=BAMG, 8=Frontal-Delaunay for quads, 9=Packing of parallelograms). Default 0 = no directive emitted (gmsh defaults to 6/Frontal-Delaunay).">>()
+        .template add<numsim_core::range<0, 10>>();
+    s.template insert<bool>("recombine_quads")
+        .template add<numsim_core::description_label<"if true, emits Mesh.RecombineAll = 1 in the header — gmsh recombines the triangular mesh into quadrilateral / hexahedral elements. Useful for FE-RVE workflows that need structured-style elements. Default false.">>();
     return s;
   }
 
@@ -123,6 +134,23 @@ public:
   // on elliptic FE problems at the cost of more DOFs per element.
   void set_element_order(int order) noexcept { _element_order = order; }
   [[nodiscard]] int element_order() const noexcept { return _element_order; }
+
+  // Gmsh 2D meshing-algorithm choice. 0 (default) → no directive
+  // emitted, gmsh uses Frontal-Delaunay (algorithm 6). Other useful
+  // values: 8 (Frontal-Delaunay-for-quads, pairs well with
+  // recombine_quads), 9 (Packing of Parallelograms). See gmsh manual
+  // §7.4.1 for the full list.
+  void set_algorithm(int algorithm) noexcept { _algorithm = algorithm; }
+  [[nodiscard]] int algorithm() const noexcept { return _algorithm; }
+
+  // Recombine triangle meshes into quadrilateral elements (or tet
+  // meshes into hexahedra for 3D). Useful for FE-RVE workflows that
+  // need structured-style element shapes — e.g. some FFT solvers
+  // expect quad/hex meshes.
+  void set_recombine_quads(bool recombine) noexcept {
+    _recombine_quads = recombine;
+  }
+  [[nodiscard]] bool recombine_quads() const noexcept { return _recombine_quads; }
 
   [[nodiscard]] std::string const& output_path() const noexcept {
     return _output_path;
@@ -227,6 +255,12 @@ private:
     }
     if (_element_order > 0) {
       out << "Mesh.ElementOrder = " << _element_order << ";\n";
+    }
+    if (_algorithm > 0) {
+      out << "Mesh.Algorithm = " << _algorithm << ";\n";
+    }
+    if (_recombine_quads) {
+      out << "Mesh.RecombineAll = 1;\n";
     }
     out << "\n";
   }
@@ -417,6 +451,8 @@ private:
   value_type _char_length_min{0};
   value_type _char_length_max{0};
   int _element_order{0};
+  int _algorithm{0};
+  bool _recombine_quads{false};
 };
 
 } // namespace rvegen
