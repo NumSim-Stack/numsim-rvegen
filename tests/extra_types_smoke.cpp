@@ -2108,6 +2108,108 @@ void test_hashin_shtrikman_out_of_range_fraction_throws() {
   REQUIRE(threw);
 }
 
+// N-phase HS via the Berryman/Walpole form must match the 2-phase
+// closed form exactly when called with n == 2 — strong cross-check
+// that the general implementation collapses correctly.
+void test_hashin_shtrikman_n_matches_2_phase_form() {
+  using namespace rvegen::homogenization;
+  const double K_s = 1.0e9,  G_s = 0.5e9;
+  const double K_h = 5.0e10, G_h = 3.0e10;
+  const double f_h = 0.3;
+
+  const auto [K_lo_2, G_lo_2] =
+      hashin_shtrikman_lower<double>(K_s, G_s, K_h, G_h, f_h);
+  const auto [K_hi_2, G_hi_2] =
+      hashin_shtrikman_upper<double>(K_s, G_s, K_h, G_h, f_h);
+  const auto [K_lo_n, G_lo_n] = hashin_shtrikman_lower_n<double>(
+      {K_s, K_h}, {G_s, G_h}, {1.0 - f_h, f_h});
+  const auto [K_hi_n, G_hi_n] = hashin_shtrikman_upper_n<double>(
+      {K_s, K_h}, {G_s, G_h}, {1.0 - f_h, f_h});
+  REQUIRE(std::abs(K_lo_2 - K_lo_n) < 1.0);
+  REQUIRE(std::abs(G_lo_2 - G_lo_n) < 1.0);
+  REQUIRE(std::abs(K_hi_2 - K_hi_n) < 1.0);
+  REQUIRE(std::abs(G_hi_2 - G_hi_n) < 1.0);
+}
+
+void test_hashin_shtrikman_n_brackets_voigt_reuss_3_phase() {
+  // 3 well-ordered phases. HS- > Reuss; HS+ < Voigt; HS- < HS+.
+  using namespace rvegen::homogenization;
+  const std::vector<double> K{1.0e9, 5.0e9, 2.0e10};
+  const std::vector<double> G{0.5e9, 2.5e9, 1.0e10};
+  const std::vector<double> v{0.4, 0.4, 0.2};
+
+  const auto [lo, hi] = hashin_shtrikman_bounds_n<double>(K, G, v);
+  double K_voigt = 0, K_reuss_inv = 0;
+  double G_voigt = 0, G_reuss_inv = 0;
+  for (std::size_t i = 0; i < K.size(); ++i) {
+    K_voigt    += v[i] * K[i];
+    G_voigt    += v[i] * G[i];
+    K_reuss_inv += v[i] / K[i];
+    G_reuss_inv += v[i] / G[i];
+  }
+  const double K_reuss = 1.0 / K_reuss_inv;
+  const double G_reuss = 1.0 / G_reuss_inv;
+
+  REQUIRE(K_reuss < lo.first);
+  REQUIRE(lo.first < hi.first);
+  REQUIRE(hi.first < K_voigt);
+  REQUIRE(G_reuss < lo.second);
+  REQUIRE(lo.second < hi.second);
+  REQUIRE(hi.second < G_voigt);
+}
+
+void test_hashin_shtrikman_n_identical_phases_collapses() {
+  using namespace rvegen::homogenization;
+  const auto [lo, hi] = hashin_shtrikman_bounds_n<double>(
+      {1.0e9, 1.0e9, 1.0e9}, {0.5e9, 0.5e9, 0.5e9}, {0.3, 0.3, 0.4});
+  REQUIRE(std::abs(lo.first  - 1.0e9) < 1.0);
+  REQUIRE(std::abs(lo.second - 0.5e9) < 1.0);
+  REQUIRE(std::abs(hi.first  - 1.0e9) < 1.0);
+  REQUIRE(std::abs(hi.second - 0.5e9) < 1.0);
+}
+
+void test_hashin_shtrikman_n_crossed_ordering_throws() {
+  // 3 phases with mismatched K and G orderings — softest-in-K is
+  // phase 0 (K=1e9), softest-in-G is phase 1 (G=0.5e9). The lower
+  // bound is undefined; the upper bound (where stiffest sorting is
+  // consistent on phase 2) is fine.
+  using namespace rvegen::homogenization;
+  const std::vector<double> K{1.0e9, 5.0e9, 2.0e10};
+  const std::vector<double> G{1.5e9, 0.5e9, 1.0e10};
+  const std::vector<double> v{0.3, 0.3, 0.4};
+
+  bool threw_lo = false;
+  try { (void)hashin_shtrikman_lower_n<double>(K, G, v); }
+  catch (std::runtime_error const&) { threw_lo = true; }
+  REQUIRE(threw_lo);
+
+  // Upper bound: stiffest phase (phase 2) has both max K and max G,
+  // so HS+ remains well-defined for this input.
+  const auto [K_hi, G_hi] = hashin_shtrikman_upper_n<double>(K, G, v);
+  REQUIRE(K_hi > 0.0);
+  REQUIRE(G_hi > 0.0);
+}
+
+void test_hashin_shtrikman_n_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  try {
+    (void)hashin_shtrikman_lower_n<double>(
+        {1.0e9, 5.0e9}, {0.5e9}, {0.5, 0.5});
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_hashin_shtrikman_n_volume_fractions_not_unit_sum_throws() {
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  try {
+    (void)hashin_shtrikman_lower_n<double>(
+        {1.0e9, 5.0e9}, {0.5e9, 2.5e9}, {0.5, 0.3});
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 // ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
@@ -3211,6 +3313,12 @@ int main() {
   test_hashin_shtrikman_argument_order_insensitive();
   test_hashin_shtrikman_crossed_ordering_throws();
   test_hashin_shtrikman_out_of_range_fraction_throws();
+  test_hashin_shtrikman_n_matches_2_phase_form();
+  test_hashin_shtrikman_n_brackets_voigt_reuss_3_phase();
+  test_hashin_shtrikman_n_identical_phases_collapses();
+  test_hashin_shtrikman_n_crossed_ordering_throws();
+  test_hashin_shtrikman_n_size_mismatch_throws();
+  test_hashin_shtrikman_n_volume_fractions_not_unit_sum_throws();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
