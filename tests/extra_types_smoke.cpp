@@ -1836,6 +1836,100 @@ void test_bingham_rotated_axis() {
   REQUIRE(mean_abs_dot > 0.9);
 }
 
+// FOD support (#112): bingham_distribution implements
+// direction_distribution_base — concrete-class samples and
+// polymorphic-base samples agree.
+void test_bingham_implements_direction_distribution_base() {
+  std::mt19937 e1{12345}, e2{12345};
+  std::array<double, 3> axis{0.0, 0.0, 1.0};
+  rvegen::bingham_distribution<double> concrete{axis, 5.0, e1};
+
+  // Same engine state → same sequence. Compare a concrete `sample()`
+  // (gte::Vector) with a polymorphic operator() (std::array).
+  rvegen::bingham_distribution<double> via_base{axis, 5.0, e2};
+  rvegen::direction_distribution_base<double>& base_ref = via_base;
+
+  const auto v_concrete = concrete.sample();
+  const auto v_base     = base_ref();
+  REQUIRE(std::abs(v_concrete[0] - v_base[0]) < 1e-15);
+  REQUIRE(std::abs(v_concrete[1] - v_base[1]) < 1e-15);
+  REQUIRE(std::abs(v_concrete[2] - v_base[2]) < 1e-15);
+  // And the returned vector is unit-length (the FOD contract).
+  const double mag = std::sqrt(v_base[0] * v_base[0] + v_base[1] * v_base[1] +
+                               v_base[2] * v_base[2]);
+  REQUIRE(std::abs(mag - 1.0) < 1e-9);
+}
+
+// polyline_tube_oriented_input draws ONE coherent unit-vector
+// direction per produced shape from a direction_distribution_base
+// (typically Bingham). Verifies tube centerline is aligned with the
+// sampled axis and length matches the scalar dist.
+void test_polyline_tube_oriented_input_aligns_with_bingham_axis() {
+  std::mt19937 engine{42};
+  rvegen::constant_distribution<double> px{0.5};
+  rvegen::constant_distribution<double> py{0.5};
+  rvegen::constant_distribution<double> pz{0.5};
+  rvegen::constant_distribution<double> length{0.4};
+  rvegen::constant_distribution<double> radius{0.02};
+  // High-kappa Bingham clustered tightly around z-axis.
+  rvegen::bingham_distribution<double> dir{
+      std::array<double, 3>{0.0, 0.0, 1.0}, 200.0, engine};
+
+  rvegen::polyline_tube_oriented_input<double> input{
+      px, py, pz, dir, length, radius};
+
+  // 50 placements — for κ = 200 the half-width of the Bingham is
+  // roughly 1/√κ ≈ 4°, so essentially every sample lands within 10°
+  // of the axis (cos > 0.985). Loose enough to be statistically
+  // stable across engines/seeds, strict enough that a totally
+  // unaligned input would fail.
+  std::size_t close_to_z = 0;
+  for (int i = 0; i < 50; ++i) {
+    auto shape = input.new_shape();
+    auto* tube = dynamic_cast<rvegen::polyline_tube<double>*>(shape.get());
+    REQUIRE(tube != nullptr);
+    // Tube spans 2 centerline points; the direction is (p1 - p0)/||·||.
+    auto const& centerline = tube->centerline();
+    REQUIRE(centerline.size() == 2);
+    const auto dx = centerline[1][0] - centerline[0][0];
+    const auto dy = centerline[1][1] - centerline[0][1];
+    const auto dz = centerline[1][2] - centerline[0][2];
+    const auto len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    REQUIRE(std::abs(len - 0.4) < 1e-9);
+    const auto abs_cos = std::abs(dz) / len;
+    if (abs_cos > 0.985) ++close_to_z;
+  }
+  REQUIRE(close_to_z >= 45);   // ~90 % of samples within 10° of axis
+}
+
+// Position and length scalars still come from the same scalar
+// distributions the old directional input used — confirm those are
+// untouched. The orientation hookup is the only change.
+void test_polyline_tube_oriented_input_uses_scalar_position_distributions() {
+  std::mt19937 engine{7};
+  rvegen::constant_distribution<double> px{0.7};
+  rvegen::constant_distribution<double> py{0.3};
+  rvegen::constant_distribution<double> pz{0.1};
+  rvegen::constant_distribution<double> length{0.2};
+  rvegen::constant_distribution<double> radius{0.05};
+  rvegen::bingham_distribution<double> dir{
+      std::array<double, 3>{1.0, 0.0, 0.0}, 200.0, engine};
+
+  rvegen::polyline_tube_oriented_input<double> input{
+      px, py, pz, dir, length, radius};
+  auto shape = input.new_shape();
+  auto* tube = dynamic_cast<rvegen::polyline_tube<double>*>(shape.get());
+  REQUIRE(tube != nullptr);
+  // Centerline midpoint should be at the position constants.
+  auto const& centerline = tube->centerline();
+  const auto mx = 0.5 * (centerline[0][0] + centerline[1][0]);
+  const auto my = 0.5 * (centerline[0][1] + centerline[1][1]);
+  const auto mz = 0.5 * (centerline[0][2] + centerline[1][2]);
+  REQUIRE(std::abs(mx - 0.7) < 1e-9);
+  REQUIRE(std::abs(my - 0.3) < 1e-9);
+  REQUIRE(std::abs(mz - 0.1) < 1e-9);
+}
+
 // ----------------------------------------------------------------------------
 // mean-field bounds: Voigt (upper) and Reuss (lower) on the effective
 // stiffness of a multi-phase composite.
@@ -3629,6 +3723,9 @@ int main() {
   test_bingham_oblate_avoids_axis();
   test_bingham_rotated_oblate_avoids_axis();
   test_bingham_rotated_axis();
+  test_bingham_implements_direction_distribution_base();
+  test_polyline_tube_oriented_input_aligns_with_bingham_axis();
+  test_polyline_tube_oriented_input_uses_scalar_position_distributions();
   test_mean_field_single_phase_collapses_to_phase();
   test_mean_field_voigt_above_reuss_for_contrast();
   test_mean_field_voigt_size_mismatch_throws();
