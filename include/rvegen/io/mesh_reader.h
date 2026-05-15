@@ -12,12 +12,18 @@
 //
 // Supported extensions today:
 //   * `.stl` — ASCII or binary; dispatched via `read_stl_file`.
-//   * `.ply` — ASCII only at present; binary support lands when
-//     `read_ply` learns binary payloads.
+//   * `.ply` — ASCII or binary little/big endian; dispatched via
+//     `read_ply_file` (which sniffs the format line in turn).
 //
 // Unknown extensions throw with a clear message rather than guessing.
 // (Files with no extension at all are also rejected — the caller
 // almost certainly meant something specific.)
+//
+// Paths are trimmed of leading/trailing whitespace before dispatch.
+// Users feeding paths from sloppy JSON configs (e.g. trailing spaces
+// after the closing quote on the previous line) get a sensible error
+// pointing at the actual file rather than a confusing "no extension"
+// for what is really a path-formatting bug.
 
 #include <algorithm>
 #include <cctype>
@@ -44,14 +50,25 @@ inline std::string lowercased_extension(std::string const& path) {
   return lower;
 }
 
+inline std::string trim_path(std::string const& path) {
+  // Strip leading/trailing whitespace so a config with a sloppy
+  // trailing space doesn't trip the "no extension" check on what is
+  // really a path-formatting bug.
+  const auto first = path.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  const auto last = path.find_last_not_of(" \t\r\n");
+  return path.substr(first, last - first + 1);
+}
+
 } // namespace detail
 
 template <typename T = double>
 [[nodiscard]] std::vector<gte::Triangle3<T>> read_mesh_file(
     std::string const& path) {
-  const auto ext = detail::lowercased_extension(path);
-  if (ext == ".stl") return read_stl_file<T>(path);
-  if (ext == ".ply") return read_ply_file<T>(path);
+  const auto trimmed = detail::trim_path(path);
+  const auto ext = detail::lowercased_extension(trimmed);
+  if (ext == ".stl") return read_stl_file<T>(trimmed);
+  if (ext == ".ply") return read_ply_file<T>(trimmed);
   if (ext.empty()) {
     throw std::runtime_error{
         "read_mesh_file: '" + path +

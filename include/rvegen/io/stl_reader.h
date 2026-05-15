@@ -58,6 +58,8 @@
 #include <Mathematics/Triangle.h>
 #include <Mathematics/Vector3.h>
 
+#include "stream_position.h"
+
 namespace rvegen {
 
 namespace detail {
@@ -133,16 +135,6 @@ inline float le_f32(unsigned char const* p) {
   float out;
   std::memcpy(&out, &bits, sizeof(out));
   return out;
-}
-
-inline std::string position_marker(std::istream& in) {
-  // tellg() returns -1 on non-seekable streams; gracefully report no
-  // position info in that case rather than embedding "-1" in the
-  // error message.
-  if (auto pos = in.tellg(); pos >= 0) {
-    return " (at byte " + std::to_string(static_cast<long long>(pos)) + ")";
-  }
-  return "";
 }
 
 } // namespace detail
