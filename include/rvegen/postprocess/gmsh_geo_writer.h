@@ -17,6 +17,7 @@
 #include "../phase/phase.h"
 #include "../shapes/box.h"
 #include "../shapes/circle.h"
+#include "../shapes/convex_polygon.h"
 #include "../shapes/rectangle.h"
 #include "../shapes/sphere.h"
 #include "../types.h"
@@ -33,8 +34,8 @@ namespace rvegen {
 // Shape dispatch uses dynamic_cast — output is one-shot, not on the inner
 // generation loop, so the cost is negligible and the dispatch is localised.
 //
-// Supported shapes: circle, sphere, rectangle, box. Adding a shape: extend
-// the dispatch chain in write().
+// Supported shapes: circle, sphere, rectangle, box, convex_polygon.
+// Adding a shape: extend the dispatch chain in write().
 //
 // Gmsh version requirement:
 //   The phase-aware path (set_phases attached) emits
@@ -194,6 +195,35 @@ private:
         out << "Rectangle(" << entity_id << ") = {"
             << (*r)(0) - half_w << ", " << (*r)(1) - half_h << ", 0, "
             << r->width() << ", " << r->height() << ", 0};\n";
+        this_id = entity_id++;
+      } else if (auto const* p = dynamic_cast<convex_polygon<value_type> const*>(raw); p) {
+        // Custom polygon: emit N Points + N Lines + 1 Line Loop + 1
+        // Plane Surface. The Plane Surface id is the entity that
+        // ends up in any Physical group. Total ids consumed = 2N + 2.
+        auto const& verts = p->vertices();
+        const std::size_t n_verts = verts.size();
+        const std::size_t first_point_id = entity_id;
+        for (auto const& v : verts) {
+          out << "Point(" << entity_id << ") = {"
+              << v[0] << ", " << v[1] << ", 0, 1.0};\n";
+          ++entity_id;
+        }
+        const std::size_t first_line_id = entity_id;
+        for (std::size_t k = 0; k < n_verts; ++k) {
+          const std::size_t p_from = first_point_id + k;
+          const std::size_t p_to   = first_point_id + ((k + 1) % n_verts);
+          out << "Line(" << entity_id << ") = {"
+              << p_from << ", " << p_to << "};\n";
+          ++entity_id;
+        }
+        out << "Line Loop(" << entity_id << ") = {";
+        for (std::size_t k = 0; k < n_verts; ++k) {
+          if (k > 0) out << ", ";
+          out << (first_line_id + k);
+        }
+        out << "};\n";
+        const std::size_t loop_id = entity_id++;
+        out << "Plane Surface(" << entity_id << ") = {" << loop_id << "};\n";
         this_id = entity_id++;
       } else {
         out << "// (unsupported 2D shape skipped)\n";
