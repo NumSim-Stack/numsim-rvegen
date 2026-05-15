@@ -14,6 +14,7 @@ from ._core import (
     Rectangle,
     Sphere,
     VoronoiCell,
+    WeaveGenerator,
 )
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "Rectangle",
     "Sphere",
     "VoronoiCell",
+    "WeaveGenerator",
 ]
 __version__ = "0.1.0"

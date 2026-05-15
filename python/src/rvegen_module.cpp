@@ -28,6 +28,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "rvegen/generators/weave_generator.h"
 #include "rvegen/shapes/box.h"
 #include "rvegen/shapes/circle.h"
 #include "rvegen/shapes/ellipse.h"
@@ -215,4 +216,62 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::voronoi_cell<double> const& c, double x, double y,
               double z) { return c.is_inside({x, y, z}); })
       .def("volume", &rvegen::voronoi_cell<double>::volume);
+
+  // Deterministic plain-weave generator (#3 / #109). build() returns
+  // a Python list of PolylineTube — every yarn the generator produces
+  // IS a polyline_tube by construction, so the down-cast is type-safe.
+  // Each tube in the list owns its own data (deep-copied on the way
+  // out so Python lifetime is independent of the generator).
+  py::class_<rvegen::weave_generator<double>>(m, "WeaveGenerator")
+      .def(py::init<std::array<double, 3> const&, std::size_t, std::size_t,
+                    double, double, std::size_t>(),
+           py::arg("domain_box"),
+           py::arg("n_warp_yarns"),
+           py::arg("n_weft_yarns"),
+           py::arg("yarn_radius"),
+           py::arg("amplitude"),
+           py::arg("n_segments_per_yarn") = std::size_t{32})
+      .def_property_readonly(
+          "n_warp_yarns",
+          [](rvegen::weave_generator<double> const& g) {
+            return g.n_warp_yarns();
+          })
+      .def_property_readonly(
+          "n_weft_yarns",
+          [](rvegen::weave_generator<double> const& g) {
+            return g.n_weft_yarns();
+          })
+      .def("set_warp_phase_name", &rvegen::weave_generator<double>::set_warp_phase_name,
+           py::arg("name"))
+      .def("set_weft_phase_name", &rvegen::weave_generator<double>::set_weft_phase_name,
+           py::arg("name"))
+      .def_property_readonly(
+          "warp_phase_name",
+          [](rvegen::weave_generator<double> const& g) {
+            return g.warp_phase_name();
+          })
+      .def_property_readonly(
+          "weft_phase_name",
+          [](rvegen::weave_generator<double> const& g) {
+            return g.weft_phase_name();
+          })
+      .def("build",
+           [](rvegen::weave_generator<double> const& g) {
+             auto raw = g.build();
+             std::vector<rvegen::polyline_tube<double>> out;
+             out.reserve(raw.size());
+             for (auto& s : raw) {
+               auto* tube =
+                   dynamic_cast<rvegen::polyline_tube<double>*>(s.get());
+               if (!tube) {
+                 throw std::runtime_error{
+                     "WeaveGenerator.build: produced a non-polyline_tube "
+                     "shape (impossible by construction — binding bug)"};
+               }
+               // Copy the tube out by value so the Python list entries
+               // outlive the unique_ptr<shape_base> from build().
+               out.push_back(*tube);
+             }
+             return out;
+           });
 }
