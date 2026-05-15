@@ -123,15 +123,26 @@ public:
         ? domain_box[2] / static_cast<value_type>(nz_eff)
         : value_type{1};
 
+    // Field name distinguishes id schemes so a ParaView user looking
+    // at a .vtk file can tell whether the integers are real phase ids
+    // (set_phases attached) or 1-based shape indices (legacy fallback)
+    // without re-reading the rvegen config that generated the file.
+    // The VTK legacy format's title-line is also pressed into service
+    // as a short scheme note for the same reason.
+    const char* const field_name  = _phases ? "phase_id" : "shape_index";
+    const char* const title_suffix = _phases
+        ? " (phase_id from phase_collection, 0 = matrix/untagged)"
+        : " (1-based shape index, 0 = matrix)";
+
     out << "# vtk DataFile Version 3.0\n"
-        << "rvegen voxel grid\n"
+        << "rvegen voxel grid" << title_suffix << "\n"
         << "ASCII\n"
         << "DATASET STRUCTURED_POINTS\n"
         << "DIMENSIONS " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'
         << "ORIGIN 0 0 0\n"
         << "SPACING " << dx << ' ' << dy << ' ' << dz << '\n'
         << "POINT_DATA " << (_nx * _ny * nz_eff) << '\n'
-        << "SCALARS phase int 1\n"
+        << "SCALARS " << field_name << " int 1\n"
         << "LOOKUP_TABLE default\n";
 
     for (std::size_t k = 0; k < nz_eff; ++k) {

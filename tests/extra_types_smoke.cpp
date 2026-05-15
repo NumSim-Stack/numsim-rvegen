@@ -391,7 +391,9 @@ void test_vtk_legacy_writer_header_and_size() {
   REQUIRE(txt.find("# vtk DataFile Version 3.0")  != std::string::npos);
   REQUIRE(txt.find("DATASET STRUCTURED_POINTS")    != std::string::npos);
   REQUIRE(txt.find("DIMENSIONS 16 16 1")           != std::string::npos);
-  REQUIRE(txt.find("SCALARS phase int 1")          != std::string::npos);
+  // Field name encodes id scheme — `shape_index` when no
+  // phase_collection is attached, `phase_id` when it is.
+  REQUIRE(txt.find("SCALARS shape_index int 1")    != std::string::npos);
   REQUIRE(txt.find("LOOKUP_TABLE default")         != std::string::npos);
   // A handful of voxels at the centre should be marked as inclusion (== 1).
   REQUIRE(txt.find("\n1\n") != std::string::npos);
@@ -515,6 +517,71 @@ void test_gmsh_geo_writer_without_phases_emits_no_physical_groups() {
 
   // ...but without phases attached on the writer, no group is emitted.
   REQUIRE(out.str().find("Physical") == std::string::npos);
+}
+
+void test_gmsh_geo_writer_periodic_and_phases_combine() {
+  // Both features wire into write_2d / write_3d independently; this
+  // test pins the emission order so a future refactor that
+  // accidentally swapped them would fail loudly. Order on the .geo
+  // is: header → entities → Periodic + Coherence → Physical groups.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("fibre");
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto a = std::make_unique<rvegen::circle<double>>(0.3, 0.3, 0.1);
+  a->set_phase_name("fibre");
+  shapes.emplace_back(std::move(a));
+
+  rvegen::gmsh_geo_writer<double> writer{"" /*path*/, /*periodic=*/true};
+  writer.set_phases(&phases);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  const auto entity_pos    = txt.find("Disk(2)");
+  const auto periodic_pos  = txt.find("Periodic Curve");
+  const auto coherence_pos = txt.find("Coherence;");
+  const auto physical_pos  = txt.find("Physical Surface(\"fibre\"");
+  REQUIRE(entity_pos    != std::string::npos);
+  REQUIRE(periodic_pos  != std::string::npos);
+  REQUIRE(coherence_pos != std::string::npos);
+  REQUIRE(physical_pos  != std::string::npos);
+  // Strict order: entity < periodic < coherence < physical.
+  REQUIRE(entity_pos    < periodic_pos);
+  REQUIRE(periodic_pos  < coherence_pos);
+  REQUIRE(coherence_pos < physical_pos);
+}
+
+void test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order() {
+  // Documented invariant: Physical directives come out in
+  // alphabetical order of phase_name, not phase_collection insertion
+  // order. Pin it with a 3-phase test where alphabetical != insertion.
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");      // id 1
+  phases.add("ceramic");     // id 2
+  phases.add("fibre");       // id 3
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto a = std::make_unique<rvegen::circle<double>>(0.2, 0.2, 0.05);
+  a->set_phase_name("fibre");
+  shapes.emplace_back(std::move(a));
+  auto b = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.05);
+  b->set_phase_name("ceramic");
+  shapes.emplace_back(std::move(b));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  // Alphabetical: "ceramic" < "fibre" — must precede in the output.
+  const auto ceramic_pos = txt.find("Physical Surface(\"ceramic\"");
+  const auto fibre_pos   = txt.find("Physical Surface(\"fibre\"");
+  REQUIRE(ceramic_pos != std::string::npos);
+  REQUIRE(fibre_pos   != std::string::npos);
+  REQUIRE(ceramic_pos < fibre_pos);
 }
 
 void test_gmsh_geo_writer_phases_unknown_name_throws() {
@@ -2821,10 +2888,12 @@ void test_vtk_legacy_writer_emits_phase_ids_from_phase_collection() {
   w.write(out, shapes, std::array<double, 3>{1.0, 1.0, 0.0});
   const auto text = out.str();
 
-  // VTK header still announces SCALARS phase int 1 (writer doesn't gain
-  // human-readable phase metadata — ParaView only consumes the binary
-  // field). The body, though, must carry the fibre id, not shape index 1.
-  REQUIRE(text.find("SCALARS phase int 1") != std::string::npos);
+  // SCALARS field is now `phase_id` (renamed from `phase`) so a
+  // ParaView user can tell phase-id mode from shape-index mode by
+  // inspecting the field name. The title line carries a short
+  // human-readable scheme tag too.
+  REQUIRE(text.find("SCALARS phase_id int 1") != std::string::npos);
+  REQUIRE(text.find("phase_id from phase_collection") != std::string::npos);
   // Center voxel (8, 8) for a centered radius-0.2 circle in a 16x16 grid
   // is inside the fibre and must read as `fibre_id` (== 2).
   REQUIRE(text.find('\n' + std::to_string(fibre_id) + '\n') !=
@@ -2928,6 +2997,8 @@ int main() {
   test_gmsh_geo_writer_2d_physical_groups_per_phase();
   test_gmsh_geo_writer_3d_physical_groups_per_phase();
   test_gmsh_geo_writer_without_phases_emits_no_physical_groups();
+  test_gmsh_geo_writer_periodic_and_phases_combine();
+  test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order();
   test_gmsh_geo_writer_phases_unknown_name_throws();
   test_gmsh_geo_writer_strict_mode_rejects_untagged_shape();
   test_gmsh_geo_writer_strict_mode_no_phases_attached_is_noop();
