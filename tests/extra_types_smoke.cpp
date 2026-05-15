@@ -1612,6 +1612,95 @@ void test_mean_field_reuss_singular_phase_throws() {
   REQUIRE(threw);
 }
 
+void test_mori_tanaka_zero_inclusions_returns_matrix() {
+  // With no inclusion phases, MT must return exactly the matrix moduli.
+  using namespace rvegen::homogenization;
+  const auto [K, G] = mori_tanaka_moduli<double>(
+      /*K_m=*/1.0e9, /*G_m=*/0.5e9, {}, {}, {});
+  REQUIRE(K == 1.0e9);
+  REQUIRE(G == 0.5e9);
+}
+
+void test_mori_tanaka_identical_phases_returns_matrix() {
+  // If the inclusion has identical moduli to the matrix, MT must
+  // collapse to the matrix regardless of volume fraction.
+  using namespace rvegen::homogenization;
+  const auto [K, G] = mori_tanaka_moduli<double>(
+      1.0e9, 0.5e9, {1.0e9}, {0.5e9}, {0.3});
+  REQUIRE(std::abs(K - 1.0e9) < 1.0);   // engineering-scale tolerance
+  REQUIRE(std::abs(G - 0.5e9) < 1.0);
+}
+
+void test_mori_tanaka_stiff_inclusion_raises_effective_moduli() {
+  // Stiff fibre in soft matrix at 30% volume fraction — both K_eff and
+  // G_eff must rise above the matrix values, but stay below Voigt
+  // (the arithmetic-mean upper bound).
+  using namespace rvegen::homogenization;
+  const double K_m = 1.0e9, G_m = 0.5e9;
+  const double K_f = 5.0e10, G_f = 3.0e10;
+  const double f = 0.3;
+  const auto [K_eff, G_eff] = mori_tanaka_moduli<double>(
+      K_m, G_m, {K_f}, {G_f}, {f});
+
+  REQUIRE(K_eff > K_m);
+  REQUIRE(G_eff > G_m);
+
+  // Voigt is the arithmetic mean of bulk + shear separately —
+  // K_voigt = (1-f)*K_m + f*K_f.
+  const double K_voigt = (1.0 - f) * K_m + f * K_f;
+  const double G_voigt = (1.0 - f) * G_m + f * G_f;
+  REQUIRE(K_eff < K_voigt);
+  REQUIRE(G_eff < G_voigt);
+
+  // Reuss is the harmonic mean — K_reuss^-1 = (1-f)/K_m + f/K_f.
+  const double K_reuss = 1.0 / ((1.0 - f) / K_m + f / K_f);
+  const double G_reuss = 1.0 / ((1.0 - f) / G_m + f / G_f);
+  // MT-with-soft-matrix coincides with HS lower (matrix-dominated)
+  // and must lie above Reuss.
+  REQUIRE(K_eff > K_reuss);
+  REQUIRE(G_eff > G_reuss);
+}
+
+void test_mori_tanaka_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  try {
+    (void)mori_tanaka_moduli<double>(1.0e9, 0.5e9, {5.0e10}, {3.0e10, 2.0e10}, {0.3});
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mori_tanaka_overfilled_inclusions_throws() {
+  // Inclusion fractions summing above 1 would leave the matrix with
+  // a negative fraction — not a physical configuration.
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  try {
+    (void)mori_tanaka_moduli<double>(1.0e9, 0.5e9,
+        {5.0e10, 5.0e10}, {3.0e10, 3.0e10}, {0.6, 0.5});
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_mori_tanaka_returns_isotropic_stiffness_matrix() {
+  // The 6×6 wrapper builds an isotropic Voigt-form stiffness from the
+  // computed (K_eff, G_eff). Top-left 3×3 block diagonal = K + 4G/3,
+  // off-diagonal = K - 2G/3; bottom-right 3×3 diagonal = G.
+  using namespace rvegen::homogenization;
+  const auto C = mori_tanaka<double>(
+      1.0e9, 0.5e9, {5.0e10}, {3.0e10}, {0.2});
+  // Check the bottom-right shear block.
+  REQUIRE(std::abs(C(3, 3) - C(4, 4)) < 1.0);
+  REQUIRE(std::abs(C(4, 4) - C(5, 5)) < 1.0);
+  // Off-diagonals in the normal-stress block are equal (isotropy).
+  REQUIRE(std::abs(C(0, 1) - C(0, 2)) < 1.0);
+  REQUIRE(std::abs(C(1, 0) - C(2, 0)) < 1.0);
+  // Effective shear matches the modulus path.
+  const auto [_, G_eff] = mori_tanaka_moduli<double>(
+      1.0e9, 0.5e9, {5.0e10}, {3.0e10}, {0.2});
+  REQUIRE(std::abs(C(3, 3) - G_eff) < 1.0);
+}
+
 // ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
@@ -2506,6 +2595,12 @@ int main() {
   test_mean_field_voigt_size_mismatch_throws();
   test_mean_field_reuss_size_mismatch_throws();
   test_mean_field_reuss_singular_phase_throws();
+  test_mori_tanaka_zero_inclusions_returns_matrix();
+  test_mori_tanaka_identical_phases_returns_matrix();
+  test_mori_tanaka_stiff_inclusion_raises_effective_moduli();
+  test_mori_tanaka_size_mismatch_throws();
+  test_mori_tanaka_overfilled_inclusions_throws();
+  test_mori_tanaka_returns_isotropic_stiffness_matrix();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
