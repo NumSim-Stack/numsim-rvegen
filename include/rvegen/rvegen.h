@@ -93,6 +93,7 @@
 // homogenization — analytical bounds (Voigt / Reuss / Hill / MT / HS / SC)
 #include "homogenization/mean_field.h"
 #include "homogenization/phase_bridge.h"
+#include "homogenization/homogenize.h"
 
 // phase model — named regions with opaque material_config blobs that
 // downstream solvers (numsim-materials) interpret.
