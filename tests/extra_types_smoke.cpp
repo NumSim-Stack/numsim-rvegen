@@ -2397,6 +2397,152 @@ void test_phase_bridge_compose_into_mori_tanaka() {
   REQUIRE(K_mt < K_voigt);
 }
 
+// One-call homogenize() wrapper from #51 follow-up. Builds the same
+// 2-phase RVE as `test_phase_bridge_compose_into_mori_tanaka` and
+// confirms every method produces a physically reasonable result.
+namespace {
+auto build_two_phase_rve() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 1.0e9}, {"G", 0.5e9}});
+  phases.add("fibre",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 5.0e10}, {"G", 3.0e10}});
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto fibre = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.25);
+  fibre->set_phase_name("fibre");
+  shapes.push_back(std::move(fibre));
+  return std::make_pair(std::move(phases), std::move(shapes));
+}
+} // namespace
+
+void test_homogenize_dispatch_voigt_reuss_hill_bracket() {
+  // Voigt ≥ VRH ≥ Reuss for both K and G — universal property.
+  using rvegen::homogenization::homogenize;
+  using rvegen::homogenization::homogenization_method;
+  rvegen::homogenization::homogenize_options<double> opts;
+  opts.nx = 64; opts.ny = 64; opts.nz = 1;
+
+  auto [phases, shapes] = build_two_phase_rve();
+  const std::array<double, 3> box{1.0, 1.0, 0.0};
+  const auto [K_v, G_v] = homogenize<double>(
+      shapes, phases, box, homogenization_method::voigt, opts);
+  const auto [K_h, G_h] = homogenize<double>(
+      shapes, phases, box, homogenization_method::voigt_reuss_hill, opts);
+  const auto [K_r, G_r] = homogenize<double>(
+      shapes, phases, box, homogenization_method::reuss, opts);
+  REQUIRE(K_v >= K_h);
+  REQUIRE(K_h >= K_r);
+  REQUIRE(G_v >= G_h);
+  REQUIRE(G_h >= G_r);
+}
+
+void test_homogenize_dispatch_mt_within_hs_bracket() {
+  // MT must lie within [HS_lower, HS_upper] for a well-ordered
+  // mixture. For 2 phases MT-with-soft-as-matrix equals HS- exactly
+  // in the math but the two code paths (closed-form MT vs
+  // Berryman/Walpole N-phase) accumulate different FP rounding, so
+  // the bracket is loosened by a relative-modulus tolerance.
+  using rvegen::homogenization::homogenize;
+  using rvegen::homogenization::homogenization_method;
+  rvegen::homogenization::homogenize_options<double> opts;
+  opts.nx = 64; opts.ny = 64; opts.nz = 1;
+
+  auto [phases, shapes] = build_two_phase_rve();
+  const std::array<double, 3> box{1.0, 1.0, 0.0};
+  const auto [K_mt, G_mt] = homogenize<double>(
+      shapes, phases, box, homogenization_method::mori_tanaka, opts);
+  const auto [K_lo, G_lo] = homogenize<double>(
+      shapes, phases, box, homogenization_method::hashin_shtrikman_lower, opts);
+  const auto [K_hi, G_hi] = homogenize<double>(
+      shapes, phases, box, homogenization_method::hashin_shtrikman_upper, opts);
+  const double rel = 1e-9;
+  REQUIRE(K_lo <= K_mt * (1.0 + rel) + rel);
+  REQUIRE(K_mt <= K_hi * (1.0 + rel) + rel);
+  REQUIRE(G_lo <= G_mt * (1.0 + rel) + rel);
+  REQUIRE(G_mt <= G_hi * (1.0 + rel) + rel);
+}
+
+void test_homogenize_dispatch_self_consistent_within_hs() {
+  // SC must lie within [HS_lower, HS_upper] too — the standard
+  // micromechanical bracketing theorem.
+  using rvegen::homogenization::homogenize;
+  using rvegen::homogenization::homogenization_method;
+  rvegen::homogenization::homogenize_options<double> opts;
+  opts.nx = 64; opts.ny = 64; opts.nz = 1;
+
+  auto [phases, shapes] = build_two_phase_rve();
+  const std::array<double, 3> box{1.0, 1.0, 0.0};
+  const auto [K_sc, G_sc] = homogenize<double>(
+      shapes, phases, box, homogenization_method::self_consistent, opts);
+  const auto [K_lo, G_lo] = homogenize<double>(
+      shapes, phases, box, homogenization_method::hashin_shtrikman_lower, opts);
+  const auto [K_hi, G_hi] = homogenize<double>(
+      shapes, phases, box, homogenization_method::hashin_shtrikman_upper, opts);
+  REQUIRE(K_lo <= K_sc);
+  REQUIRE(K_sc <= K_hi);
+  REQUIRE(G_lo <= G_sc);
+  REQUIRE(G_sc <= G_hi);
+}
+
+void test_homogenize_dispatch_missing_matrix_phase_throws() {
+  // The default options name `matrix_phase_name = "matrix"`. If no
+  // phase by that name exists, homogenize must throw — silently
+  // re-routing untagged voxels would give meaningless numbers.
+  using rvegen::homogenization::homogenize;
+  using rvegen::homogenization::homogenization_method;
+  rvegen::phase_collection<double> phases;
+  phases.add("ceramic",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 1.0e9}, {"G", 0.5e9}});
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto c = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1);
+  c->set_phase_name("ceramic");
+  shapes.push_back(std::move(c));
+
+  bool threw = false;
+  std::string what;
+  try {
+    (void)homogenize<double>(shapes, phases,
+        std::array<double, 3>{1.0, 1.0, 0.0},
+        homogenization_method::voigt);
+  } catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("matrix_phase_name") != std::string::npos);
+}
+
+void test_homogenize_dispatch_custom_matrix_phase_name() {
+  // Letting the user designate a non-default matrix name. With
+  // "binder" set, the missing-"matrix" failure mode goes away.
+  using rvegen::homogenization::homogenize;
+  using rvegen::homogenization::homogenization_method;
+  rvegen::phase_collection<double> phases;
+  phases.add("binder",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 1.0e9}, {"G", 0.5e9}});
+  phases.add("particle",
+      nlohmann::json{{"type", "linear_elasticity"},
+                     {"K", 5.0e10}, {"G", 3.0e10}});
+
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto p = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2);
+  p->set_phase_name("particle");
+  shapes.push_back(std::move(p));
+
+  rvegen::homogenization::homogenize_options<double> opts;
+  opts.matrix_phase_name = "binder";
+  opts.nx = 64; opts.ny = 64; opts.nz = 1;
+
+  const auto [K, G] = homogenize<double>(shapes, phases,
+      std::array<double, 3>{1.0, 1.0, 0.0},
+      homogenization_method::mori_tanaka, opts);
+  REQUIRE(K > 1.0e9);   // particle adds stiffness vs pure binder
+  REQUIRE(G > 0.5e9);
+}
+
 // ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
@@ -3517,6 +3663,11 @@ int main() {
   test_phase_bridge_extract_throws_on_anisotropic_type();
   test_phase_bridge_extract_throws_on_missing_material_config();
   test_phase_bridge_compose_into_mori_tanaka();
+  test_homogenize_dispatch_voigt_reuss_hill_bracket();
+  test_homogenize_dispatch_mt_within_hs_bracket();
+  test_homogenize_dispatch_self_consistent_within_hs();
+  test_homogenize_dispatch_missing_matrix_phase_throws();
+  test_homogenize_dispatch_custom_matrix_phase_name();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
