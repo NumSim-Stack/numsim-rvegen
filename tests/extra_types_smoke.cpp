@@ -1821,6 +1821,98 @@ void test_mori_tanaka_returns_isotropic_stiffness_matrix() {
   REQUIRE(std::abs(C(3, 3) - G_eff) < 1.0);
 }
 
+void test_hashin_shtrikman_identical_phases_collapses() {
+  using namespace rvegen::homogenization;
+  const auto [lo, hi] = hashin_shtrikman_bounds<double>(
+      1.0e9, 0.5e9, 1.0e9, 0.5e9, 0.4);
+  REQUIRE(std::abs(lo.first  - 1.0e9) < 1.0);
+  REQUIRE(std::abs(lo.second - 0.5e9) < 1.0);
+  REQUIRE(std::abs(hi.first  - 1.0e9) < 1.0);
+  REQUIRE(std::abs(hi.second - 0.5e9) < 1.0);
+}
+
+void test_hashin_shtrikman_brackets_reuss_and_voigt() {
+  // For a 2-phase well-ordered mixture, Reuss < HS- < HS+ < Voigt.
+  // This is the universal tightness property of HS bounds.
+  using namespace rvegen::homogenization;
+  const double K_1 = 1.0e9, G_1 = 0.5e9;
+  const double K_2 = 5.0e10, G_2 = 3.0e10;
+  const double f_2 = 0.3;
+  const auto [lo, hi] = hashin_shtrikman_bounds<double>(K_1, G_1, K_2, G_2, f_2);
+
+  const double K_voigt = (1.0 - f_2) * K_1 + f_2 * K_2;
+  const double K_reuss = 1.0 / ((1.0 - f_2) / K_1 + f_2 / K_2);
+  const double G_voigt = (1.0 - f_2) * G_1 + f_2 * G_2;
+  const double G_reuss = 1.0 / ((1.0 - f_2) / G_1 + f_2 / G_2);
+
+  REQUIRE(K_reuss < lo.first);
+  REQUIRE(lo.first < hi.first);
+  REQUIRE(hi.first < K_voigt);
+  REQUIRE(G_reuss < lo.second);
+  REQUIRE(lo.second < hi.second);
+  REQUIRE(hi.second < G_voigt);
+}
+
+void test_hashin_shtrikman_lower_matches_mori_tanaka_with_soft_matrix() {
+  // Defining property of 2-phase HS bounds: HS- equals Mori-Tanaka
+  // with the soft phase as matrix, HS+ equals MT with the stiff
+  // phase as matrix. Provides a strong cross-check between the two
+  // closed-form implementations.
+  using namespace rvegen::homogenization;
+  const double K_s = 1.0e9, G_s = 0.5e9;
+  const double K_h = 5.0e10, G_h = 3.0e10;
+  const double f_h = 0.3;
+
+  const auto [K_HS_lo, G_HS_lo] =
+      hashin_shtrikman_lower<double>(K_s, G_s, K_h, G_h, f_h);
+  const auto [K_MT_soft, G_MT_soft] =
+      mori_tanaka_moduli<double>(K_s, G_s, {K_h}, {G_h}, {f_h});
+  REQUIRE(std::abs(K_HS_lo - K_MT_soft) < 1.0);
+  REQUIRE(std::abs(G_HS_lo - G_MT_soft) < 1.0);
+
+  const auto [K_HS_hi, G_HS_hi] =
+      hashin_shtrikman_upper<double>(K_s, G_s, K_h, G_h, f_h);
+  const auto [K_MT_stiff, G_MT_stiff] = mori_tanaka_moduli<double>(
+      K_h, G_h, {K_s}, {G_s}, {1.0 - f_h});
+  REQUIRE(std::abs(K_HS_hi - K_MT_stiff) < 1.0);
+  REQUIRE(std::abs(G_HS_hi - G_MT_stiff) < 1.0);
+}
+
+void test_hashin_shtrikman_argument_order_insensitive() {
+  // Caller may pass phases in either order — the routine identifies
+  // soft/stiff internally and returns the same bounds.
+  using namespace rvegen::homogenization;
+  const auto [lo_a, hi_a] = hashin_shtrikman_bounds<double>(
+      1.0e9, 0.5e9, 5.0e10, 3.0e10, 0.3);  // soft first, f_2 = stiff
+  const auto [lo_b, hi_b] = hashin_shtrikman_bounds<double>(
+      5.0e10, 3.0e10, 1.0e9, 0.5e9, 0.7);  // stiff first, f_2 = soft (1 - 0.3)
+  REQUIRE(std::abs(lo_a.first  - lo_b.first)  < 1.0);
+  REQUIRE(std::abs(lo_a.second - lo_b.second) < 1.0);
+  REQUIRE(std::abs(hi_a.first  - hi_b.first)  < 1.0);
+  REQUIRE(std::abs(hi_a.second - hi_b.second) < 1.0);
+}
+
+void test_hashin_shtrikman_crossed_ordering_throws() {
+  // K_1 < K_2 but G_1 > G_2 — phases don't sort consistently, so
+  // 2-phase HS is undefined. The function must throw rather than
+  // returning a meaningless number.
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  try {
+    (void)hashin_shtrikman_lower<double>(1.0e9, 3.0e10, 5.0e10, 0.5e9, 0.3);
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_hashin_shtrikman_out_of_range_fraction_throws() {
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  try {
+    (void)hashin_shtrikman_lower<double>(1.0e9, 0.5e9, 5.0e10, 3.0e10, 1.5);
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 // ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
@@ -2725,6 +2817,12 @@ int main() {
   test_mori_tanaka_size_mismatch_throws();
   test_mori_tanaka_overfilled_inclusions_throws();
   test_mori_tanaka_returns_isotropic_stiffness_matrix();
+  test_hashin_shtrikman_identical_phases_collapses();
+  test_hashin_shtrikman_brackets_reuss_and_voigt();
+  test_hashin_shtrikman_lower_matches_mori_tanaka_with_soft_matrix();
+  test_hashin_shtrikman_argument_order_insensitive();
+  test_hashin_shtrikman_crossed_ordering_throws();
+  test_hashin_shtrikman_out_of_range_fraction_throws();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();

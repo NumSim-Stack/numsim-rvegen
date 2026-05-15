@@ -38,9 +38,16 @@
 //     bounds depending on whether the matrix is the soft or stiff
 //     phase.
 //
+// Hashin-Shtrikman (HS) bounds for **two-phase isotropic mixtures**
+// with spherical morphology are also exposed (`hashin_shtrikman_lower`
+// / `_upper` / `_bounds`). For two phases, HS- == MT-with-soft-as-
+// matrix and HS+ == MT-with-stiff-as-matrix; the explicit HS API
+// frees callers from picking a matrix and makes the variational
+// bracket on the effective moduli direct.
+//
 // Out of scope here, ships in follow-up PRs against #5:
-//   * Hashin-Shtrikman bounds for general non-spherical inclusion
-//     morphology.
+//   * N-phase HS bounds (Walpole / Berryman form) — well-defined
+//     only when the phases sort consistently in K and G.
 //   * Mori-Tanaka for anisotropic phases / non-spherical inclusions
 //     (needs a per-shape Eshelby tensor).
 //   * Self-consistent (Hill) scheme — requires iterative solve.
@@ -240,6 +247,103 @@ template <typename T = double>
   const auto [K_eff, G_eff] = mori_tanaka_moduli<T>(
       K_matrix, G_matrix, K_inclusions, G_inclusions, volume_fractions);
   return isotropic_voigt_stiffness<T>(K_eff, G_eff);
+}
+
+// Hashin-Shtrikman bounds for a two-phase isotropic mixture with
+// spherical morphology — the tightest variational bounds without
+// additional morphological information beyond the volume fractions.
+//
+// Convention: the caller passes phase 1 and phase 2 in either order;
+// the routine internally identifies which is "soft" (lower K, lower
+// G) and which is "stiff", and returns:
+//   * HS- (lower bound): uses the soft phase as the comparison
+//     medium. Equals Mori-Tanaka with the soft phase as matrix.
+//   * HS+ (upper bound): uses the stiff phase as comparison medium.
+//     Equals Mori-Tanaka with the stiff phase as matrix.
+//
+// Requires both phases to sort consistently in K and G — i.e. one
+// phase has both K_1 ≤ K_2 and G_1 ≤ G_2 (the "two-phase well-ordered"
+// case). When the moduli cross (one phase stiffer in K, the other
+// stiffer in G), the bounds are not well-defined and the function
+// throws. This is the documented limitation of HS for crossed
+// orderings; resolving it needs the Walpole multi-comparison-medium
+// generalisation.
+template <typename T = double>
+[[nodiscard]] std::pair<T, T> hashin_shtrikman_lower(
+    T K_1, T G_1, T K_2, T G_2, T volume_fraction_2) {
+  if (volume_fraction_2 < T{0} || volume_fraction_2 > T{1}) {
+    throw std::runtime_error{
+        "hashin_shtrikman: volume_fraction_2 must lie in [0, 1]"};
+  }
+  // Identify the soft phase by both K and G; the orderings must agree.
+  const bool one_is_soft = (K_1 <= K_2) && (G_1 <= G_2);
+  const bool two_is_soft = (K_2 <= K_1) && (G_2 <= G_1);
+  if (!one_is_soft && !two_is_soft) {
+    throw std::runtime_error{
+        "hashin_shtrikman: phase moduli cross (one stiffer in K, the "
+        "other stiffer in G); 2-phase bounds undefined — needs the "
+        "multi-comparison-medium Walpole form"};
+  }
+  // Map to (Ks, Gs) = soft, (Kh, Gh) = hard, with v_h the hard-phase
+  // volume fraction. HS- inserts the hard phase as inclusions in a
+  // soft comparison medium.
+  const T Ks = one_is_soft ? K_1 : K_2;
+  const T Gs = one_is_soft ? G_1 : G_2;
+  const T Kh = one_is_soft ? K_2 : K_1;
+  const T Gh = one_is_soft ? G_2 : G_1;
+  const T v_h = one_is_soft ? volume_fraction_2 : (T{1} - volume_fraction_2);
+  const T v_s = T{1} - v_h;
+
+  // Textbook 2-phase HS- (Hashin & Shtrikman 1963), in terms of the
+  // soft phase's longitudinal modulus (Ks + 4Gs/3) and shear-mod-
+  // resolvent (Gs + Gs·(9Ks + 8Gs)/(6(Ks + 2Gs))).
+  const T K_L  = Ks + T{4} * Gs / T{3};
+  const T G_L  = Gs + Gs * (T{9} * Ks + T{8} * Gs)
+                       / (T{6} * (Ks + T{2} * Gs));
+  const T K_eff = Ks + v_h / (T{1} / (Kh - Ks) + v_s / K_L);
+  const T G_eff = Gs + v_h / (T{1} / (Gh - Gs) + v_s / G_L);
+  return {K_eff, G_eff};
+}
+
+template <typename T = double>
+[[nodiscard]] std::pair<T, T> hashin_shtrikman_upper(
+    T K_1, T G_1, T K_2, T G_2, T volume_fraction_2) {
+  if (volume_fraction_2 < T{0} || volume_fraction_2 > T{1}) {
+    throw std::runtime_error{
+        "hashin_shtrikman: volume_fraction_2 must lie in [0, 1]"};
+  }
+  const bool one_is_soft = (K_1 <= K_2) && (G_1 <= G_2);
+  const bool two_is_soft = (K_2 <= K_1) && (G_2 <= G_1);
+  if (!one_is_soft && !two_is_soft) {
+    throw std::runtime_error{
+        "hashin_shtrikman: phase moduli cross (one stiffer in K, the "
+        "other stiffer in G); 2-phase bounds undefined — needs the "
+        "multi-comparison-medium Walpole form"};
+  }
+  // HS+ uses the hard phase as the comparison medium — the formula
+  // is symmetric to HS- with the roles flipped.
+  const T Ks = one_is_soft ? K_1 : K_2;
+  const T Gs = one_is_soft ? G_1 : G_2;
+  const T Kh = one_is_soft ? K_2 : K_1;
+  const T Gh = one_is_soft ? G_2 : G_1;
+  const T v_h = one_is_soft ? volume_fraction_2 : (T{1} - volume_fraction_2);
+  const T v_s = T{1} - v_h;
+
+  const T K_L  = Kh + T{4} * Gh / T{3};
+  const T G_L  = Gh + Gh * (T{9} * Kh + T{8} * Gh)
+                       / (T{6} * (Kh + T{2} * Gh));
+  const T K_eff = Kh + v_s / (T{1} / (Ks - Kh) + v_h / K_L);
+  const T G_eff = Gh + v_s / (T{1} / (Gs - Gh) + v_h / G_L);
+  return {K_eff, G_eff};
+}
+
+// Convenience wrapper returning both HS bounds at once. The returned
+// pair is { lower={K,G}, upper={K,G} }.
+template <typename T = double>
+[[nodiscard]] std::pair<std::pair<T, T>, std::pair<T, T>>
+hashin_shtrikman_bounds(T K_1, T G_1, T K_2, T G_2, T volume_fraction_2) {
+  return {hashin_shtrikman_lower<T>(K_1, G_1, K_2, G_2, volume_fraction_2),
+          hashin_shtrikman_upper<T>(K_1, G_1, K_2, G_2, volume_fraction_2)};
 }
 
 } // namespace rvegen::homogenization
