@@ -536,7 +536,11 @@ void test_gmsh_geo_writer_periodic_and_phases_combine() {
   a->set_phase_name("fibre");
   shapes.emplace_back(std::move(a));
 
-  rvegen::gmsh_geo_writer<double> writer{"" /*path*/, /*periodic=*/true};
+  // Construct via the default ctor + set_periodic — using the 2-arg
+  // ctor with an empty path here would compile but is misleading
+  // (the empty path is only fine because this test bypasses run()).
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_periodic(true);
   writer.set_phases(&phases);
   std::stringstream out;
   writer.write(out, shapes, {1.0, 1.0, 0.0});

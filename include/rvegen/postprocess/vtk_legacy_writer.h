@@ -19,13 +19,21 @@ namespace rvegen {
 
 // ParaView-friendly legacy VTK file writer. Emits an ASCII
 // STRUCTURED_POINTS dataset that ParaView opens directly, with one scalar
-// "phase" per voxel (0 = matrix, 1..N = inclusion index).
+// per voxel (0 = matrix; remaining values follow the active id scheme,
+// see below).
 //
 // This writer does NOT depend on the VTK library — it's pure text output,
 // the format is a few-line header plus the flat phase grid. The file
 // extension is conventionally ".vtk".
 //
 // Sampling is shared with voxel_writer via sample_voxel_grid.
+//
+// Output is NOT bit-stable for a given shape list: the SCALARS field
+// name and the title-line suffix depend on whether `set_phases()` was
+// called and which collection is attached. The title line carries
+// `[rvegen-vtk-format: v2]` so downstream parsers can detect the
+// scheme change; snapshot-diff tests should expect the title to vary
+// across writer-state changes.
 template <typename T = double>
 class vtk_legacy_writer final : public post_process_base<T> {
 public:
