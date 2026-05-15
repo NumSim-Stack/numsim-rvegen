@@ -2210,6 +2210,70 @@ void test_hashin_shtrikman_n_volume_fractions_not_unit_sum_throws() {
   REQUIRE(threw);
 }
 
+void test_self_consistent_identical_phases_returns_matrix() {
+  // All phases identical → fixed point trivially is the matrix.
+  using namespace rvegen::homogenization;
+  const auto [K, G] = self_consistent_moduli<double>(
+      {1.0e9, 1.0e9, 1.0e9}, {0.5e9, 0.5e9, 0.5e9}, {0.3, 0.3, 0.4});
+  REQUIRE(std::abs(K - 1.0e9) < 1.0);
+  REQUIRE(std::abs(G - 0.5e9) < 1.0);
+}
+
+void test_self_consistent_lies_within_hashin_shtrikman_bounds() {
+  // Universal property: SC estimate is always between HS- and HS+
+  // for a well-ordered mixture. This is the strongest validation
+  // since SC isn't required to match either MT or Voigt-Reuss-Hill.
+  using namespace rvegen::homogenization;
+  const std::vector<double> K{1.0e9,  5.0e10};
+  const std::vector<double> G{0.5e9,  3.0e10};
+  const std::vector<double> v{0.7,    0.3};
+
+  const auto [K_sc, G_sc] = self_consistent_moduli<double>(K, G, v);
+  const auto [hs_lo, hs_hi] = hashin_shtrikman_bounds_n<double>(K, G, v);
+
+  REQUIRE(hs_lo.first  <= K_sc);
+  REQUIRE(K_sc <= hs_hi.first);
+  REQUIRE(hs_lo.second <= G_sc);
+  REQUIRE(G_sc <= hs_hi.second);
+}
+
+void test_self_consistent_dilute_limit_approaches_matrix() {
+  // At very low inclusion volume fraction the SC estimate must be
+  // close to the matrix moduli (no inclusion to dilate the medium).
+  using namespace rvegen::homogenization;
+  const auto [K, G] = self_consistent_moduli<double>(
+      {1.0e9, 5.0e10}, {0.5e9, 3.0e10}, {0.999, 0.001});
+  // Within 1 % of matrix at this dilution.
+  REQUIRE(std::abs(K - 1.0e9) / 1.0e9 < 0.01);
+  REQUIRE(std::abs(G - 0.5e9) / 0.5e9 < 0.01);
+}
+
+void test_self_consistent_throws_on_non_convergence() {
+  // Force non-convergence by setting max_iter = 1 with non-trivial
+  // contrast — the first step won't satisfy the tolerance, and the
+  // function must throw with a diagnostic message.
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  std::string what;
+  try {
+    (void)self_consistent_moduli<double>(
+        {1.0e9, 5.0e10}, {0.5e9, 3.0e10}, {0.7, 0.3},
+        /*max_iter=*/1, /*tol=*/1e-15);
+  } catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("not converge") != std::string::npos);
+}
+
+void test_self_consistent_size_mismatch_throws() {
+  using namespace rvegen::homogenization;
+  bool threw = false;
+  try {
+    (void)self_consistent_moduli<double>(
+        {1.0e9, 5.0e10}, {0.5e9}, {0.7, 0.3});
+  } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 // ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
@@ -3319,6 +3383,11 @@ int main() {
   test_hashin_shtrikman_n_crossed_ordering_throws();
   test_hashin_shtrikman_n_size_mismatch_throws();
   test_hashin_shtrikman_n_volume_fractions_not_unit_sum_throws();
+  test_self_consistent_identical_phases_returns_matrix();
+  test_self_consistent_lies_within_hashin_shtrikman_bounds();
+  test_self_consistent_dilute_limit_approaches_matrix();
+  test_self_consistent_throws_on_non_convergence();
+  test_self_consistent_size_mismatch_throws();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
