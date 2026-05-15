@@ -45,6 +45,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -190,6 +191,37 @@ template <typename T>
     sum += a[0] * b[1] - b[0] * a[1];
   }
   return T{0.5} * std::abs(sum);
+}
+
+} // namespace rvegen
+
+// One-line bridge from voronoi_generator_2d into the rvegen shape
+// pipeline: build the cells, wrap each as a convex_polygon, return
+// the shape_vector that the standard writers (voxel, gmsh, svg)
+// consume. Skips degenerate (< 3 vertex) cells silently — those
+// only arise from coincident seeds, and a writer would refuse them
+// anyway via the convex_polygon ctor's vertex-count guard.
+//
+// Lives in its own header so callers can pull in the helper without
+// dragging in shape_base / convex_polygon transitively when they
+// only want the raw polygon output.
+
+#include "../shapes/convex_polygon.h"
+#include "../shapes/shape_base.h"
+
+namespace rvegen {
+
+template <typename T = double>
+[[nodiscard]] inline std::vector<std::unique_ptr<shape_base<T>>>
+voronoi_to_shapes(voronoi_generator_2d<T> const& gen) {
+  auto cells = gen.build();
+  std::vector<std::unique_ptr<shape_base<T>>> out;
+  out.reserve(cells.size());
+  for (auto& v : cells) {
+    if (v.size() < 3) continue;   // degenerate (coincident seeds); skip
+    out.push_back(std::make_unique<convex_polygon<T>>(std::move(v)));
+  }
+  return out;
 }
 
 } // namespace rvegen

@@ -2365,6 +2365,21 @@ void test_gmsh_geo_writer_polygon_id_appears_in_physical_group() {
   REQUIRE(txt.find("Physical Surface(\"grain\", 2) = {") != std::string::npos);
 }
 
+// One-line helper: voronoi_generator_2d → shape_vector ready for any
+// writer. Skips degenerate (<3 vertex) cells silently — those only
+// arise from coincident seeds.
+void test_voronoi_to_shapes_helper_returns_shape_vector() {
+  rvegen::voronoi_generator_2d<double> gen{
+      1.0, 1.0, {{0.25, 0.5}, {0.75, 0.5}}};
+  auto shapes = rvegen::voronoi_to_shapes(gen);
+  REQUIRE(shapes.size() == 2);
+  for (auto const& s : shapes) {
+    REQUIRE(s != nullptr);
+    REQUIRE(dynamic_cast<rvegen::convex_polygon<double>*>(s.get()) != nullptr);
+    REQUIRE(std::abs(s->area() - 0.5) < 1e-12);
+  }
+}
+
 // ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
@@ -3477,6 +3492,7 @@ int main() {
   test_convex_polygon_wraps_voronoi_cell();
   test_gmsh_geo_writer_emits_plane_surface_for_convex_polygon();
   test_gmsh_geo_writer_polygon_id_appears_in_physical_group();
+  test_voronoi_to_shapes_helper_returns_shape_vector();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();

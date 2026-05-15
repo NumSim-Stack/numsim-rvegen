@@ -28,9 +28,11 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "rvegen/generators/voronoi_generator_2d.h"
 #include "rvegen/generators/weave_generator.h"
 #include "rvegen/shapes/box.h"
 #include "rvegen/shapes/circle.h"
+#include "rvegen/shapes/convex_polygon.h"
 #include "rvegen/shapes/ellipse.h"
 #include "rvegen/shapes/mesh_inclusion.h"
 #include "rvegen/shapes/polyline_tube.h"
@@ -216,6 +218,68 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::voronoi_cell<double> const& c, double x, double y,
               double z) { return c.is_inside({x, y, z}); })
       .def("volume", &rvegen::voronoi_cell<double>::volume);
+
+  // 2D convex polygon — Voronoi-cell-ready, full shape_base contract
+  // on the C++ side.
+  py::class_<rvegen::convex_polygon<double>>(m, "ConvexPolygon")
+      .def(py::init<std::vector<std::array<double, 2>>>(),
+           py::arg("vertices"),
+           "Construct from a CCW-ordered list of (x, y) tuples; ≥ 3 "
+           "vertices required.")
+      .def_property_readonly(
+          "vertices",
+          [](rvegen::convex_polygon<double> const& p) { return p.vertices(); })
+      .def_property_readonly(
+          "vertex_count",
+          [](rvegen::convex_polygon<double> const& p) {
+            return p.vertex_count();
+          })
+      .def("area", &rvegen::convex_polygon<double>::area)
+      .def("is_inside",
+           [](rvegen::convex_polygon<double> const& p, double x, double y) {
+             return p.is_inside({x, y, 0.0});
+           })
+      .def("get_middle_point",
+           [](rvegen::convex_polygon<double> const& p) {
+             return p.get_middle_point();
+           })
+      .def("set_middle_point",
+           [](rvegen::convex_polygon<double>& p, double x, double y) {
+             p.set_middle_point({x, y, 0.0});
+           });
+
+  // Bounded 2D Voronoi tessellation by seed points (#114 phase 1).
+  // build_polygons() returns the raw vertex lists; build_cells()
+  // returns them as ConvexPolygon objects ready for downstream use.
+  py::class_<rvegen::voronoi_generator_2d<double>>(m, "VoronoiGenerator2d")
+      .def(py::init<double, double, std::vector<std::array<double, 2>>>(),
+           py::arg("Lx"), py::arg("Ly"), py::arg("seeds"))
+      .def_property_readonly(
+          "seed_count",
+          [](rvegen::voronoi_generator_2d<double> const& g) {
+            return g.seed_count();
+          })
+      .def("build_polygons",
+           [](rvegen::voronoi_generator_2d<double> const& g) {
+             return g.build();
+           },
+           "Returns a list-of-list-of-(x,y) — one CCW polygon per seed.")
+      .def("build_cells",
+           [](rvegen::voronoi_generator_2d<double> const& g) {
+             // Iterate the raw polygons and wrap each as a value
+             // ConvexPolygon. Degenerate (<3 vertex) cells are skipped
+             // — same convention as voronoi_to_shapes on the C++ side.
+             auto polys = g.build();
+             std::vector<rvegen::convex_polygon<double>> out;
+             out.reserve(polys.size());
+             for (auto& v : polys) {
+               if (v.size() < 3) continue;
+               out.emplace_back(std::move(v));
+             }
+             return out;
+           },
+           "Returns a list of ConvexPolygon — Voronoi cells ready for "
+           "downstream is_inside / area queries.");
 
   // Deterministic plain-weave generator (#3 / #109). build() returns
   // a Python list of PolylineTube — every yarn the generator produces

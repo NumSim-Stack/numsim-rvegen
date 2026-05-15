@@ -119,15 +119,72 @@ def test_module_exports():
     for name in [
         "Box",
         "Circle",
+        "ConvexPolygon",
         "Ellipse",
         "MeshInclusion",
         "PolylineTube",
         "Rectangle",
         "Sphere",
         "VoronoiCell",
+        "VoronoiGenerator2d",
         "WeaveGenerator",
     ]:
         assert hasattr(rvegen, name), f"rvegen.{name} missing from public API"
+
+
+def test_convex_polygon_unit_square():
+    """Direct ConvexPolygon construction + area / is_inside / centroid."""
+    sq = rvegen.ConvexPolygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    assert sq.vertex_count == 4
+    assert sq.area() == pytest.approx(1.0)
+    assert sq.is_inside(0.5, 0.5)
+    assert not sq.is_inside(1.5, 0.5)
+    cx, cy, cz = sq.get_middle_point()
+    assert cx == pytest.approx(0.5)
+    assert cy == pytest.approx(0.5)
+    assert cz == 0.0
+    # Translation moves the polygon.
+    sq.set_middle_point(5.0, 5.0)
+    assert sq.is_inside(5.0, 5.0)
+    assert not sq.is_inside(0.5, 0.5)
+
+
+def test_convex_polygon_rejects_too_few_vertices():
+    with pytest.raises(RuntimeError):
+        rvegen.ConvexPolygon([(0.0, 0.0), (1.0, 0.0)])
+
+
+def test_voronoi_generator_2d_split_two_seeds():
+    """Symmetric two seeds → two half-rectangles of area 0.5 each, both as
+    ConvexPolygon objects ready for downstream use."""
+    gen = rvegen.VoronoiGenerator2d(
+        Lx=1.0, Ly=1.0, seeds=[(0.25, 0.5), (0.75, 0.5)])
+    assert gen.seed_count == 2
+
+    polygons = gen.build_polygons()
+    assert len(polygons) == 2
+    assert len(polygons[0]) == 4
+    assert len(polygons[1]) == 4
+
+    cells = gen.build_cells()
+    assert len(cells) == 2
+    for cell in cells:
+        assert isinstance(cell, rvegen.ConvexPolygon)
+        assert cell.area() == pytest.approx(0.5)
+    # Each seed is inside its own cell.
+    assert cells[0].is_inside(0.25, 0.5)
+    assert not cells[0].is_inside(0.75, 0.5)
+    assert cells[1].is_inside(0.75, 0.5)
+
+
+def test_voronoi_generator_2d_partition_invariant():
+    """For arbitrary seed sets the sum of cell areas equals Lx·Ly."""
+    seeds = [(0.3, 0.4), (1.7, 0.4), (0.5, 1.1),
+             (1.2, 0.8), (1.5, 1.3), (0.8, 0.2)]
+    gen = rvegen.VoronoiGenerator2d(Lx=2.0, Ly=1.5, seeds=seeds)
+    cells = gen.build_cells()
+    total = sum(c.area() for c in cells)
+    assert total == pytest.approx(2.0 * 1.5, abs=1e-10)
 
 
 def test_weave_generator_builds_expected_tube_count():
