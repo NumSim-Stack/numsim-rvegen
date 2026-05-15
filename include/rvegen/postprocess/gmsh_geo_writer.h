@@ -61,7 +61,13 @@ public:
       : _output_path{handler.template get<std::string>("output_path")},
         _periodic{handler.contains("periodic")
                       ? handler.template get<bool>("periodic")
-                      : false} {}
+                      : false},
+        _char_length_min{handler.contains("char_length_min")
+                             ? handler.template get<value_type>("char_length_min")
+                             : value_type{0}},
+        _char_length_max{handler.contains("char_length_max")
+                             ? handler.template get<value_type>("char_length_max")
+                             : value_type{0}} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -71,11 +77,38 @@ public:
     // configs keep working unchanged.
     s.template insert<bool>("periodic")
         .template add<numsim_core::description_label<"emit Periodic Curve/Surface directives + Coherence; for FE-RVE workflows that need matching nodes on opposite faces (default false)">>();
+    // Optional mesh-size knobs. When > 0, the writer emits
+    // `Mesh.CharacteristicLengthMin/Max = X;` directives so the
+    // generated .geo runs through gmsh with the requested element
+    // size without manual editing. Default 0 keeps the original
+    // commented-placeholder behaviour.
+    s.template insert<value_type>("char_length_min")
+        .template add<numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMin = <value> in the .geo header (controls minimum element size). Default 0 = no directive emitted.">>();
+    s.template insert<value_type>("char_length_max")
+        .template add<numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMax = <value> in the .geo header (controls maximum element size). Default 0 = no directive emitted.">>();
     return s;
   }
 
   [[nodiscard]] bool periodic() const noexcept { return _periodic; }
   void set_periodic(bool v) noexcept { _periodic = v; }
+
+  // Optional gmsh mesh-size knobs. Setting either or both to a
+  // positive value makes the writer emit `Mesh.CharacteristicLengthMin
+  // = X;` and/or `Mesh.CharacteristicLengthMax = Y;` in the .geo
+  // header — so the FE mesher uses the requested size without a
+  // manual edit. Pass 0 (or leave default) to skip the directive.
+  void set_characteristic_length_min(value_type v) noexcept {
+    _char_length_min = v;
+  }
+  void set_characteristic_length_max(value_type v) noexcept {
+    _char_length_max = v;
+  }
+  [[nodiscard]] value_type characteristic_length_min() const noexcept {
+    return _char_length_min;
+  }
+  [[nodiscard]] value_type characteristic_length_max() const noexcept {
+    return _char_length_max;
+  }
 
   [[nodiscard]] std::string const& output_path() const noexcept {
     return _output_path;
@@ -163,10 +196,22 @@ public:
   }
 
 private:
-  static void write_header(std::ostream& out) {
-    out << "// rvegen — generated gmsh .geo script\n"
-        << "// Mesh.CharacteristicLengthMin = 0.05;\n"
-        << "// Mesh.CharacteristicLengthMax = 0.1;\n\n";
+  void write_header(std::ostream& out) const {
+    out << "// rvegen — generated gmsh .geo script\n";
+    // Emit active mesh-size directives (positive value → uncommented
+    // directive; otherwise keep the placeholder so users still see
+    // the syntax they need to enable manually).
+    if (_char_length_min > value_type{0}) {
+      out << "Mesh.CharacteristicLengthMin = " << _char_length_min << ";\n";
+    } else {
+      out << "// Mesh.CharacteristicLengthMin = 0.05;\n";
+    }
+    if (_char_length_max > value_type{0}) {
+      out << "Mesh.CharacteristicLengthMax = " << _char_length_max << ";\n";
+    } else {
+      out << "// Mesh.CharacteristicLengthMax = 0.1;\n";
+    }
+    out << "\n";
   }
 
   void write_2d(std::ostream& out,
@@ -352,6 +397,8 @@ private:
   bool _periodic{false};
   phase_collection<value_type> const* _phases{nullptr};
   bool _phase_strict{false};
+  value_type _char_length_min{0};
+  value_type _char_length_max{0};
 };
 
 } // namespace rvegen
