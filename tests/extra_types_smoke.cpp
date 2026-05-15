@@ -2365,6 +2365,46 @@ void test_gmsh_geo_writer_polygon_id_appears_in_physical_group() {
   REQUIRE(txt.find("Physical Surface(\"grain\", 2) = {") != std::string::npos);
 }
 
+// gmsh mesh-size knob (#117): setting characteristic_length_min/max
+// makes the writer emit `Mesh.CharacteristicLengthMin/Max = X;`
+// directives in the .geo header so the FE mesher uses the requested
+// size without manual editing. Default 0 keeps the original commented
+// placeholders.
+void test_gmsh_geo_writer_emits_mesh_size_directives_when_set() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_characteristic_length_min(0.01);
+  writer.set_characteristic_length_max(0.05);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  REQUIRE(txt.find("Mesh.CharacteristicLengthMin = 0.01;") != std::string::npos);
+  REQUIRE(txt.find("Mesh.CharacteristicLengthMax = 0.05;") != std::string::npos);
+  // The commented placeholders should NOT be emitted when an active
+  // value is set.
+  REQUIRE(txt.find("// Mesh.CharacteristicLengthMin = 0.05;") == std::string::npos);
+  REQUIRE(txt.find("// Mesh.CharacteristicLengthMax = 0.1;")  == std::string::npos);
+}
+
+void test_gmsh_geo_writer_keeps_placeholders_when_mesh_size_default() {
+  // Default ctor leaves the mesh-size knobs at 0 → commented
+  // placeholders remain. Back-compat for callers that haven't
+  // adopted the new knob yet.
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  REQUIRE(txt.find("// Mesh.CharacteristicLengthMin = 0.05;") != std::string::npos);
+  REQUIRE(txt.find("// Mesh.CharacteristicLengthMax = 0.1;")  != std::string::npos);
+}
+
 // One-line helper: voronoi_generator_2d → shape_vector ready for any
 // writer. Skips degenerate (<3 vertex) cells silently — those only
 // arise from coincident seeds.
@@ -3513,6 +3553,8 @@ int main() {
   test_convex_polygon_wraps_voronoi_cell();
   test_gmsh_geo_writer_emits_plane_surface_for_convex_polygon();
   test_gmsh_geo_writer_polygon_id_appears_in_physical_group();
+  test_gmsh_geo_writer_emits_mesh_size_directives_when_set();
+  test_gmsh_geo_writer_keeps_placeholders_when_mesh_size_default();
   test_voronoi_to_shapes_helper_returns_shape_vector();
   test_svg_writer_emits_polygon_element_for_convex_polygon();
   test_phase_collection_basics_and_ids();
