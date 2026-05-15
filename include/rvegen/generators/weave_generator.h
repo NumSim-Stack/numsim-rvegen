@@ -101,6 +101,16 @@ public:
       throw std::runtime_error{
           "weave_generator: domain Lx and Ly must both be positive"};
     }
+    // 2D domains (Lz == 0) physically can't carry undulation; the
+    // yarns would land at z = ±amplitude, outside a zero-extent domain.
+    // Reject rather than silently producing geometrically meaningless
+    // shapes — voxelization of a 2D domain collapses to a single
+    // z-slice that won't capture undulation anyway.
+    if (_domain[2] <= value_type{0} && amplitude != value_type{0}) {
+      throw std::runtime_error{
+          "weave_generator: 2D domain (Lz == 0) requires amplitude = 0; "
+          "for an undulating weave use a 3D domain with positive Lz"};
+    }
   }
 
   // Optional phase-name tags applied to every produced yarn. By
@@ -138,10 +148,12 @@ public:
                                                      : value_type{0};
 
     // Warp yarns run along +x at evenly-spaced y. The first yarn sits
-    // at y = Ly/(2·N_warp) and the last at y = Ly·(2·N_warp - 1)/(2·N_warp)
-    // so the spacing is uniform AND the strip extends to the domain
-    // boundary (rather than leaving Ly/(N_warp+1) gaps at the edges).
-    // Weft uses the same convention along x.
+    // at y = Ly/(2·N_warp); successive yarns are at uniform spacing
+    // Ly/N_warp; the last is at y = Ly·(2·N_warp - 1)/(2·N_warp). The
+    // boundary-most yarns are set back by half-spacing from the domain
+    // edges, which is what uniform-interior-spacing requires (any
+    // edge-flush layout would leave the interior non-uniform). Weft
+    // uses the same convention along x.
     //
     // z(x) = z_centre + amplitude · sin(2π · x / period_x), where
     // period_x equals the weft yarn spacing — one wavelength per

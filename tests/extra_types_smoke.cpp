@@ -2046,26 +2046,18 @@ void test_weave_generator_warp_and_weft_interlace_180_out_of_phase() {
   auto* warp = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
   auto* weft = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[1].get());
 
-  // 1 warp + 1 weft → warp at y = 0.5, weft at x = 0.5. The crossing
-  // point is at (0.5, 0.5). With period = 1 (= Lx for 1 weft), the
-  // warp's z at x=0.5 is z_centre + A·sin(π) = z_centre. With period
-  // = 1 (= Ly for 1 warp), the weft's z at y=0.5 is z_centre - A·sin(π)
-  // = z_centre. Both pass through z_centre. Not interesting at this
-  // point — try the quarter-period point instead.
+  // 1 warp + 1 weft → warp at y = 0.5, weft at x = 0.5. Sample at
+  // x = 0.25 (k=8 of 32 segments on Lx=1) — an exact control point.
+  // Warp z at x = 0.25: z_centre + 0.05·sin(2π·0.25/1) = z_centre + 0.05.
+  // Weft z at y = 0.25 (k=8 of 32 segments on Ly=1): z_centre - 0.05.
   const double z_centre = 0.15;
-  // Warp at x = 0.25: z = z_centre + 0.05·sin(2π·0.25/1) = z_centre + 0.05.
-  // Find the centerline sample closest to x = 0.25 for warp.
-  double warp_z_at_quarter = 0;
-  for (auto const& p : warp->centerline()) {
-    if (std::abs(p[0] - 0.25) < 1.0 / 64) { warp_z_at_quarter = p[2]; break; }
-  }
-  REQUIRE(std::abs(warp_z_at_quarter - (z_centre + 0.05)) < 1e-9);
-  // Weft at y = 0.25: z = z_centre - 0.05·sin(2π·0.25/1) = z_centre - 0.05.
-  double weft_z_at_quarter = 0;
-  for (auto const& p : weft->centerline()) {
-    if (std::abs(p[1] - 0.25) < 1.0 / 64) { weft_z_at_quarter = p[2]; break; }
-  }
-  REQUIRE(std::abs(weft_z_at_quarter - (z_centre - 0.05)) < 1e-9);
+  const auto& wcl = warp->centerline();
+  const auto& xcl = weft->centerline();
+  REQUIRE(wcl.size() == 33 && xcl.size() == 33);
+  REQUIRE(std::abs(wcl[8][0] - 0.25) < 1e-12);
+  REQUIRE(std::abs(xcl[8][1] - 0.25) < 1e-12);
+  REQUIRE(std::abs(wcl[8][2] - (z_centre + 0.05)) < 1e-12);
+  REQUIRE(std::abs(xcl[8][2] - (z_centre - 0.05)) < 1e-12);
 }
 
 void test_weave_generator_phase_tagging() {
@@ -2100,6 +2092,22 @@ void test_weave_generator_validation_throws_on_bad_input() {
   try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.05, 0.03, 1}; }
   catch (std::runtime_error const&) { threw_too_few_segments = true; }
   REQUIRE(threw_too_few_segments);
+
+  // 2D domain (Lz == 0) with non-zero amplitude is geometrically
+  // nonsensical — yarns would land at z = ±amplitude outside the
+  // zero-extent domain. Must reject up front rather than silently
+  // producing voxel-grid-incompatible shapes.
+  bool threw_2d_with_amplitude = false;
+  try { rvegen::weave_generator<double>{{1,1,0}, 2, 2, 0.05, 0.03}; }
+  catch (std::runtime_error const&) { threw_2d_with_amplitude = true; }
+  REQUIRE(threw_2d_with_amplitude);
+
+  // 2D domain with amplitude == 0 is a deliberate flat-weave config;
+  // it must construct fine.
+  bool flat_2d_ok = true;
+  try { rvegen::weave_generator<double>{{1,1,0}, 2, 2, 0.05, 0.0}; }
+  catch (std::runtime_error const&) { flat_2d_ok = false; }
+  REQUIRE(flat_2d_ok);
 }
 
 // ----------------------------------------------------------------------------
