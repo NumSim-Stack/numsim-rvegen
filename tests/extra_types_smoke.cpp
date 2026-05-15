@@ -2907,6 +2907,10 @@ void test_vtk_legacy_writer_emits_phase_ids_from_phase_collection() {
   // human-readable scheme tag too.
   REQUIRE(text.find("SCALARS phase_id int 1") != std::string::npos);
   REQUIRE(text.find("phase_id from phase_collection") != std::string::npos);
+  // Format-version marker must be reachable in BOTH the phase-id and
+  // shape-index branches — a refactor that suppressed it in either
+  // would silently break downstream consumers' scheme detection.
+  REQUIRE(text.find("[rvegen-vtk-format: v2]") != std::string::npos);
   // Center voxel (8, 8) for a centered radius-0.2 circle in a 16x16 grid
   // is inside the fibre and must read as `fibre_id` (== 2).
   REQUIRE(text.find('\n' + std::to_string(fibre_id) + '\n') !=
