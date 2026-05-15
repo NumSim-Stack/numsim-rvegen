@@ -57,10 +57,12 @@
 
 #include <Mathematics/Vector3.h>
 
+#include "direction_distribution_base.h"
+
 namespace rvegen {
 
 template <typename T = double, typename Engine = std::mt19937>
-class bingham_distribution {
+class bingham_distribution : public direction_distribution_base<T> {
 public:
   using value_type = T;
   using engine_type = Engine;
@@ -84,12 +86,15 @@ public:
   // exp(κ(x² − 1)) for κ > 0, or exp(κ·x²) for κ < 0 (each scaled to
   // a max of 1). Once x is accepted, φ is uniform on [0, 2π) and the
   // 3-vector is built in the mean-axis-aligned frame and rotated.
-  // Convenience operator — same return as `sample()`. Provided so
-  // callers can write generic "draw from distribution" code via
-  // `auto v = dist();` regardless of return-type shape (the 2D
-  // von-Mises uses scalar `operator()()` from `distribution_base<T>`;
-  // here we mirror the spelling at vector return).
-  [[nodiscard]] vector_type operator()() { return sample(); }
+  // Polymorphic entry from `direction_distribution_base<T>` — same
+  // sample as `sample()` but returned as `std::array<T, 3>` to match
+  // the abstract base's signature. Callers that need the native
+  // `gte::Vector<3, T>` (for GTE intersection queries etc.) should
+  // call `sample()` directly.
+  [[nodiscard]] std::array<T, 3> operator()() override {
+    const auto v = sample();
+    return {v[0], v[1], v[2]};
+  }
 
   [[nodiscard]] vector_type sample() {
     if (std::abs(_kappa) <

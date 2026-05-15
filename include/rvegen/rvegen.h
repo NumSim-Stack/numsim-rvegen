@@ -51,6 +51,7 @@
 
 // distributions
 #include "distributions/distribution_base.h"
+#include "distributions/direction_distribution_base.h"
 #include "distributions/uniform_real_distribution.h"
 #include "distributions/normal_distribution.h"
 #include "distributions/constant_distribution.h"
@@ -107,6 +108,7 @@
 #include "inputs/box_input.h"
 #include "inputs/ellipse_input.h"
 #include "inputs/polyline_tube_directional_input.h"
+#include "inputs/polyline_tube_oriented_input.h"
 #include "inputs/polyline_tube_input.h"
 #include "inputs/mesh_inclusion_input.h"
 
