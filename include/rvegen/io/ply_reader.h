@@ -71,6 +71,8 @@
 #include <Mathematics/Triangle.h>
 #include <Mathematics/Vector3.h>
 
+#include "stream_position.h"
+
 namespace rvegen {
 
 namespace detail {
@@ -179,8 +181,13 @@ read_ply_header(std::istream& in) {
         elems.back().props.push_back({name, type_or_list, false, ""});
       }
     } else {
-      throw std::runtime_error{
-          "read_ply: unknown header line '" + line + "'"};
+      // Unknown header line. The PLY spec allows producers to emit
+      // private metadata lines (texturefile, materialfile, ply::group,
+      // etc.); rejecting them would refuse otherwise-valid files from
+      // tools like meshlab. Skip silently. The header structure we
+      // care about — element + property declarations — is still
+      // enforced; this only relaxes the "what other keywords may
+      // appear" check.
     }
   }
   return {format, elems};
@@ -193,7 +200,8 @@ inline double read_ascii_scalar(std::istream& in) {
   double v;
   if (!(in >> v)) {
     throw std::runtime_error{
-        "read_ply_ascii: ran out of input mid-element"};
+        "read_ply_ascii: ran out of input mid-element" +
+        position_marker(in)};
   }
   return v;
 }
@@ -242,7 +250,8 @@ inline double read_binary_scalar(std::istream& in, ply_format format,
           static_cast<std::streamsize>(sz));
   if (static_cast<std::size_t>(in.gcount()) != sz) {
     throw std::runtime_error{
-        "read_ply_binary: short read while parsing scalar"};
+        "read_ply_binary: short read while parsing scalar" +
+        position_marker(in)};
   }
 
   // Normalise so `bytes` holds the value in HOST byte order. PLY's

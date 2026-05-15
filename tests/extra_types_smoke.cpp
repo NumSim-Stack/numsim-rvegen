@@ -2291,6 +2291,74 @@ void test_read_mesh_file_unknown_extension_throws() {
   std::remove(bad.c_str());
 }
 
+void test_read_mesh_file_trims_trailing_whitespace() {
+  // A path with stray trailing whitespace (a common JSON-config slip)
+  // should still dispatch correctly rather than triggering the "no
+  // extension" branch.
+  const std::string stl_tmp = "/tmp/rvegen_test_mesh_trim.stl";
+  {
+    std::ofstream out{stl_tmp};
+    out << unit_cube_stl;
+  }
+  auto tris = rvegen::read_mesh_file<double>(stl_tmp + "   ");
+  REQUIRE(tris.size() == 12);
+  std::remove(stl_tmp.c_str());
+}
+
+// PLY reader now tolerates unknown header lines (texturefile,
+// materialfile, ply::group, etc.) — silently skipped, the way real
+// PLY producers emit them. Previously this threw and refused
+// otherwise-valid files from meshlab et al.
+void test_ply_ascii_reader_tolerates_unknown_header_lines() {
+  constexpr char const* with_extras = R"(ply
+format ascii 1.0
+comment exported from meshlab
+texturefile foo.png
+materialfile bar.mtl
+ply::group fibre_cluster
+element vertex 3
+property float x
+property float y
+property float z
+element face 1
+property list uchar int vertex_indices
+end_header
+0.0 0.0 0.0
+1.0 0.0 0.0
+0.0 1.0 0.0
+3 0 1 2
+)";
+  std::stringstream ss{with_extras};
+  auto tris = rvegen::read_ply_ascii<double>(ss);
+  REQUIRE(tris.size() == 1);
+}
+
+// PLY parse errors mid-element now carry a position marker, matching
+// the STL reader's `(at byte N)` convention.
+void test_ply_ascii_reader_parse_error_includes_position() {
+  // Truncated payload — header announces 3 vertices but only 2 are
+  // present. The reader runs out of input mid-element.
+  constexpr char const* truncated = R"(ply
+format ascii 1.0
+element vertex 3
+property float x
+property float y
+property float z
+element face 0
+property list uchar int vertex_indices
+end_header
+0.0 0.0 0.0
+1.0 0.0 0.0
+)";
+  std::stringstream ss{truncated};
+  bool threw = false;
+  std::string what;
+  try { (void)rvegen::read_ply_ascii<double>(ss); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("byte") != std::string::npos);
+}
+
 void test_mesh_inclusion_input_accepts_ply_via_dispatch() {
   // Same setup as the binary-STL test, but feeding a PLY file. Proves
   // the registry → input → mesh_inclusion path consumes either format.
@@ -2893,6 +2961,9 @@ int main() {
   test_mesh_inclusion_input_accepts_binary_stl();
   test_read_mesh_file_dispatches_stl_and_ply();
   test_read_mesh_file_unknown_extension_throws();
+  test_read_mesh_file_trims_trailing_whitespace();
+  test_ply_ascii_reader_tolerates_unknown_header_lines();
+  test_ply_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_input_accepts_ply_via_dispatch();
   test_mesh_inclusion_input_empty_stl_throws();
   test_mesh_inclusion_inside_outside_cube();
