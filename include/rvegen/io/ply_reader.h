@@ -54,11 +54,15 @@
 //   and comment lines anywhere in the header are accepted.
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <istream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -193,6 +197,81 @@ inline double read_ascii_scalar(std::istream& in) {
   return v;
 }
 
+// Size in bytes of a PLY scalar type name. Returns 0 for unknown
+// types (the caller throws a clearer error with file context).
+inline std::size_t ply_scalar_size(std::string const& type_name) {
+  const auto n = to_lower(type_name);
+  if (n == "char"   || n == "int8"   || n == "uchar" || n == "uint8")  return 1;
+  if (n == "short"  || n == "int16"  || n == "ushort"|| n == "uint16") return 2;
+  if (n == "int"    || n == "int32"  || n == "uint"  || n == "uint32"
+   || n == "float"  || n == "float32")                                 return 4;
+  if (n == "double" || n == "float64")                                 return 8;
+  return 0;
+}
+
+// Read a single binary scalar value as double. `format` is the file's
+// declared binary byte order (LE or BE); on a LE host we memcpy
+// straight for LE files and byte-reverse for BE; on a BE host (rare)
+// the reverse. `std::endian::native` decides at compile time.
+inline double read_binary_scalar(std::istream& in, ply_format format,
+                                 std::string const& type_name) {
+  const auto sz = ply_scalar_size(type_name);
+  if (sz == 0) {
+    throw std::runtime_error{
+        "read_ply_binary: unknown scalar type '" + type_name + "'"};
+  }
+  std::array<unsigned char, 8> bytes{};
+  in.read(reinterpret_cast<char*>(bytes.data()),
+          static_cast<std::streamsize>(sz));
+  if (static_cast<std::size_t>(in.gcount()) != sz) {
+    throw std::runtime_error{
+        "read_ply_binary: short read while parsing scalar of type '" +
+        type_name + "'"};
+  }
+
+  // Normalise so `bytes` holds the value in HOST byte order. PLY's
+  // binary scalars are stored in the format's declared endianness;
+  // we byte-reverse iff that doesn't match the host.
+  const bool file_is_le = format == ply_format::binary_little_endian;
+  const bool host_is_le = std::endian::native == std::endian::little;
+  if (file_is_le != host_is_le) {
+    std::reverse(bytes.begin(), bytes.begin() + sz);
+  }
+
+  const auto n = to_lower(type_name);
+  if (n == "char"   || n == "int8")   {
+    std::int8_t v;  std::memcpy(&v, bytes.data(), sizeof(v));
+    return static_cast<double>(v);
+  }
+  if (n == "uchar"  || n == "uint8")  {
+    std::uint8_t v; std::memcpy(&v, bytes.data(), sizeof(v));
+    return static_cast<double>(v);
+  }
+  if (n == "short"  || n == "int16")  {
+    std::int16_t v; std::memcpy(&v, bytes.data(), sizeof(v));
+    return static_cast<double>(v);
+  }
+  if (n == "ushort" || n == "uint16") {
+    std::uint16_t v; std::memcpy(&v, bytes.data(), sizeof(v));
+    return static_cast<double>(v);
+  }
+  if (n == "int"    || n == "int32")  {
+    std::int32_t v; std::memcpy(&v, bytes.data(), sizeof(v));
+    return static_cast<double>(v);
+  }
+  if (n == "uint"   || n == "uint32") {
+    std::uint32_t v; std::memcpy(&v, bytes.data(), sizeof(v));
+    return static_cast<double>(v);
+  }
+  if (n == "float"  || n == "float32") {
+    float v; std::memcpy(&v, bytes.data(), sizeof(v));
+    return static_cast<double>(v);
+  }
+  // double / float64.
+  double v; std::memcpy(&v, bytes.data(), sizeof(v));
+  return v;
+}
+
 // Locate the offsets of x/y/z within a vertex element's property
 // list. Throws if any of the three is missing — the consumer needs
 // them all to build a usable mesh.
@@ -242,9 +321,9 @@ template <typename T = double>
   auto [format, elems] = detail::read_ply_header(in);
   if (format != detail::ply_format::ascii) {
     throw std::runtime_error{
-        "read_ply_ascii: file declares a binary PLY format. Binary PLY "
-        "is not supported yet — convert to ASCII with meshlab/admesh, "
-        "or wait for the binary-PLY follow-up."};
+        "read_ply_ascii: file declares a binary PLY format. Use "
+        "read_ply_binary (or the auto-detect read_ply / read_ply_file "
+        "entry points) for binary PLY input."};
   }
 
   // Locate the vertex and face elements. Allow the file to declare
@@ -349,13 +428,173 @@ template <typename T = double>
   return read_ply_ascii<T>(in);
 }
 
-// Auto-detect entry point. Today only ASCII is accepted; binary PLY
-// gets a clear "not yet supported" error from `read_ply_ascii`'s
-// format check. The signature exists now so future consumers don't
-// need to change when binary support lands.
+// Binary PLY reader, little- or big-endian. The header parser is
+// shared with the ASCII path — only the payload decoding differs.
+//
+// Stream MUST be opened in binary mode (`std::ios::binary`) when the
+// source is a file; otherwise text-mode line-ending translation can
+// corrupt the payload mid-element. `read_ply_binary_file` does this
+// already; in-memory `stringstream` is fine either way.
+template <typename T = double>
+[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply_binary(std::istream& in) {
+  auto [format, elems] = detail::read_ply_header(in);
+  if (format == detail::ply_format::ascii) {
+    throw std::runtime_error{
+        "read_ply_binary: file declares ASCII format. Use read_ply_ascii "
+        "or the auto-detect read_ply entry point."};
+  }
+
+  detail::ply_element const* vertex = nullptr;
+  detail::ply_element const* face   = nullptr;
+  for (auto const& e : elems) {
+    if (e.name == "vertex") vertex = &e;
+    else if (e.name == "face") face = &e;
+    else throw std::runtime_error{
+        "read_ply_binary: unsupported element '" + e.name + "'"};
+  }
+  if (!vertex) throw std::runtime_error{
+      "read_ply_binary: no 'vertex' element declared"};
+  if (!face)   throw std::runtime_error{
+      "read_ply_binary: no 'face' element declared"};
+
+  const auto xyz = detail::vertex_xyz_offsets(*vertex);
+  const auto face_list_prop = detail::face_list_property_index(*face);
+
+  std::vector<std::array<T, 3>> verts;
+  verts.reserve(vertex->count);
+  for (std::size_t v = 0; v < vertex->count; ++v) {
+    std::array<T, 3> p{};
+    for (std::size_t i = 0; i < vertex->props.size(); ++i) {
+      auto const& prop = vertex->props[i];
+      if (prop.is_list) {
+        // Vertex-level list property — rare. Read count via the
+        // declared count type, then skip that many values of the
+        // declared index/scalar type.
+        const auto n = static_cast<std::size_t>(
+            detail::read_binary_scalar(in, format, prop.list_count_type));
+        for (std::size_t k = 0; k < n; ++k) {
+          (void)detail::read_binary_scalar(in, format, prop.scalar_type);
+        }
+        continue;
+      }
+      const auto val = detail::read_binary_scalar(in, format, prop.scalar_type);
+      if      (i == xyz[0]) p[0] = static_cast<T>(val);
+      else if (i == xyz[1]) p[1] = static_cast<T>(val);
+      else if (i == xyz[2]) p[2] = static_cast<T>(val);
+      // else: silently drop the per-vertex extra property.
+    }
+    verts.push_back(p);
+  }
+
+  std::vector<gte::Triangle3<T>> triangles;
+  triangles.reserve(face->count);
+  for (std::size_t f = 0; f < face->count; ++f) {
+    std::vector<std::size_t> indices;
+    for (std::size_t i = 0; i < face->props.size(); ++i) {
+      auto const& prop = face->props[i];
+      if (i == face_list_prop) {
+        const auto n = static_cast<std::size_t>(
+            detail::read_binary_scalar(in, format, prop.list_count_type));
+        indices.resize(n);
+        for (std::size_t k = 0; k < n; ++k) {
+          indices[k] = static_cast<std::size_t>(
+              detail::read_binary_scalar(in, format, prop.scalar_type));
+        }
+      } else if (prop.is_list) {
+        const auto n = static_cast<std::size_t>(
+            detail::read_binary_scalar(in, format, prop.list_count_type));
+        for (std::size_t k = 0; k < n; ++k) {
+          (void)detail::read_binary_scalar(in, format, prop.scalar_type);
+        }
+      } else {
+        (void)detail::read_binary_scalar(in, format, prop.scalar_type);
+      }
+    }
+    if (indices.size() < 3) {
+      throw std::runtime_error{
+          "read_ply_binary: face with fewer than 3 vertices"};
+    }
+    for (auto i : indices) {
+      if (i >= verts.size()) {
+        throw std::runtime_error{
+            "read_ply_binary: face references out-of-range vertex index"};
+      }
+    }
+    for (std::size_t k = 1; k + 1 < indices.size(); ++k) {
+      gte::Triangle3<T> tri;
+      auto const& a = verts[indices[0]];
+      auto const& b = verts[indices[k]];
+      auto const& c = verts[indices[k + 1]];
+      tri.v[0] = {a[0], a[1], a[2]};
+      tri.v[1] = {b[0], b[1], b[2]};
+      tri.v[2] = {c[0], c[1], c[2]};
+      triangles.push_back(tri);
+    }
+  }
+  return triangles;
+}
+
+template <typename T = double>
+[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply_binary_file(
+    std::string const& path) {
+  std::ifstream in{path, std::ios::binary};
+  if (!in) {
+    throw std::runtime_error{
+        "read_ply_binary_file: cannot open '" + path + "'"};
+  }
+  return read_ply_binary<T>(in);
+}
+
+// Auto-detect entry point. Peeks at the `format` line in the header,
+// then rewinds and dispatches to the right reader. Requires a
+// seekable stream — `std::stringstream` and `std::ifstream` both
+// qualify; pipes do not.
 template <typename T = double>
 [[nodiscard]] std::vector<gte::Triangle3<T>> read_ply(std::istream& in) {
-  return read_ply_ascii<T>(in);
+  const auto start = in.tellg();
+  if (start < 0) {
+    // Non-seekable — fall back to ASCII, which will throw with a
+    // clear error if the file turns out to be binary.
+    return read_ply_ascii<T>(in);
+  }
+  // Read just enough of the header to find the format line. We
+  // can't reuse `read_ply_header` here because it consumes element
+  // declarations too; we need to rewind before that point.
+  std::string line;
+  detail::ply_format format = detail::ply_format::ascii;
+  bool format_found = false;
+  while (std::getline(in, line)) {
+    auto first = line.find_first_not_of(" \t\r");
+    if (first == std::string::npos) continue;
+    auto last = line.find_last_not_of(" \t\r");
+    line = line.substr(first, last - first + 1);
+    const auto lower = detail::to_lower(line);
+    if (lower.rfind("comment", 0) == 0) continue;
+    if (lower.rfind("obj_info", 0) == 0) continue;
+    if (lower == "ply") continue;
+    if (lower.rfind("format", 0) == 0) {
+      std::istringstream fs{line};
+      std::string ignored, fmt;
+      fs >> ignored >> fmt;
+      const auto f = detail::to_lower(fmt);
+      if      (f == "ascii")                 format = detail::ply_format::ascii;
+      else if (f == "binary_little_endian")  format = detail::ply_format::binary_little_endian;
+      else if (f == "binary_big_endian")     format = detail::ply_format::binary_big_endian;
+      else throw std::runtime_error{"read_ply: unknown format '" + fmt + "'"};
+      format_found = true;
+      break;
+    }
+    break;   // some other header line surfaced before `format` — bail
+  }
+  in.clear();
+  in.seekg(start);
+  if (!format_found) {
+    // Let read_ply_ascii's own header parser surface the precise
+    // "missing magic" / "missing format" error.
+    return read_ply_ascii<T>(in);
+  }
+  if (format == detail::ply_format::ascii) return read_ply_ascii<T>(in);
+  return read_ply_binary<T>(in);
 }
 
 template <typename T = double>
