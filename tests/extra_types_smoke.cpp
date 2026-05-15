@@ -2988,6 +2988,11 @@ void test_voxel_writer_header_lists_phase_names_when_attached() {
   REQUIRE(text.find("# phase 1 = matrix") != std::string::npos);
   REQUIRE(text.find("# phase 2 = fibre")  != std::string::npos);
   REQUIRE(text.find("phase ids from phase_collection") != std::string::npos);
+  // Format-version marker — same `[rvegen-<format>: v<N>]` convention
+  // as vtk_legacy_writer's title-line marker, so a single regex in a
+  // downstream multi-format reader can pick out the version of any
+  // rvegen-emitted file.
+  REQUIRE(text.find("[rvegen-voxel-format: v2]") != std::string::npos);
 }
 
 } // namespace
