@@ -59,6 +59,7 @@
 
 // registry (opt-in: pulls in object_registry)
 #include "registry/register_distributions.h"
+#include "registry/register_direction_distributions.h"
 #include "registry/register_terminations.h"
 #include "registry/register_generators.h"
 #include "registry/register_inputs.h"

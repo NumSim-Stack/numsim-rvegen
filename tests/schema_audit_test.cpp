@@ -148,16 +148,18 @@ void audit_shape(std::string const& type_name) {
 
 int main() {
   rvegen::register_all_distributions<>();
+  rvegen::register_all_direction_distributions<>();
   rvegen::register_all_inputs<>();
   rvegen::register_all_generators<>();
   rvegen::register_all_terminations<>();
   rvegen::register_all_post_processes<>();
 
-  audit(rvegen::distribution_registry_t<>::instance(), "distribution");
-  audit(rvegen::input_registry_t<>::instance(),         "input");
-  audit(rvegen::generator_registry_t<>::instance(),     "generator");
-  audit(rvegen::termination_registry_t<>::instance(),   "termination");
-  audit(rvegen::post_process_registry_t<>::instance(),  "post_process");
+  audit(rvegen::distribution_registry_t<>::instance(),           "distribution");
+  audit(rvegen::direction_distribution_registry_t<>::instance(), "direction_distribution");
+  audit(rvegen::input_registry_t<>::instance(),                  "input");
+  audit(rvegen::generator_registry_t<>::instance(),              "generator");
+  audit(rvegen::termination_registry_t<>::instance(),            "termination");
+  audit(rvegen::post_process_registry_t<>::instance(),           "post_process");
 
   audit_shape<rvegen::circle<>>(   "circle");
   audit_shape<rvegen::rectangle<>>("rectangle");
