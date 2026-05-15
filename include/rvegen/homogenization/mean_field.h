@@ -59,18 +59,34 @@
 // G). The 2-phase HS routines remain available; for `n == 2` the
 // N-phase form is exactly equivalent and is cross-checked in tests.
 //
+// Self-consistent (Hill) scheme (`self_consistent_moduli`) — each
+// phase is embedded in the (yet-unknown) effective medium itself,
+// rather than in a designated matrix or in the soft/stiff comparison
+// of HS. Solves the Berryman fixed-point pair:
+//
+//   Σ v_i · (K_i − K_eff) / (K_i + 4G_eff/3) = 0
+//   Σ v_i · (G_i − G_eff) / (G_i + ξ_eff)    = 0
+//     ξ_eff = G_eff·(9K_eff + 8G_eff) / (6(K_eff + 2G_eff))
+//
+// by fixed-point iteration, seeded with the Voigt-Reuss-Hill average.
+// Throws if convergence isn't reached within `max_iter`. SC lands
+// closer to experiment than the bounds for percolating networks
+// (high inclusion fraction, similar phase morphology) — at the cost
+// of needing an iterative solve and a tolerance argument.
+//
 // Out of scope here, ships in follow-up PRs against #5:
 //   * Mori-Tanaka for anisotropic phases / non-spherical inclusions
 //     (needs a per-shape Eshelby tensor).
-//   * Self-consistent (Hill) scheme — requires iterative solve.
 //   * Wiring directly into the phase model so a "homogenize" post-
 //     process consumes per-phase numsim-materials configs.
 //   * 2D plane-stress / plane-strain reductions of the 3D bounds.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <iterator>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -474,6 +490,76 @@ hashin_shtrikman_bounds_n(std::vector<T> const& K_phases,
                           std::vector<T> const& volume_fractions) {
   return {hashin_shtrikman_lower_n<T>(K_phases, G_phases, volume_fractions),
           hashin_shtrikman_upper_n<T>(K_phases, G_phases, volume_fractions)};
+}
+
+// Self-consistent (Hill) effective moduli via fixed-point iteration
+// on the Berryman pair (see top-of-file comment for the equations).
+// Each phase is embedded in the effective medium itself, so K_eff
+// and G_eff appear on both sides — solved by direct substitution.
+//
+// Seed: Voigt-Reuss-Hill average. With pure-real inputs the iteration
+// is contractive for most practical contrasts. `max_iter` and `tol`
+// guard against pathological inputs (extreme contrast in K vs G);
+// non-convergence throws with the last residual so callers can debug.
+template <typename T = double>
+[[nodiscard]] std::pair<T, T> self_consistent_moduli(
+    std::vector<T> const& K_phases,
+    std::vector<T> const& G_phases,
+    std::vector<T> const& volume_fractions,
+    std::size_t max_iter = 200,
+    T tol = T{1e-9}) {
+  detail::hashin_shtrikman_n_validate(K_phases, G_phases, volume_fractions);
+
+  // Seed with the Voigt-Reuss-Hill average (arithmetic + harmonic
+  // means halved). Cheap to compute and a stable starting point.
+  T K_v{0}, G_v{0};
+  T inv_K_r{0}, inv_G_r{0};
+  for (std::size_t i = 0; i < K_phases.size(); ++i) {
+    K_v += volume_fractions[i] * K_phases[i];
+    G_v += volume_fractions[i] * G_phases[i];
+    inv_K_r += volume_fractions[i] / K_phases[i];
+    inv_G_r += volume_fractions[i] / G_phases[i];
+  }
+  T K_eff = T{0.5} * (K_v + T{1} / inv_K_r);
+  T G_eff = T{0.5} * (G_v + T{1} / inv_G_r);
+
+  for (std::size_t it = 0; it < max_iter; ++it) {
+    const T four_g_over_3 = T{4} * G_eff / T{3};
+    const T xi_eff = G_eff * (T{9} * K_eff + T{8} * G_eff) /
+                     (T{6} * (K_eff + T{2} * G_eff));
+
+    // Solve Σ v_i (K_i - K_eff)/(K_i + 4G_eff/3) = 0 for K_eff:
+    // Σ v_i K_i / (K_i + a) = K_eff · Σ v_i / (K_i + a)
+    // where a = 4G_eff/3. Rearranging gives a direct substitution.
+    T num_K{0}, den_K{0};
+    T num_G{0}, den_G{0};
+    for (std::size_t i = 0; i < K_phases.size(); ++i) {
+      const T denom_K = K_phases[i] + four_g_over_3;
+      const T denom_G = G_phases[i] + xi_eff;
+      num_K += volume_fractions[i] * K_phases[i] / denom_K;
+      den_K += volume_fractions[i] / denom_K;
+      num_G += volume_fractions[i] * G_phases[i] / denom_G;
+      den_G += volume_fractions[i] / denom_G;
+    }
+    const T K_new = num_K / den_K;
+    const T G_new = num_G / den_G;
+    const T dK = std::abs(K_new - K_eff);
+    const T dG = std::abs(G_new - G_eff);
+    K_eff = K_new;
+    G_eff = G_new;
+    // Mixed absolute+relative tolerance — both moduli are typically
+    // O(1e9) or larger, so a fixed absolute tol of 1e-9 would never
+    // trigger. Use a relative tolerance against the running estimate.
+    if (dK <= tol * (T{1} + std::abs(K_eff)) &&
+        dG <= tol * (T{1} + std::abs(G_eff))) {
+      return {K_eff, G_eff};
+    }
+  }
+  throw std::runtime_error{
+      "self_consistent_moduli: did not converge within "
+      + std::to_string(max_iter) +
+      " iterations; consider increasing max_iter or loosening tol "
+      "(or verify phase contrast isn't pathological)"};
 }
 
 } // namespace rvegen::homogenization
