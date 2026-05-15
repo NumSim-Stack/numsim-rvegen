@@ -125,5 +125,61 @@ def test_module_exports():
         "Rectangle",
         "Sphere",
         "VoronoiCell",
+        "homogenization",
     ]:
         assert hasattr(rvegen, name), f"rvegen.{name} missing from public API"
+
+
+def test_homogenization_mori_tanaka():
+    """Stiff fibre in soft matrix raises the effective moduli above the
+    matrix and stays under the Voigt arithmetic mean."""
+    K_eff, G_eff = rvegen.homogenization.mori_tanaka_moduli(
+        K_matrix=1.0e9, G_matrix=0.5e9,
+        K_inclusions=[5.0e10], G_inclusions=[3.0e10],
+        volume_fractions=[0.3])
+    assert K_eff > 1.0e9
+    assert G_eff > 0.5e9
+    # Voigt upper bound for K = (1-f)·K_m + f·K_inc.
+    K_voigt = 0.7 * 1.0e9 + 0.3 * 5.0e10
+    assert K_eff < K_voigt
+
+
+def test_homogenization_hashin_shtrikman_brackets_mt():
+    """HS lower ≤ MT ≤ HS upper for a 2-phase well-ordered mixture."""
+    f = 0.3
+    K_m, G_m = 1.0e9, 0.5e9
+    K_f, G_f = 5.0e10, 3.0e10
+    K_mt, G_mt = rvegen.homogenization.mori_tanaka_moduli(
+        K_matrix=K_m, G_matrix=G_m,
+        K_inclusions=[K_f], G_inclusions=[G_f],
+        volume_fractions=[f])
+    K_lo, G_lo = rvegen.homogenization.hashin_shtrikman_lower(
+        K_m, G_m, K_f, G_f, f)
+    K_hi, G_hi = rvegen.homogenization.hashin_shtrikman_upper(
+        K_m, G_m, K_f, G_f, f)
+    # MT-with-soft-as-matrix equals HS lower analytically; allow a
+    # small numerical slop.
+    assert K_lo <= K_mt * (1 + 1e-9) + 1e-9
+    assert K_mt <= K_hi * (1 + 1e-9) + 1e-9
+    assert G_lo <= G_mt * (1 + 1e-9) + 1e-9
+    assert G_mt <= G_hi * (1 + 1e-9) + 1e-9
+
+
+def test_homogenization_self_consistent_within_hs():
+    """Universal property: SC estimate lies within [HS-, HS+]."""
+    K = [1.0e9, 5.0e10]
+    G = [0.5e9, 3.0e10]
+    v = [0.7, 0.3]
+    K_sc, G_sc = rvegen.homogenization.self_consistent_moduli(K, G, v)
+    K_lo, G_lo = rvegen.homogenization.hashin_shtrikman_lower_n(K, G, v)
+    K_hi, G_hi = rvegen.homogenization.hashin_shtrikman_upper_n(K, G, v)
+    assert K_lo <= K_sc <= K_hi
+    assert G_lo <= G_sc <= G_hi
+
+
+def test_homogenization_self_consistent_raises_on_non_convergence():
+    """max_iter=1 with tight tolerance forces a non-convergence throw."""
+    with pytest.raises(RuntimeError, match="not converge"):
+        rvegen.homogenization.self_consistent_moduli(
+            [1.0e9, 5.0e10], [0.5e9, 3.0e10], [0.7, 0.3],
+            max_iter=1, tol=1e-15)

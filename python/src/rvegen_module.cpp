@@ -8,6 +8,14 @@
 //     no callbacks. The safe subset before distributions / generators
 //     are bound.
 //
+// This file also binds the analytical-homogenization mean-field
+// functions added in #42/#43/#49/#50. They're scalar-numerics
+// only — no shape vector, no engine — so they bind cleanly without
+// any of the polymorphism caveats below. Python users can compute
+// effective (K, G) for a phase mixture given per-phase moduli and
+// volume fractions. End-to-end "give me effective moduli from a
+// shape vector" needs the polymorphic shape binding (deferred).
+//
 // Out of scope; comes in subsequent PRs:
 //   * Distributions, generators, terminations — these all need engine
 //     references at construction; the Python binding for that needs
@@ -22,6 +30,8 @@
 //     `unique_ptr<shape_base<T>>`; binding `shape_base` polymorphically
 //     in pybind11 needs a holder type and explicit registration of
 //     each derived shape.
+//   * `homogenize()` taking a shape vector — same shape-binding
+//     dependency as the writers.
 //   * Wheels via cibuildwheel — separate from the conda/vcpkg
 //     packaging in the packaging PR.
 
@@ -37,6 +47,7 @@
 #include "rvegen/shapes/sphere.h"
 #include "rvegen/shapes/voronoi_cell.h"
 #include "rvegen/io/stl_reader.h"
+#include "rvegen/homogenization/mean_field.h"
 
 namespace py = pybind11;
 
@@ -215,4 +226,71 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::voronoi_cell<double> const& c, double x, double y,
               double z) { return c.is_inside({x, y, z}); })
       .def("volume", &rvegen::voronoi_cell<double>::volume);
+
+  // Mean-field analytical homogenization. Pure-numerics functions —
+  // take K/G per phase and volume fractions, return effective (K, G).
+  // Mirror of the C++ APIs in rvegen/homogenization/mean_field.h.
+  auto h = m.def_submodule(
+      "homogenization",
+      "Analytical mean-field homogenization. Bounds (Voigt, Reuss, "
+      "Voigt-Reuss-Hill, Hashin-Shtrikman) and estimators "
+      "(Mori-Tanaka, self-consistent).");
+
+  h.def("mori_tanaka_moduli",
+        [](double K_matrix, double G_matrix,
+           std::vector<double> const& K_inclusions,
+           std::vector<double> const& G_inclusions,
+           std::vector<double> const& volume_fractions) {
+          return rvegen::homogenization::mori_tanaka_moduli<double>(
+              K_matrix, G_matrix, K_inclusions, G_inclusions,
+              volume_fractions);
+        },
+        py::arg("K_matrix"), py::arg("G_matrix"),
+        py::arg("K_inclusions"), py::arg("G_inclusions"),
+        py::arg("volume_fractions"),
+        "Mori-Tanaka effective (K, G) for isotropic spherical "
+        "inclusions in an isotropic matrix.");
+
+  h.def("hashin_shtrikman_lower",
+        &rvegen::homogenization::hashin_shtrikman_lower<double>,
+        py::arg("K_1"), py::arg("G_1"), py::arg("K_2"), py::arg("G_2"),
+        py::arg("volume_fraction_2"),
+        "Hashin-Shtrikman lower bound (2 phases, well-ordered).");
+
+  h.def("hashin_shtrikman_upper",
+        &rvegen::homogenization::hashin_shtrikman_upper<double>,
+        py::arg("K_1"), py::arg("G_1"), py::arg("K_2"), py::arg("G_2"),
+        py::arg("volume_fraction_2"),
+        "Hashin-Shtrikman upper bound (2 phases, well-ordered).");
+
+  h.def("hashin_shtrikman_lower_n",
+        [](std::vector<double> const& K, std::vector<double> const& G,
+           std::vector<double> const& v) {
+          return rvegen::homogenization::hashin_shtrikman_lower_n<double>(K, G, v);
+        },
+        py::arg("K_phases"), py::arg("G_phases"), py::arg("volume_fractions"),
+        "N-phase Hashin-Shtrikman lower bound via the Berryman/Walpole "
+        "form. Requires the softest-in-K phase to also be softest in G.");
+
+  h.def("hashin_shtrikman_upper_n",
+        [](std::vector<double> const& K, std::vector<double> const& G,
+           std::vector<double> const& v) {
+          return rvegen::homogenization::hashin_shtrikman_upper_n<double>(K, G, v);
+        },
+        py::arg("K_phases"), py::arg("G_phases"), py::arg("volume_fractions"),
+        "N-phase Hashin-Shtrikman upper bound. Requires the stiffest-in-K "
+        "phase to also be stiffest in G.");
+
+  h.def("self_consistent_moduli",
+        [](std::vector<double> const& K, std::vector<double> const& G,
+           std::vector<double> const& v, std::size_t max_iter, double tol) {
+          return rvegen::homogenization::self_consistent_moduli<double>(
+              K, G, v, max_iter, tol);
+        },
+        py::arg("K_phases"), py::arg("G_phases"), py::arg("volume_fractions"),
+        py::arg("max_iter") = std::size_t{200},
+        py::arg("tol")      = 1e-9,
+        "Self-consistent (Hill) effective (K, G) via fixed-point "
+        "iteration on the Berryman equations. Each phase embedded in "
+        "the effective medium itself; throws on non-convergence.");
 }
