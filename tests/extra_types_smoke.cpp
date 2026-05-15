@@ -1979,6 +1979,130 @@ void test_direction_distribution_registry_schema_has_descriptions() {
 }
 
 // ----------------------------------------------------------------------------
+// weave_generator (#109 / #3 headline): deterministic plain weave of
+// polyline_tubes — N warp yarns along +x and N weft yarns along +y with
+// sinusoidal z-undulation 180° out of phase.
+// ----------------------------------------------------------------------------
+void test_weave_generator_tube_count_matches_warp_plus_weft() {
+  rvegen::weave_generator<double> gen{
+      /*domain=*/{1.0, 1.0, 0.2},
+      /*n_warp=*/4, /*n_weft=*/3,
+      /*yarn_radius=*/0.04, /*amplitude=*/0.03};
+  auto shapes = gen.build();
+  REQUIRE(shapes.size() == 7);
+  // Every produced shape is a polyline_tube.
+  for (auto const& s : shapes) {
+    REQUIRE(dynamic_cast<rvegen::polyline_tube<double>*>(s.get()) != nullptr);
+  }
+}
+
+void test_weave_generator_warp_yarns_run_along_x() {
+  // For 2 warp + 2 weft, the first 2 entries are warp (along +x).
+  // A warp yarn's centerline spans x ∈ [0, Lx] at fixed y.
+  rvegen::weave_generator<double> gen{
+      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.05, /*segments=*/16};
+  auto shapes = gen.build();
+  REQUIRE(shapes.size() == 4);
+  auto* warp0 = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
+  REQUIRE(warp0 != nullptr);
+  auto const& cl = warp0->centerline();
+  REQUIRE(cl.size() == 17);   // n_segments + 1
+  // Endpoints span the full Lx; y is fixed across all control points.
+  REQUIRE(std::abs(cl.front()[0] - 0.0) < 1e-12);
+  REQUIRE(std::abs(cl.back()[0]  - 2.0) < 1e-12);
+  const double y0 = cl[0][1];
+  for (auto const& p : cl) {
+    REQUIRE(std::abs(p[1] - y0) < 1e-12);
+  }
+  // First warp yarn should be at y = Ly / (2·N_warp) = 1.0 / 4 = 0.25.
+  REQUIRE(std::abs(y0 - 0.25) < 1e-12);
+}
+
+void test_weave_generator_weft_yarns_run_along_y() {
+  rvegen::weave_generator<double> gen{
+      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.05, 16};
+  auto shapes = gen.build();
+  // Weft yarns are shapes[2] and shapes[3].
+  auto* weft0 = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[2].get());
+  REQUIRE(weft0 != nullptr);
+  auto const& cl = weft0->centerline();
+  REQUIRE(std::abs(cl.front()[1] - 0.0) < 1e-12);
+  REQUIRE(std::abs(cl.back()[1]  - 1.0) < 1e-12);
+  const double x0 = cl[0][0];
+  for (auto const& p : cl) {
+    REQUIRE(std::abs(p[0] - x0) < 1e-12);
+  }
+  // First weft yarn at x = Lx / (2·N_weft) = 2.0 / 4 = 0.5.
+  REQUIRE(std::abs(x0 - 0.5) < 1e-12);
+}
+
+void test_weave_generator_warp_and_weft_interlace_180_out_of_phase() {
+  // At the intersection (x_weft, y_warp), the warp's z and the weft's
+  // z must straddle z_centre symmetrically — that's what makes them
+  // interlock. With amplitude > 0, warp_z - z_centre = -weft_z + z_centre.
+  rvegen::weave_generator<double> gen{
+      {1.0, 1.0, 0.3}, 1, 1, 0.05, 0.05, 32};
+  auto shapes = gen.build();
+  auto* warp = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
+  auto* weft = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[1].get());
+
+  // 1 warp + 1 weft → warp at y = 0.5, weft at x = 0.5. The crossing
+  // point is at (0.5, 0.5). With period = 1 (= Lx for 1 weft), the
+  // warp's z at x=0.5 is z_centre + A·sin(π) = z_centre. With period
+  // = 1 (= Ly for 1 warp), the weft's z at y=0.5 is z_centre - A·sin(π)
+  // = z_centre. Both pass through z_centre. Not interesting at this
+  // point — try the quarter-period point instead.
+  const double z_centre = 0.15;
+  // Warp at x = 0.25: z = z_centre + 0.05·sin(2π·0.25/1) = z_centre + 0.05.
+  // Find the centerline sample closest to x = 0.25 for warp.
+  double warp_z_at_quarter = 0;
+  for (auto const& p : warp->centerline()) {
+    if (std::abs(p[0] - 0.25) < 1.0 / 64) { warp_z_at_quarter = p[2]; break; }
+  }
+  REQUIRE(std::abs(warp_z_at_quarter - (z_centre + 0.05)) < 1e-9);
+  // Weft at y = 0.25: z = z_centre - 0.05·sin(2π·0.25/1) = z_centre - 0.05.
+  double weft_z_at_quarter = 0;
+  for (auto const& p : weft->centerline()) {
+    if (std::abs(p[1] - 0.25) < 1.0 / 64) { weft_z_at_quarter = p[2]; break; }
+  }
+  REQUIRE(std::abs(weft_z_at_quarter - (z_centre - 0.05)) < 1e-9);
+}
+
+void test_weave_generator_phase_tagging() {
+  rvegen::weave_generator<double> gen{
+      {1.0, 1.0, 0.2}, 2, 2, 0.04, 0.03};
+  gen.set_warp_phase_name("warp");
+  gen.set_weft_phase_name("weft");
+  auto shapes = gen.build();
+  REQUIRE(shapes[0]->phase_name() == "warp");
+  REQUIRE(shapes[1]->phase_name() == "warp");
+  REQUIRE(shapes[2]->phase_name() == "weft");
+  REQUIRE(shapes[3]->phase_name() == "weft");
+}
+
+void test_weave_generator_validation_throws_on_bad_input() {
+  bool threw_zero_warp = false;
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 0, 1, 0.05, 0.03}; }
+  catch (std::runtime_error const&) { threw_zero_warp = true; }
+  REQUIRE(threw_zero_warp);
+
+  bool threw_zero_weft = false;
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 1, 0, 0.05, 0.03}; }
+  catch (std::runtime_error const&) { threw_zero_weft = true; }
+  REQUIRE(threw_zero_weft);
+
+  bool threw_neg_radius = false;
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, -0.01, 0.03}; }
+  catch (std::runtime_error const&) { threw_neg_radius = true; }
+  REQUIRE(threw_neg_radius);
+
+  bool threw_too_few_segments = false;
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.05, 0.03, 1}; }
+  catch (std::runtime_error const&) { threw_too_few_segments = true; }
+  REQUIRE(threw_too_few_segments);
+}
+
+// ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
 void test_phase_collection_basics_and_ids() {
@@ -3069,6 +3193,12 @@ int main() {
   test_polyline_tube_oriented_input_uses_scalar_position_distributions();
   test_direction_distribution_registry_builds_bingham_from_json();
   test_direction_distribution_registry_schema_has_descriptions();
+  test_weave_generator_tube_count_matches_warp_plus_weft();
+  test_weave_generator_warp_yarns_run_along_x();
+  test_weave_generator_weft_yarns_run_along_y();
+  test_weave_generator_warp_and_weft_interlace_180_out_of_phase();
+  test_weave_generator_phase_tagging();
+  test_weave_generator_validation_throws_on_bad_input();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();
