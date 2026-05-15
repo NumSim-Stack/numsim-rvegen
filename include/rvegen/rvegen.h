@@ -121,7 +121,10 @@
 #include "generators/periodic_generator.h"
 #include "generators/random_generator.h"
 #include "generators/voronoi_generator_2d.h"
+#include "generators/voronoi_generator_3d.h"
 #include "generators/weave_generator.h"
+#include "generators/tow_weave_generator.h"
+#include "generators/cluster_seeds.h"
 
 // postprocess (writers + the base they inherit from)
 #include "postprocess/post_process_base.h"
