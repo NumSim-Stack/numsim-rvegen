@@ -8,24 +8,28 @@ generators, and the JSON-driven config path land in follow-up PRs.
 from ._core import (
     Box,
     Circle,
+    ConvexPolygon,
     Ellipse,
     MeshInclusion,
     PolylineTube,
     Rectangle,
     Sphere,
     VoronoiCell,
+    VoronoiGenerator2d,
     WeaveGenerator,
 )
 
 __all__ = [
     "Box",
     "Circle",
+    "ConvexPolygon",
     "Ellipse",
     "MeshInclusion",
     "PolylineTube",
     "Rectangle",
     "Sphere",
     "VoronoiCell",
+    "VoronoiGenerator2d",
     "WeaveGenerator",
 ]
 __version__ = "0.1.0"
