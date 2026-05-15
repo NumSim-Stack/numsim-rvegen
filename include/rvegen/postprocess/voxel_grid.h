@@ -88,19 +88,31 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
 // Throws if a shape carries a `phase_name` that does not appear in the
 // `phase_collection` — a likely-typo failure mode worth catching early
 // rather than silently mapping to 0. (Untagged shapes — empty name — are
-// not an error; they just keep the matrix id.)
+// not an error by default; they just keep the matrix id.)
+//
+// `strict` flips the empty-name behaviour: with strict=true, an
+// untagged shape throws instead of falling through to the matrix id.
+// Matches `gmsh_geo_writer::set_phase_strict()`.
 template <typename T>
 [[nodiscard]] std::vector<phase_id>
 sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::array<T, 3> const& domain_box,
                   std::size_t nx, std::size_t ny, std::size_t nz,
-                  phase_collection<T> const& phases) {
+                  phase_collection<T> const& phases,
+                  bool strict = false) {
   // Pre-resolve phase ids once per shape — avoids re-hashing the name
   // on every voxel and lets us throw early on unknown names.
   std::vector<phase_id> shape_to_id(shapes.size(), 0);
   for (std::size_t s = 0; s < shapes.size(); ++s) {
     const auto name = shapes[s]->phase_name();
-    if (name.empty()) continue;     // untagged → matrix (0)
+    if (name.empty()) {
+      if (strict) {
+        throw std::runtime_error{
+            "sample_voxel_grid: shape has empty phase_name and strict "
+            "mode is enabled. Tag every shape's phase, or disable strict mode."};
+      }
+      continue;
+    }
     const auto id = phases.id_of(name);
     if (id > std::numeric_limits<phase_id>::max()) {
       throw std::runtime_error{

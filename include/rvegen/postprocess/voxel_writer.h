@@ -97,6 +97,15 @@ public:
     return _phases;
   }
 
+  // Strict mode for phase tagging — mirrors gmsh_geo_writer's. With
+  // phases attached AND strict==true, an untagged shape (empty
+  // `phase_name`) makes `sample()` / `write()` throw instead of
+  // mapping the shape's voxels to 0. Default is the lenient
+  // "untagged → 0" fallback. When no phase_collection is attached,
+  // strict mode is silently a no-op.
+  void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
+  [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
+
   void run(shape_vector const& shapes,
            std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
@@ -152,7 +161,8 @@ public:
   sample(shape_vector const& shapes,
          std::array<value_type, 3> const& domain_box) const {
     if (_phases) {
-      return sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz, *_phases);
+      return sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz,
+                               *_phases, _phase_strict);
     }
     return sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz);
   }
@@ -163,6 +173,7 @@ private:
   std::size_t _nz{32};
   std::string _output_path{};
   phase_collection<value_type> const* _phases{nullptr};
+  bool _phase_strict{false};
 };
 
 } // namespace rvegen

@@ -103,6 +103,9 @@ public:
   // fallback for "treat as matrix" but also masks the bug-of-omission
   // when a user *meant* to tag a shape and forgot. Use strict mode
   // when your generation pipeline guarantees every shape gets tagged.
+  //
+  // When no `phase_collection` is attached, strict mode is silently a
+  // no-op — the writer has no phase grouping to refuse against.
   void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
   [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
 
