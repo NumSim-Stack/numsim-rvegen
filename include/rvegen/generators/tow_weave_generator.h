@@ -85,9 +85,19 @@ public:
     shape_vector out;
     out.reserve(yarns.size() * _n_fibres);
 
-    const T fibre_r = _yarn_radius_of_base() * _fibre_radius_factor;
+    // Yarn radius is sniffed once from the first produced yarn — the
+    // base generator uses a single radius across warp + weft, so
+    // looking at any one yarn is sufficient. Avoids calling
+    // _base.build() a second time.
+    T yarn_radius{0};
+    if (!yarns.empty()) {
+      if (auto* tube0 = dynamic_cast<polyline_tube<T>*>(yarns[0].get())) {
+        yarn_radius = tube0->radius();
+      }
+    }
+    const T fibre_r = yarn_radius * _fibre_radius_factor;
     const auto offsets = hex_pack_offsets(
-        _n_fibres, _yarn_radius_of_base() - fibre_r);
+        _n_fibres, yarn_radius - fibre_r);
 
     for (std::size_t y = 0; y < yarns.size(); ++y) {
       auto* yarn = dynamic_cast<polyline_tube<T>*>(yarns[y].get());
@@ -119,19 +129,6 @@ private:
   weave_generator<T> _base;
   std::size_t _n_fibres;
   T _fibre_radius_factor;
-
-  // Recover the base weave's yarn radius. The base doesn't expose
-  // it directly (it's stored internally), so we sniff one produced
-  // yarn — cheap because the base's build() is deterministic at
-  // small problem sizes, but slightly indirect. A future
-  // weave_generator could expose a yarn_radius() accessor and we'd
-  // skip this.
-  [[nodiscard]] T _yarn_radius_of_base() const {
-    auto probe = _base.build();
-    if (probe.empty()) return T{0};
-    auto* yarn = dynamic_cast<polyline_tube<T>*>(probe[0].get());
-    return yarn ? yarn->radius() : T{0};
-  }
 
   // Hex-packed 2D offsets in a disk of given enclosing radius.
   // Deterministic, centred on origin, scaled so all N points fit
