@@ -2219,6 +2219,103 @@ void test_voronoi_generator_2d_validation_throws() {
 }
 
 // ----------------------------------------------------------------------------
+// convex_polygon (#114 follow-up): 2D convex-polygon shape that wraps
+// Voronoi-cell output (and any other CCW-vertex polygon) as a
+// shape_base subclass, so writers + the rest of the rvegen pipeline
+// can consume polycrystal-style RVEs without custom plumbing.
+// ----------------------------------------------------------------------------
+void test_convex_polygon_unit_square_basics() {
+  rvegen::convex_polygon<double> sq{{{0.0, 0.0}, {1.0, 0.0},
+                                     {1.0, 1.0}, {0.0, 1.0}}};
+  REQUIRE(std::abs(sq.area() - 1.0) < 1e-12);
+  REQUIRE(sq.volume() == 0.0);
+  REQUIRE(sq.vertex_count() == 4);
+  // is_inside: interior point yes, exterior no, edge point yes.
+  REQUIRE(sq.is_inside({0.5, 0.5, 0.0}));
+  REQUIRE(!sq.is_inside({1.5, 0.5, 0.0}));
+  REQUIRE(sq.is_inside({1.0, 0.5, 0.0}));   // on right edge
+  // Centroid of the unit square is (0.5, 0.5).
+  const auto mid = sq.get_middle_point();
+  REQUIRE(std::abs(mid[0] - 0.5) < 1e-12);
+  REQUIRE(std::abs(mid[1] - 0.5) < 1e-12);
+}
+
+void test_convex_polygon_triangle_area_and_inside() {
+  rvegen::convex_polygon<double> tri{{{0.0, 0.0}, {1.0, 0.0}, {0.0, 1.0}}};
+  // 0.5 · |1·1 − 0·0| = 0.5.
+  REQUIRE(std::abs(tri.area() - 0.5) < 1e-12);
+  REQUIRE(tri.is_inside({0.2, 0.2, 0.0}));
+  REQUIRE(!tri.is_inside({0.6, 0.6, 0.0}));
+}
+
+void test_convex_polygon_set_middle_point_translates_vertices() {
+  rvegen::convex_polygon<double> p{{{0.0, 0.0}, {1.0, 0.0},
+                                    {1.0, 1.0}, {0.0, 1.0}}};
+  p.set_middle_point({10.0, 5.0, 0.0});
+  REQUIRE(p.is_inside({10.0, 5.0, 0.0}));
+  REQUIRE(!p.is_inside({0.5, 0.5, 0.0}));
+  // Centroid round-trips.
+  const auto mid = p.get_middle_point();
+  REQUIRE(std::abs(mid[0] - 10.0) < 1e-12);
+  REQUIRE(std::abs(mid[1] -  5.0) < 1e-12);
+  // Area is translation-invariant.
+  REQUIRE(std::abs(p.area() - 1.0) < 1e-12);
+}
+
+void test_convex_polygon_bounding_box_is_aabb() {
+  rvegen::convex_polygon<double> p{{{0.1, 0.2}, {0.9, 0.3},
+                                    {0.7, 0.8}, {0.2, 0.7}}};
+  p.make_bounding_box();
+  auto* bb = p.bounding_box();
+  REQUIRE(bb != nullptr);
+  auto const& top    = bb->top_point();
+  auto const& bottom = bb->bottom_point();
+  REQUIRE(std::abs(top[0]    - 0.9) < 1e-12);
+  REQUIRE(std::abs(top[1]    - 0.8) < 1e-12);
+  REQUIRE(std::abs(bottom[0] - 0.1) < 1e-12);
+  REQUIRE(std::abs(bottom[1] - 0.2) < 1e-12);
+}
+
+void test_convex_polygon_clone_is_independent_copy() {
+  rvegen::convex_polygon<double> p{{{0.0, 0.0}, {1.0, 0.0},
+                                    {1.0, 1.0}, {0.0, 1.0}}};
+  auto copy = p.clone();
+  REQUIRE(copy != nullptr);
+  copy->set_middle_point({5.0, 5.0, 0.0});
+  // Original unaffected.
+  REQUIRE(p.is_inside({0.5, 0.5, 0.0}));
+  REQUIRE(copy->is_inside({5.0, 5.0, 0.0}));
+}
+
+void test_convex_polygon_rejects_too_few_vertices() {
+  bool threw = false;
+  try { rvegen::convex_polygon<double> p{{{0.0, 0.0}, {1.0, 0.0}}}; }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_convex_polygon_wraps_voronoi_cell() {
+  // End-to-end: Voronoi generator → convex_polygon shape → is_inside
+  // works correctly on the resulting cell. Pins the cell-to-shape
+  // pipeline that motivates this PR.
+  rvegen::voronoi_generator_2d<double> gen{
+      1.0, 1.0, {{0.25, 0.5}, {0.75, 0.5}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 2);
+  rvegen::convex_polygon<double> left_cell{cells[0]};
+  rvegen::convex_polygon<double> right_cell{cells[1]};
+  // Left cell covers x < 0.5; its seed (0.25, 0.5) is inside.
+  REQUIRE(left_cell.is_inside({0.25, 0.5, 0.0}));
+  REQUIRE(!left_cell.is_inside({0.75, 0.5, 0.0}));
+  // Right cell mirror.
+  REQUIRE(right_cell.is_inside({0.75, 0.5, 0.0}));
+  REQUIRE(!right_cell.is_inside({0.25, 0.5, 0.0}));
+  // Both half-rectangles have area 0.5.
+  REQUIRE(std::abs(left_cell.area()  - 0.5) < 1e-12);
+  REQUIRE(std::abs(right_cell.area() - 0.5) < 1e-12);
+}
+
+// ----------------------------------------------------------------------------
 // phase + phase_collection: name + opaque material_config; ids start at 1.
 // ----------------------------------------------------------------------------
 void test_phase_collection_basics_and_ids() {
@@ -3321,6 +3418,13 @@ int main() {
   test_voronoi_generator_2d_cells_cover_domain();
   test_voronoi_generator_2d_each_cell_contains_its_seed();
   test_voronoi_generator_2d_validation_throws();
+  test_convex_polygon_unit_square_basics();
+  test_convex_polygon_triangle_area_and_inside();
+  test_convex_polygon_set_middle_point_translates_vertices();
+  test_convex_polygon_bounding_box_is_aabb();
+  test_convex_polygon_clone_is_independent_copy();
+  test_convex_polygon_rejects_too_few_vertices();
+  test_convex_polygon_wraps_voronoi_cell();
   test_phase_collection_basics_and_ids();
   test_phase_collection_duplicate_throws();
   test_phase_collection_at_unknown_throws();

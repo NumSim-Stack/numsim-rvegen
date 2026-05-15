@@ -37,6 +37,7 @@
 #include "shapes/ellipse.h"
 #include "shapes/polyline_tube.h"
 #include "shapes/voronoi_cell.h"
+#include "shapes/convex_polygon.h"
 #include "shapes/mesh_inclusion.h"
 #include "shapes/shape_variant.h"
 #include "shapes/shape_pool.h"
