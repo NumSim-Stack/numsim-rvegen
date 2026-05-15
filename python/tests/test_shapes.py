@@ -125,5 +125,56 @@ def test_module_exports():
         "Rectangle",
         "Sphere",
         "VoronoiCell",
+        "WeaveGenerator",
     ]:
         assert hasattr(rvegen, name), f"rvegen.{name} missing from public API"
+
+
+def test_weave_generator_builds_expected_tube_count():
+    """4 warp + 3 weft yarns → 7 PolylineTubes in the output list."""
+    gen = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.2),
+        n_warp_yarns=4,
+        n_weft_yarns=3,
+        yarn_radius=0.04,
+        amplitude=0.03)
+    tubes = gen.build()
+    assert len(tubes) == 7
+    for t in tubes:
+        assert isinstance(t, rvegen.PolylineTube)
+        assert t.radius == pytest.approx(0.04)
+
+
+def test_weave_generator_phase_tagging_propagates():
+    """set_warp_phase_name / set_weft_phase_name flow through to build()."""
+    gen = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.2),
+        n_warp_yarns=2, n_weft_yarns=2,
+        yarn_radius=0.04, amplitude=0.03)
+    gen.set_warp_phase_name("warp")
+    gen.set_weft_phase_name("weft")
+    assert gen.warp_phase_name == "warp"
+    assert gen.weft_phase_name == "weft"
+    # The bound PolylineTube doesn't expose phase_name on the Python
+    # side yet (binding limitation, not generator limitation), so the
+    # property assertions above are the binding-level test.
+
+
+def test_weave_generator_validates_inputs():
+    """Bad parameters surface as Python RuntimeError, not silent garbage."""
+    with pytest.raises(RuntimeError, match="n_warp_yarns"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.2),
+            n_warp_yarns=0, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.03)
+    with pytest.raises(RuntimeError, match="yarn_radius"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.2),
+            n_warp_yarns=2, n_weft_yarns=2,
+            yarn_radius=-0.01, amplitude=0.03)
+    with pytest.raises(RuntimeError, match="2D domain"):
+        # 2D (Lz=0) + non-zero amplitude is geometrically nonsensical.
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.0),
+            n_warp_yarns=2, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.03)
