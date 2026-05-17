@@ -1,0 +1,34 @@
+{
+  "_comment": "End-to-end FE-RVE workflow demo. Periodic 2D circle pack at 20% fibre fraction. Emits a gmsh .geo with every knob the FE-RVE workflow typically needs: periodic Curve directives, characteristic element size, quadratic element order, Frontal-Delaunay-for-quads algorithm, and tri->quad recombination. Run gmsh on the resulting .geo and you get a periodic quad mesh ready for an FFT or FEM homogenization solver. Note on Physical groups: shapes carry the phase_name 'fibre' on their info blob, but the gmsh writer's JSON schema doesn't (yet) accept a phase_collection so the produced .geo doesn't emit `Physical Surface(\"fibre\", ...)` directives — that requires attaching the collection in C++ via set_phases(&phases). The JSON-config phase-group hookup is a separate follow-up.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 13,
+
+  "distributions": {
+    "any_x":          { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "any_y":          { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "uniform_radius": { "type": "uniform_real", "a": 0.04, "b": 0.06 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",
+      "pos_x_dist":  "any_x",
+      "pos_y_dist":  "any_y",
+      "radius_dist": "uniform_radius",
+      "phase_name":  "fibre" }
+  ],
+
+  "generator":   { "type": "periodic",        "max_attempts": 200000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.20 },
+
+  "postprocess": [
+    { "type": "gmsh_geo",
+      "output_path":    "fe_rve_workflow.geo",
+      "periodic":       true,
+      "char_length_min": 0.005,
+      "char_length_max": 0.015,
+      "element_order":   2,
+      "algorithm":       8,
+      "recombine_quads": true }
+  ]
+}

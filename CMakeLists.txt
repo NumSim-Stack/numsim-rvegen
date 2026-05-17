@@ -319,6 +319,18 @@ set_tests_properties(cli_circles_with_voxelize_example PROPERTIES
     PASS_REGULAR_EXPRESSION "post-process 'voxel' done"
 )
 
+# End-to-end FE-RVE workflow: periodic generator + every gmsh knob
+# (size, order, algorithm, recombine). Smoke-tests that the JSON-driven
+# path through the registry consumes the new gmsh-writer parameters.
+add_test(
+    NAME cli_fe_rve_workflow_example
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/fe_rve_workflow.json
+)
+set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
+)
+
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
 # ---------------------------------------------------------------------------

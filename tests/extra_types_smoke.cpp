@@ -564,6 +564,41 @@ void test_gmsh_geo_writer_periodic_and_phases_combine() {
   REQUIRE(coherence_pos < physical_pos);
 }
 
+// 3D variant of the periodic + phases combination test. Catches the
+// same refactor-swap regression for the write_3d path that the 2D
+// test catches for write_2d. The original review of #35/#46 flagged
+// this 3D case as a coverage gap.
+void test_gmsh_geo_writer_periodic_and_phases_combine_3d() {
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("particle");
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto s = std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1);
+  s->set_phase_name("particle");
+  shapes.emplace_back(std::move(s));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_periodic(true);
+  writer.set_phases(&phases);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 1.0});
+  const auto txt = out.str();
+
+  const auto entity_pos    = txt.find("Sphere(");
+  const auto periodic_pos  = txt.find("Periodic Surface");
+  const auto coherence_pos = txt.find("Coherence;");
+  const auto physical_pos  = txt.find("Physical Volume(\"particle\"");
+  REQUIRE(entity_pos    != std::string::npos);
+  REQUIRE(periodic_pos  != std::string::npos);
+  REQUIRE(coherence_pos != std::string::npos);
+  REQUIRE(physical_pos  != std::string::npos);
+  // Strict order: entity < periodic < coherence < physical.
+  REQUIRE(entity_pos    < periodic_pos);
+  REQUIRE(periodic_pos  < coherence_pos);
+  REQUIRE(coherence_pos < physical_pos);
+}
+
 void test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order() {
   // Documented invariant: Physical directives come out in
   // alphabetical order of phase_name, not phase_collection insertion
@@ -1120,30 +1155,43 @@ end_header
   REQUIRE(what.find("binary") != std::string::npos);
 }
 
-// Helpers for building binary-PLY blobs inline. The data section is
-// declared little-endian by the header; on a LE host (the CI runner)
-// these write little-endian by memcpy.
-namespace ply_binary_fixture {
+// Shared little-endian byte writers. Used by every binary-format
+// fixture in this file (STL + PLY) — previously duplicated as inline
+// lambdas inside each test, surfaced as a review nit in the binary
+// PLY follow-up. Lives in the file's anonymous namespace so it
+// doesn't leak symbols out of this TU.
+namespace le_writers {
 
 inline void write_le_u8(std::ostream& o, std::uint8_t v) {
   o.put(static_cast<char>(v));
 }
+inline void write_le_u32(std::ostream& o, std::uint32_t v) {
+  o.put(static_cast<char>(v & 0xff));
+  o.put(static_cast<char>((v >> 8)  & 0xff));
+  o.put(static_cast<char>((v >> 16) & 0xff));
+  o.put(static_cast<char>((v >> 24) & 0xff));
+}
 inline void write_le_i32(std::ostream& o, std::int32_t v) {
   std::uint32_t u;
   std::memcpy(&u, &v, sizeof(u));
-  o.put(static_cast<char>(u & 0xff));
-  o.put(static_cast<char>((u >> 8)  & 0xff));
-  o.put(static_cast<char>((u >> 16) & 0xff));
-  o.put(static_cast<char>((u >> 24) & 0xff));
+  write_le_u32(o, u);
 }
 inline void write_le_f32(std::ostream& o, float v) {
   std::uint32_t bits;
   std::memcpy(&bits, &v, sizeof(bits));
-  o.put(static_cast<char>(bits & 0xff));
-  o.put(static_cast<char>((bits >> 8)  & 0xff));
-  o.put(static_cast<char>((bits >> 16) & 0xff));
-  o.put(static_cast<char>((bits >> 24) & 0xff));
+  write_le_u32(o, bits);
 }
+
+} // namespace le_writers
+
+// PLY-blob fixture builders. The le_writers namespace handles the
+// byte-level encoding; this layer adds the PLY-specific header and
+// element structure.
+namespace ply_binary_fixture {
+
+using le_writers::write_le_f32;
+using le_writers::write_le_i32;
+using le_writers::write_le_u8;
 
 // Emit a unit-cube binary-LE PLY blob mirroring `unit_cube_ply` (the
 // ASCII fixture). 8 vertices (float x/y/z), 6 quad faces (uchar count
@@ -2110,6 +2158,215 @@ void test_weave_generator_validation_throws_on_bad_input() {
   REQUIRE(flat_2d_ok);
 }
 
+// tow_weave_generator (#109 follow-up): each macroscopic yarn becomes
+// N hex-packed finer fibres sharing the yarn's undulation.
+void test_tow_weave_generator_expands_each_yarn_to_n_fibres() {
+  rvegen::weave_generator<double> base{
+      {1.0, 1.0, 0.2}, /*n_warp=*/2, /*n_weft=*/2,
+      /*yarn_radius=*/0.05, /*amplitude=*/0.03};
+  rvegen::tow_weave_generator<double> gen{base, /*n_fibres=*/7,
+                                          /*radius_factor=*/0.2};
+  auto shapes = gen.build();
+  // 2 warp + 2 weft yarns × 7 fibres each = 28 polyline_tubes.
+  REQUIRE(shapes.size() == 28);
+  for (auto const& s : shapes) {
+    auto* tube = dynamic_cast<rvegen::polyline_tube<double>*>(s.get());
+    REQUIRE(tube != nullptr);
+    // Each fibre has radius = yarn_radius · factor = 0.05 · 0.2 = 0.01.
+    REQUIRE(std::abs(tube->radius() - 0.01) < 1e-12);
+  }
+}
+
+void test_tow_weave_generator_propagates_phase_names() {
+  rvegen::weave_generator<double> base{
+      {1.0, 1.0, 0.2}, 1, 1, 0.05, 0.03};
+  base.set_warp_phase_name("warp_fibre");
+  base.set_weft_phase_name("weft_fibre");
+  rvegen::tow_weave_generator<double> gen{base, 3, 0.2};
+  auto shapes = gen.build();
+  // 1 warp + 1 weft × 3 fibres = 6 tubes; first 3 are warp_fibre.
+  REQUIRE(shapes.size() == 6);
+  REQUIRE(shapes[0]->phase_name() == "warp_fibre");
+  REQUIRE(shapes[2]->phase_name() == "warp_fibre");
+  REQUIRE(shapes[3]->phase_name() == "weft_fibre");
+  REQUIRE(shapes[5]->phase_name() == "weft_fibre");
+}
+
+void test_tow_weave_generator_validation_throws() {
+  rvegen::weave_generator<double> base{{1,1,0.2}, 2, 2, 0.05, 0.03};
+
+  bool threw_zero_fibres = false;
+  try { rvegen::tow_weave_generator<double>{base, 0, 0.2}; }
+  catch (std::runtime_error const&) { threw_zero_fibres = true; }
+  REQUIRE(threw_zero_fibres);
+
+  bool threw_bad_factor_low = false;
+  try { rvegen::tow_weave_generator<double>{base, 5, 0.0}; }
+  catch (std::runtime_error const&) { threw_bad_factor_low = true; }
+  REQUIRE(threw_bad_factor_low);
+
+  bool threw_bad_factor_high = false;
+  try { rvegen::tow_weave_generator<double>{base, 5, 1.0}; }
+  catch (std::runtime_error const&) { threw_bad_factor_high = true; }
+  REQUIRE(threw_bad_factor_high);
+}
+
+// cluster_seeds_2d: builds a clustered seed-point distribution
+// suitable for non-uniform Voronoi-polycrystal RVEs.
+void test_cluster_seeds_2d_count_and_bounds() {
+  std::mt19937 engine{17};
+  auto seeds = rvegen::cluster_seeds_2d<double>(
+      /*Lx=*/2.0, /*Ly=*/1.5, /*n_clusters=*/4, /*n_per_cluster=*/6,
+      /*cluster_spread=*/0.1, engine);
+  REQUIRE(seeds.size() == 24);
+  for (auto const& s : seeds) {
+    REQUIRE(s[0] >= 0.0); REQUIRE(s[0] <= 2.0);
+    REQUIRE(s[1] >= 0.0); REQUIRE(s[1] <= 1.5);
+  }
+}
+
+void test_cluster_seeds_2d_seeds_cluster_around_centers() {
+  // With tight spread (0.02), per-cluster point spread (variance)
+  // should be much smaller than the domain extent. Compute cluster
+  // centroids and check that within-cluster RMS distance from each
+  // centroid is small (< 0.1) while between-cluster centroid spread
+  // is large (~Lx/2).
+  std::mt19937 engine{42};
+  const std::size_t n_clusters = 3;
+  const std::size_t n_per_cluster = 20;
+  auto seeds = rvegen::cluster_seeds_2d<double>(
+      1.0, 1.0, n_clusters, n_per_cluster, /*spread=*/0.02, engine);
+  REQUIRE(seeds.size() == n_clusters * n_per_cluster);
+
+  for (std::size_t c = 0; c < n_clusters; ++c) {
+    // Compute centroid of cluster c.
+    double cx = 0, cy = 0;
+    for (std::size_t k = 0; k < n_per_cluster; ++k) {
+      cx += seeds[c * n_per_cluster + k][0];
+      cy += seeds[c * n_per_cluster + k][1];
+    }
+    cx /= n_per_cluster;
+    cy /= n_per_cluster;
+    // RMS within-cluster distance ≈ spread (0.02).
+    double rms2 = 0;
+    for (std::size_t k = 0; k < n_per_cluster; ++k) {
+      const auto dx = seeds[c * n_per_cluster + k][0] - cx;
+      const auto dy = seeds[c * n_per_cluster + k][1] - cy;
+      rms2 += dx * dx + dy * dy;
+    }
+    const auto rms = std::sqrt(rms2 / n_per_cluster);
+    REQUIRE(rms < 0.05);   // generous bound: spread × ~2.5
+  }
+}
+
+void test_cluster_seeds_2d_validation_throws() {
+  std::mt19937 e{1};
+  bool t1 = false; try { rvegen::cluster_seeds_2d<double>(0.0, 1.0, 2, 5, 0.1, e); }
+                   catch (std::runtime_error const&) { t1 = true; } REQUIRE(t1);
+  bool t2 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 0, 5, 0.1, e); }
+                   catch (std::runtime_error const&) { t2 = true; } REQUIRE(t2);
+  bool t3 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 2, 0, 0.1, e); }
+                   catch (std::runtime_error const&) { t3 = true; } REQUIRE(t3);
+  bool t4 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 2, 5, 0.0, e); }
+                   catch (std::runtime_error const&) { t4 = true; } REQUIRE(t4);
+}
+
+// voronoi_generator_3d (#114 phase 2): bounded 3D Voronoi by
+// half-space intersection + brute-force vertex enumeration.
+void test_voronoi_generator_3d_single_seed_returns_full_box() {
+  rvegen::voronoi_generator_3d<double> gen{
+      1.0, 1.0, 1.0, {{0.5, 0.5, 0.5}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 1);
+  // The cell IS the unit cube → volume 1.
+  REQUIRE(std::abs(cells[0]->volume() - 1.0) < 1e-9);
+  // Origin and far corner are both inside / on the boundary.
+  REQUIRE(cells[0]->is_inside({0.5, 0.5, 0.5}));
+}
+
+void test_voronoi_generator_3d_two_seeds_split_by_bisector() {
+  // Two seeds symmetric about x = 0.5. The perpendicular bisector
+  // is the plane x = 0.5; cells split the cube into two half-cubes
+  // each of volume 0.5.
+  rvegen::voronoi_generator_3d<double> gen{
+      1.0, 1.0, 1.0, {{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 2);
+  REQUIRE(std::abs(cells[0]->volume() - 0.5) < 1e-9);
+  REQUIRE(std::abs(cells[1]->volume() - 0.5) < 1e-9);
+  // Each seed is inside its own cell.
+  REQUIRE(cells[0]->is_inside({0.25, 0.5, 0.5}));
+  REQUIRE(cells[1]->is_inside({0.75, 0.5, 0.5}));
+}
+
+void test_voronoi_generator_3d_partition_invariant() {
+  // 4 mixed seeds → total cell volume sums to the box volume
+  // (partition-of-unity). Tolerance is generous because the
+  // brute-force enumeration accumulates a fair bit of FP noise on
+  // typical mixed inputs.
+  rvegen::voronoi_generator_3d<double> gen{
+      1.0, 1.0, 1.0, {
+        {0.25, 0.25, 0.25},
+        {0.75, 0.25, 0.25},
+        {0.25, 0.75, 0.25},
+        {0.75, 0.75, 0.75}}};
+  auto cells = gen.build();
+  REQUIRE(cells.size() == 4);
+  double total = 0.0;
+  for (auto const& c : cells) total += c->volume();
+  REQUIRE(std::abs(total - 1.0) < 1e-6);
+}
+
+void test_voronoi_generator_3d_validation_throws() {
+  bool t1 = false;
+  try { rvegen::voronoi_generator_3d<double>{0, 1, 1, {{0.5, 0.5, 0.5}}}; }
+  catch (std::runtime_error const&) { t1 = true; }
+  REQUIRE(t1);
+
+  bool t2 = false;
+  try { rvegen::voronoi_generator_3d<double>{1, 1, 1, {}}; }
+  catch (std::runtime_error const&) { t2 = true; }
+  REQUIRE(t2);
+}
+
+void test_cluster_seeds_2d_compose_with_voronoi() {
+  // End-to-end: clustered seeds → voronoi_generator_2d → polygons.
+  // Partition-of-unity invariant still holds (area sums to domain).
+  std::mt19937 engine{77};
+  auto seeds = rvegen::cluster_seeds_2d<double>(
+      2.0, 1.5, 3, 4, 0.15, engine);
+  rvegen::voronoi_generator_2d<double> vor{2.0, 1.5, seeds};
+  auto cells = vor.build();
+  REQUIRE(cells.size() == 12);
+  double total = 0.0;
+  for (auto const& cell : cells) total += rvegen::polygon_area(cell);
+  REQUIRE(std::abs(total - 2.0 * 1.5) < 1e-10);
+}
+
+void test_tow_weave_generator_n_fibres_1_collapses_to_yarn_centerline() {
+  // n_fibres = 1 → single fibre per yarn at the yarn's own centerline
+  // (offset {0,0}). Just a smaller-radius copy of the yarn. Useful
+  // smoke check that the hex_pack_offsets degenerate path works.
+  rvegen::weave_generator<double> base{
+      {1.0, 1.0, 0.2}, 1, 1, 0.05, 0.03};
+  rvegen::tow_weave_generator<double> gen{base, 1, 0.5};
+  auto shapes = gen.build();
+  REQUIRE(shapes.size() == 2);   // 1 warp + 1 weft
+  // Each fibre has the same centerline as the yarn (offset is 0).
+  auto base_shapes = base.build();
+  auto* yarn = dynamic_cast<rvegen::polyline_tube<double>*>(base_shapes[0].get());
+  auto* fibre = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
+  REQUIRE(yarn != nullptr);
+  REQUIRE(fibre != nullptr);
+  REQUIRE(yarn->centerline().size() == fibre->centerline().size());
+  for (std::size_t i = 0; i < yarn->centerline().size(); ++i) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      REQUIRE(std::abs(yarn->centerline()[i][k] - fibre->centerline()[i][k])
+              < 1e-12);
+    }
+  }
+}
+
 // ----------------------------------------------------------------------------
 // voronoi_generator_2d (#114 phase 1): bounded 2D Voronoi tessellation
 // via Sutherland-Hodgman half-plane clipping.
@@ -2754,33 +3011,19 @@ void test_mesh_inclusion_input_accepts_binary_stl() {
   }
   REQUIRE(ascii_tris.size() == 12);
 
-  auto write_le_u32 = [](std::ostream& o, std::uint32_t v) {
-    o.put(static_cast<char>(v & 0xff));
-    o.put(static_cast<char>((v >> 8)  & 0xff));
-    o.put(static_cast<char>((v >> 16) & 0xff));
-    o.put(static_cast<char>((v >> 24) & 0xff));
-  };
-  auto write_le_f32 = [](std::ostream& o, float f) {
-    std::uint32_t bits;
-    std::memcpy(&bits, &f, sizeof(bits));
-    o.put(static_cast<char>(bits & 0xff));
-    o.put(static_cast<char>((bits >> 8)  & 0xff));
-    o.put(static_cast<char>((bits >> 16) & 0xff));
-    o.put(static_cast<char>((bits >> 24) & 0xff));
-  };
-
   const std::string tmp_path = "/tmp/rvegen_test_binary_via_input.stl";
   {
     std::ofstream out{tmp_path, std::ios::binary};
     for (int i = 0; i < 80; ++i) out.put('\0');     // header
-    write_le_u32(out, static_cast<std::uint32_t>(ascii_tris.size()));
+    le_writers::write_le_u32(out,
+        static_cast<std::uint32_t>(ascii_tris.size()));
     for (auto const& t : ascii_tris) {
       // Normal (0,0,1) is fine — the reader skips it (computed from
       // vertex order anyway).
-      for (float n : {0.f, 0.f, 1.f}) write_le_f32(out, n);
+      for (float n : {0.f, 0.f, 1.f}) le_writers::write_le_f32(out, n);
       for (int v = 0; v < 3; ++v) {
         for (int c = 0; c < 3; ++c) {
-          write_le_f32(out, static_cast<float>(t.v[v][c]));
+          le_writers::write_le_f32(out, static_cast<float>(t.v[v][c]));
         }
       }
       out.put('\0'); out.put('\0');                  // attribute bytes
@@ -3508,6 +3751,7 @@ int main() {
   test_gmsh_geo_writer_3d_physical_groups_per_phase();
   test_gmsh_geo_writer_without_phases_emits_no_physical_groups();
   test_gmsh_geo_writer_periodic_and_phases_combine();
+  test_gmsh_geo_writer_periodic_and_phases_combine_3d();
   test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order();
   test_gmsh_geo_writer_phases_unknown_name_throws();
   test_gmsh_geo_writer_strict_mode_rejects_untagged_shape();
@@ -3591,6 +3835,18 @@ int main() {
   test_weave_generator_warp_and_weft_interlace_180_out_of_phase();
   test_weave_generator_phase_tagging();
   test_weave_generator_validation_throws_on_bad_input();
+  test_tow_weave_generator_expands_each_yarn_to_n_fibres();
+  test_tow_weave_generator_propagates_phase_names();
+  test_tow_weave_generator_validation_throws();
+  test_tow_weave_generator_n_fibres_1_collapses_to_yarn_centerline();
+  test_cluster_seeds_2d_count_and_bounds();
+  test_cluster_seeds_2d_seeds_cluster_around_centers();
+  test_cluster_seeds_2d_validation_throws();
+  test_cluster_seeds_2d_compose_with_voronoi();
+  test_voronoi_generator_3d_single_seed_returns_full_box();
+  test_voronoi_generator_3d_two_seeds_split_by_bisector();
+  test_voronoi_generator_3d_partition_invariant();
+  test_voronoi_generator_3d_validation_throws();
   test_voronoi_generator_2d_single_seed_returns_full_domain();
   test_voronoi_generator_2d_two_seeds_split_by_bisector();
   test_voronoi_generator_2d_four_corner_seeds_quadrant_split();
