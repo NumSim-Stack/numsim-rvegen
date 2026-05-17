@@ -306,6 +306,142 @@ void test_polyline_tube_mesh_voxelization_agrees_with_is_inside() {
   REQUIRE(mx[2] >= 0.5 + 0.05 - 1e-9);
 }
 
+// ----------------------------------------------------------------------------
+// convex_polygon + voronoi_cell — polycrystal renderer hookup (#114).
+// ----------------------------------------------------------------------------
+void test_convex_polygon_mesh_direct() {
+  // CCW unit square. 4 verts → 2 triangles in the z=0 plane.
+  std::vector<std::array<double, 2>> verts{
+      {0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}};
+  rvegen::convex_polygon<double> poly{verts};
+  auto m = rvegen::to_mesh(poly);
+
+  REQUIRE(m.verts.size() == 4);
+  REQUIRE(m.tris.size() == 2);
+  REQUIRE(indices_in_range(m));
+  for (auto const& v : m.verts) REQUIRE(std::abs(v[2]) < 1e-12);
+
+  // Signed-area winding check + total-area invariant. Each triangle's
+  // signed cross product must be positive (CCW in z=0) — `std::abs`
+  // alone would pass for an inverted fan, so this is the stricter test.
+  double area = 0.0;
+  for (auto const& tri : m.tris) {
+    auto const& a = m.verts[tri[0]];
+    auto const& b = m.verts[tri[1]];
+    auto const& c = m.verts[tri[2]];
+    const double signed_cross = (b[0]-a[0]) * (c[1]-a[1])
+                              - (b[1]-a[1]) * (c[0]-a[0]);
+    REQUIRE(signed_cross > 0.0);   // CCW
+    area += 0.5 * signed_cross;
+  }
+  REQUIRE(std::abs(area - 1.0) < 1e-12);
+}
+
+void test_convex_polygon_mesh_skips_collinear_triangles() {
+  // convex_polygon's ctor allows N >= 3 without a non-collinearity
+  // check. A degenerate fan triangle has near-zero cross product and
+  // must be skipped — downstream renderers should not receive
+  // invisible-but-counted geometry.
+  std::vector<std::array<double, 2>> verts{
+      {0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}};   // collinear on y=0
+  rvegen::convex_polygon<double> poly{verts};
+  auto m = rvegen::to_mesh(poly);
+  REQUIRE(m.verts.size() == 3);
+  REQUIRE(m.tris.empty());   // sole triangle is degenerate
+}
+
+void test_convex_polygon_mesh_via_dispatcher_after_voronoi() {
+  // The 2-seed 2D Voronoi split of a unit square produces two
+  // convex_polygon cells; both must round-trip through the dispatcher
+  // to a non-empty flat triangle mesh.
+  rvegen::mesh_dispatcher<double>::instance().clear();
+  rvegen::register_all_meshes<double>();
+
+  std::vector<std::array<double, 2>> seeds{{0.25, 0.5}, {0.75, 0.5}};
+  rvegen::voronoi_generator_2d<double> gen{1.0, 1.0, seeds};
+  auto shapes = rvegen::voronoi_to_shapes(gen);
+  REQUIRE(shapes.size() == 2);
+
+  double total_area = 0.0;
+  for (auto const& shape : shapes) {
+    auto m = rvegen::mesh_dispatcher<double>::instance()(*shape);
+    REQUIRE(!m.empty());
+    REQUIRE(indices_in_range(m));
+    for (auto const& v : m.verts) REQUIRE(std::abs(v[2]) < 1e-12);
+    for (auto const& tri : m.tris) {
+      auto const& a = m.verts[tri[0]];
+      auto const& b = m.verts[tri[1]];
+      auto const& c = m.verts[tri[2]];
+      total_area += 0.5 * std::abs((b[0]-a[0]) * (c[1]-a[1])
+                                 - (b[1]-a[1]) * (c[0]-a[0]));
+    }
+  }
+  // The two cells' triangulations should tile the unit square exactly.
+  REQUIRE(std::abs(total_area - 1.0) < 1e-9);
+}
+
+// Build a unit-cube voronoi_cell directly: 8 corner vertices, 6 quad
+// faces with CCW outward winding. Used in both 3D mesh tests so they
+// don't depend on the (out-of-tree-on-main) 3D Voronoi generator.
+rvegen::voronoi_cell<double> make_unit_cube_cell() {
+  using V = gte::Vector<3, double>;
+  auto mk = [](double x, double y, double z) {
+    V v; v[0] = x; v[1] = y; v[2] = z; return v;
+  };
+  std::vector<V> verts{
+      mk(0, 0, 0), mk(1, 0, 0), mk(1, 1, 0), mk(0, 1, 0),
+      mk(0, 0, 1), mk(1, 0, 1), mk(1, 1, 1), mk(0, 1, 1)};
+  // CCW when viewed from outside (right-hand rule → outward normal).
+  std::vector<std::vector<std::size_t>> faces{
+      {0, 3, 2, 1},   // -z face (normal -z)
+      {4, 5, 6, 7},   // +z face
+      {0, 1, 5, 4},   // -y face
+      {2, 3, 7, 6},   // +y face
+      {1, 2, 6, 5},   // +x face
+      {0, 4, 7, 3},   // -x face
+  };
+  return rvegen::voronoi_cell<double>{std::move(verts), std::move(faces)};
+}
+
+void test_voronoi_cell_mesh_direct_unit_cube() {
+  // 6 quad faces × 2 triangles = 12 triangles, 8 unique vertices.
+  auto cell = make_unit_cube_cell();
+  auto m = rvegen::to_mesh(cell);
+
+  REQUIRE(m.verts.size() == 8);
+  REQUIRE(m.tris.size() == 12);
+  REQUIRE(indices_in_range(m));
+  REQUIRE(m.normals.empty());
+
+  // Surface area of a unit cube = 6.
+  double area = 0.0;
+  for (auto const& tri : m.tris) {
+    auto const& a = m.verts[tri[0]];
+    auto const& b = m.verts[tri[1]];
+    auto const& c = m.verts[tri[2]];
+    const double ax = b[0]-a[0], ay = b[1]-a[1], az = b[2]-a[2];
+    const double bx = c[0]-a[0], by = c[1]-a[1], bz = c[2]-a[2];
+    const double cx = ay*bz - az*by;
+    const double cy = az*bx - ax*bz;
+    const double cz = ax*by - ay*bx;
+    area += 0.5 * std::sqrt(cx*cx + cy*cy + cz*cz);
+  }
+  REQUIRE(std::abs(area - 6.0) < 1e-9);
+}
+
+void test_voronoi_cell_mesh_via_dispatcher() {
+  rvegen::mesh_dispatcher<double>::instance().clear();
+  rvegen::register_all_meshes<double>();
+  auto cell = make_unit_cube_cell();
+
+  std::unique_ptr<rvegen::shape_base<double>> base =
+      std::make_unique<rvegen::voronoi_cell<double>>(std::move(cell));
+  auto m = rvegen::mesh_dispatcher<double>::instance()(*base);
+  REQUIRE(!m.empty());
+  REQUIRE(m.tris.size() == 12);
+  REQUIRE(indices_in_range(m));
+}
+
 } // namespace
 
 int main() {
@@ -320,6 +456,11 @@ int main() {
   test_polyline_tube_mesh_direct();
   test_polyline_tube_mesh_via_dispatcher();
   test_polyline_tube_mesh_voxelization_agrees_with_is_inside();
+  test_convex_polygon_mesh_direct();
+  test_convex_polygon_mesh_skips_collinear_triangles();
+  test_convex_polygon_mesh_via_dispatcher_after_voronoi();
+  test_voronoi_cell_mesh_direct_unit_cube();
+  test_voronoi_cell_mesh_via_dispatcher();
 
   if (failures > 0) {
     std::cerr << failures << " mesh_dispatch test failure(s)\n";

@@ -2,17 +2,21 @@
 
 #include "../shapes/box.h"
 #include "../shapes/circle.h"
+#include "../shapes/convex_polygon.h"
 #include "../shapes/ellipse.h"
 #include "../shapes/polyline_tube.h"
 #include "../shapes/rectangle.h"
 #include "../shapes/sphere.h"
+#include "../shapes/voronoi_cell.h"
 #include "../visualization/box_mesh.h"
 #include "../visualization/circle_mesh.h"
+#include "../visualization/convex_polygon_mesh.h"
 #include "../visualization/ellipse_mesh.h"
 #include "../visualization/mesh_dispatcher.h"
 #include "../visualization/polyline_tube_mesh.h"
 #include "../visualization/rectangle_mesh.h"
 #include "../visualization/sphere_mesh.h"
+#include "../visualization/voronoi_cell_mesh.h"
 
 namespace rvegen {
 
@@ -20,9 +24,10 @@ namespace rvegen {
 // Out-of-tree shapes register themselves the same way:
 //   mesh_dispatcher<T>::instance().register_shape<my_shape<T>>();
 //
-// 2D shapes (circle, rectangle, ellipse) get flat triangle meshes in the
-// z=0 plane — what a 3D renderer wants when asked to display a 2D RVE.
-// 3D shapes (sphere, box) get full surface meshes.
+// 2D shapes (circle, rectangle, ellipse, convex_polygon) get flat
+// triangle meshes in the z=0 plane — what a 3D renderer wants when
+// asked to display a 2D RVE. 3D shapes (sphere, box, polyline_tube,
+// voronoi_cell) get full surface meshes.
 template <typename T = double>
 inline void register_all_meshes() {
   auto& d = mesh_dispatcher<T>::instance();
@@ -32,6 +37,10 @@ inline void register_all_meshes() {
   d.template register_shape<rectangle<T>>();
   d.template register_shape<ellipse<T>>();
   d.template register_shape<polyline_tube<T>>();
+  // Polycrystal / Voronoi shapes (#114): 2D cell as a flat polygon fan,
+  // 3D cell as a per-face fan against the cell's outward winding.
+  d.template register_shape<convex_polygon<T>>();
+  d.template register_shape<voronoi_cell<T>>();
 }
 
 } // namespace rvegen

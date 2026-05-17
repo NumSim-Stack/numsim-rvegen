@@ -221,7 +221,11 @@ private:
     _face_planes.reserve(_faces.size());
     constexpr T sin_eps =
         std::numeric_limits<T>::epsilon() * T{1024};
-    for (auto const& face : _faces) {
+    // Iterate by index (not const&) because we may need to reverse a
+    // face's vertex list when its winding disagrees with the corrected
+    // outward normal — see the flip branch below.
+    for (std::size_t fidx = 0; fidx < _faces.size(); ++fidx) {
+      auto& face = _faces[fidx];
       if (face.size() < 3) continue;
       const auto& a = _vertices[face[0]];
       vector_type n;
@@ -248,13 +252,19 @@ private:
       }
       if (!found) continue;   // entirely collinear face — drop
       n /= mag;
-      // Flip outward if the centroid is on the positive side.
+      // Flip outward if the centroid is on the positive side. When we
+      // flip, the stored face vertex list must also be reversed so the
+      // winding matches the outward normal — otherwise downstream
+      // mesh emission (`to_mesh(voronoi_cell)`) honours the raw
+      // winding and emits inward-facing triangles for those faces,
+      // even though `is_inside` would still be correct.
       const T offset0 = n[0] * a[0] + n[1] * a[1] + n[2] * a[2];
       const T centroid_side = n[0] * _centroid[0] + n[1] * _centroid[1] +
                                n[2] * _centroid[2] - offset0;
       if (centroid_side > T{0}) {
         n[0] = -n[0]; n[1] = -n[1]; n[2] = -n[2];
         _face_planes.push_back({n, -offset0});
+        std::reverse(face.begin(), face.end());
       } else {
         _face_planes.push_back({n, offset0});
       }

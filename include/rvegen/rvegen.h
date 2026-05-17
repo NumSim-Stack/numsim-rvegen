@@ -75,10 +75,12 @@
 #include "visualization/mesh_dispatcher.h"
 #include "visualization/box_mesh.h"
 #include "visualization/circle_mesh.h"
+#include "visualization/convex_polygon_mesh.h"
 #include "visualization/ellipse_mesh.h"
 #include "visualization/polyline_tube_mesh.h"
 #include "visualization/rectangle_mesh.h"
 #include "visualization/sphere_mesh.h"
+#include "visualization/voronoi_cell_mesh.h"
 
 // json (opt-in: pulls in nlohmann)
 #include "json/parameter_visitor_nlohmann.h"
