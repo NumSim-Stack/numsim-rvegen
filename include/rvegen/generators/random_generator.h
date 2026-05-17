@@ -7,6 +7,7 @@
 
 #include "../intersection/aabb_overlap.h"
 #include "../intersection/collision_dispatcher.h"
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "rve_generator_base.h"
 
@@ -28,16 +29,16 @@ public:
   explicit random_generator(std::size_t max_attempts) noexcept
       : _max_attempts{max_attempts} {}
 
+  using fields = field_list<
+      field<"max_attempts", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::description_label<"maximum placement attempts before giving up">>>;
+
   explicit random_generator(parameter_handler_t const& handler)
-      : _max_attempts{handler.template get<std::size_t>("max_attempts")} {}
+      : _max_attempts{std::get<0>(fields::extract(handler))} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::size_t>("max_attempts")
-        .template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::description_label<"maximum placement attempts before giving up">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] shape_vector

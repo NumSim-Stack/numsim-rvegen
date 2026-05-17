@@ -6,6 +6,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "../intersection/aabb_overlap.h"
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "termination_base.h"
 
@@ -27,19 +28,20 @@ public:
   explicit number_of_inclusions(std::size_t target) noexcept
       : _target{target}, _domain_box{T{0}, T{0}, T{0}} {}
 
+  using fields = field_list<
+      field<"target", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::description_label<"number of inclusions (primaries) to place before stopping">>>;
+
   // Schema-driven ctor — captures domain_box for the centre-in-domain
   // primary filter.
   number_of_inclusions(parameter_handler_t const& handler,
                        std::array<T, 3> const& domain_box)
-      : _target{handler.template get<std::size_t>("target")},
+      : _target{std::get<0>(fields::extract(handler))},
         _domain_box{domain_box} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::size_t>("target").template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::description_label<"number of inclusions (primaries) to place before stopping">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] bool operator()(shape_vector const& accepted) const override {

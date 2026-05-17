@@ -29,6 +29,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
 
@@ -50,24 +51,20 @@ public:
     }
   }
 
+  using fields = field_list<
+      field<"mean_angle", value_type, true,
+            numsim_core::unit_label<"rad">,
+            numsim_core::description_label<"preferred orientation angle (CCW from +x)">>,
+      field<"kappa", value_type, true,
+            min_only<value_type{0}>,
+            numsim_core::description_label<"von Mises concentration; 0 = uniform, large = aligned (compute from Advani-Tucker A2 if needed)">>>;
+
   oriented_uniform_distribution(parameter_handler_t const& handler,
                                  engine_type& engine)
-      : oriented_uniform_distribution(
-            handler.template get<value_type>("mean_angle"),
-            handler.template get<value_type>("kappa"),
-            engine) {}
+      : oriented_uniform_distribution(fields::extract(handler), engine) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<value_type>("mean_angle")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::unit_label<"rad">>()
-        .template add<numsim_core::description_label<"preferred orientation angle (CCW from +x)">>();
-    s.template insert<value_type>("kappa")
-        .template add<numsim_core::is_required>()
-        .template add<min_only<value_type{0}>>()
-        .template add<numsim_core::description_label<"von Mises concentration; 0 = uniform, large = aligned (compute from Advani-Tucker A2 if needed)">>();
-    return s;
+    return fields::schema();
   }
 
   // Best-Fisher (1979) rejection sampler for the von Mises distribution.
@@ -109,6 +106,13 @@ public:
   [[nodiscard]] value_type kappa() const noexcept { return _kappa; }
 
 private:
+  // Tuple-taking helper used by the schema-driven ctor. Lets us delegate
+  // through `fields::extract(handler)` without re-extracting per element.
+  oriented_uniform_distribution(std::tuple<value_type, value_type> mk,
+                                engine_type& engine)
+      : oriented_uniform_distribution(std::get<0>(mk), std::get<1>(mk),
+                                       engine) {}
+
   value_type _mean;
   value_type _kappa;
   std::reference_wrapper<engine_type> _engine;

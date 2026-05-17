@@ -5,6 +5,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "../intersection/aabb_overlap.h"
+#include "../schema/field_list.h"
 #include "../types.h"
 #include "termination_base.h"
 
@@ -38,22 +39,22 @@ public:
         _domain_box{T{0}, T{0}, T{0}},
         _domain_size{domain_size} {}
 
+  using fields = field_list<
+      field<"target_fraction", value_type, true,
+            numsim_core::range<value_type{0}, value_type{1}>,
+            numsim_core::unit_label<"fraction">,
+            numsim_core::description_label<"target volume (3D) or area (2D) fraction of inclusions">>>;
+
   // Schema-driven ctor — derives domain_size from the box dimensions.
   // domain_box[2] == 0 means 2D RVE → use Lx*Ly; otherwise Lx*Ly*Lz.
   volume_fraction(parameter_handler_t const& handler,
                   std::array<value_type, 3> const& domain_box)
-      : _target{handler.template get<value_type>("target_fraction")},
+      : _target{std::get<0>(fields::extract(handler))},
         _domain_box{domain_box},
         _domain_size{compute_domain_size(domain_box)} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<value_type>("target_fraction")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::range<value_type{0}, value_type{1}>>()
-        .template add<numsim_core::unit_label<"fraction">>()
-        .template add<numsim_core::description_label<"target volume (3D) or area (2D) fraction of inclusions">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] bool operator()(shape_vector const& accepted) const override {
