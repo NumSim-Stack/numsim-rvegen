@@ -2410,6 +2410,38 @@ void test_gmsh_geo_writer_omits_element_order_when_default() {
   REQUIRE(out.str().find("Mesh.ElementOrder") == std::string::npos);
 }
 
+void test_gmsh_geo_writer_emits_algorithm_when_set() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_algorithm(8);   // Frontal-Delaunay-for-quads
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  REQUIRE(out.str().find("Mesh.Algorithm = 8;") != std::string::npos);
+}
+
+void test_gmsh_geo_writer_emits_recombine_when_set() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_recombine_quads(true);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  REQUIRE(out.str().find("Mesh.RecombineAll = 1;") != std::string::npos);
+}
+
+void test_gmsh_geo_writer_omits_algorithm_and_recombine_when_default() {
+  // Default ctor → neither directive should appear.
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+  REQUIRE(txt.find("Mesh.Algorithm")    == std::string::npos);
+  REQUIRE(txt.find("Mesh.RecombineAll") == std::string::npos);
+}
+
 void test_gmsh_geo_writer_keeps_placeholders_when_mesh_size_default() {
   // Default ctor leaves the mesh-size knobs at 0 → commented
   // placeholders remain. Back-compat for callers that haven't
@@ -3577,6 +3609,9 @@ int main() {
   test_gmsh_geo_writer_emits_mesh_size_directives_when_set();
   test_gmsh_geo_writer_emits_element_order_when_set();
   test_gmsh_geo_writer_omits_element_order_when_default();
+  test_gmsh_geo_writer_emits_algorithm_when_set();
+  test_gmsh_geo_writer_emits_recombine_when_set();
+  test_gmsh_geo_writer_omits_algorithm_and_recombine_when_default();
   test_gmsh_geo_writer_keeps_placeholders_when_mesh_size_default();
   test_voronoi_to_shapes_helper_returns_shape_vector();
   test_svg_writer_emits_polygon_element_for_convex_polygon();
