@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 
 #include "../shapes/voronoi_cell.h"
@@ -42,7 +43,11 @@ to_mesh(voronoi_cell<T> const& cell) {
   for (auto const& face : fs) {
     if (face.size() < 3) continue;   // degenerate
     const std::size_t v0 = face[0];
+    assert(v0 < vs.size() &&
+           "voronoi_cell::to_mesh: face vertex index out of range");
     for (std::size_t i = 1; i + 1 < face.size(); ++i) {
+      assert(face[i] < vs.size() && face[i + 1] < vs.size() &&
+             "voronoi_cell::to_mesh: face vertex index out of range");
       m.tris.push_back({v0, face[i], face[i + 1]});
     }
   }

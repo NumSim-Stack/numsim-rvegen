@@ -24,9 +24,10 @@ namespace rvegen {
 // Out-of-tree shapes register themselves the same way:
 //   mesh_dispatcher<T>::instance().register_shape<my_shape<T>>();
 //
-// 2D shapes (circle, rectangle, ellipse) get flat triangle meshes in the
-// z=0 plane — what a 3D renderer wants when asked to display a 2D RVE.
-// 3D shapes (sphere, box) get full surface meshes.
+// 2D shapes (circle, rectangle, ellipse, convex_polygon) get flat
+// triangle meshes in the z=0 plane — what a 3D renderer wants when
+// asked to display a 2D RVE. 3D shapes (sphere, box, polyline_tube,
+// voronoi_cell) get full surface meshes.
 template <typename T = double>
 inline void register_all_meshes() {
   auto& d = mesh_dispatcher<T>::instance();
