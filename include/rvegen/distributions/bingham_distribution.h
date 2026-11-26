@@ -1,6 +1,6 @@
 #pragma once
 
-// Axisymmetric Bingham (Watson) distribution on the 3-sphere — samples
+// Axisymmetric Bingham (Watson) distribution on the 2-sphere S² — samples
 // 3D unit vectors clustered around (κ > 0) or repelled from (κ < 0) a
 // caller-specified mean axis.
 //
@@ -39,11 +39,17 @@
 // On the sampling algorithm and its useful range:
 //   This is not Wood (1994) — Wood uses a tailored proposal density
 //   that gives near-100 % acceptance even at very high |κ|. The naive
-//   uniform proposal here has acceptance ≈ 1 / √(π |κ| / 2) for large
-//   |κ|, so it's efficient up to roughly |κ| ≲ 50 (≥ 10 % accept). At
-//   |κ| ≳ 200 each accept costs tens of candidates; at |κ| ≳ 1000 the
-//   sampler is unusable. If callers need that regime, replace with a
-//   real Wood proposal — tracked as part of the Kume-Walker follow-up.
+//   uniform proposal here accepts ∫₀¹ exp(κ(x² − 1)) dx ≈ 1 / (2κ) of
+//   candidates for prolate κ > 0, and ∫₀¹ exp(κx²) dx ≈ ½ √(π / |κ|)
+//   for oblate κ < 0 (both ≥ 1 / (1 + 2|κ|) for every κ). Measured with
+//   200k samples: κ = 5 → 11.6 %, κ = 50 → 1.0 %, κ = 200 → 0.25 %;
+//   κ = −5 → 39.6 %, κ = −50 → 12.5 %, κ = −200 → 6.3 %. Prolate
+//   sampling therefore costs ~2κ candidates per draw: fine for κ ≲ 50,
+//   slow beyond a few hundred. A hard iteration cap (100× the
+//   worst-case expected trial count) turns runaway loops into a
+//   std::runtime_error. If callers need large prolate κ, replace with a
+//   tailored envelope (Wood, or the Kent-Ganeiber-Mardia 2018 ACG
+//   proposal) — tracked as part of the Kume-Walker follow-up.
 //
 // Out of scope here, ships in follow-up PRs against #6:
 //   * Generic 3×3 Bingham (Kume-Walker sampler) — also fixes the
@@ -51,9 +57,16 @@
 //   * `direction_distribution_base` hierarchy + JSON registry entry.
 //   * 3D fibre input that consumes this for tube orientation.
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <functional>
+#include <limits>
+#include <numbers>
 #include <random>
+#include <stdexcept>
+#include <tuple>
 
 #include <Mathematics/Vector3.h>
 #include <numsim-core/input_parameter_controller.h>
@@ -73,7 +86,19 @@ public:
 
   bingham_distribution(vector_type mean_axis, T kappa, engine_type& engine)
       : _kappa{kappa}, _engine{engine}, _uniform{T{0}, T{1}} {
+    if (!std::isfinite(_kappa)) {
+      throw std::invalid_argument{
+          "bingham_distribution: kappa must be finite"};
+    }
     set_mean_axis(mean_axis);
+    // Hard cap on rejection candidates per sample. The acceptance rate is
+    // ≥ 1 / (1 + 2|κ|) for every κ (see the header comment), so 100× the
+    // worst-case expected trial count makes a spurious throw a < e⁻¹⁰⁰
+    // event while still turning a would-be hang into an exception.
+    const T expected = T{1} + T{2} * std::abs(_kappa);
+    const T cap = T{100} * expected + T{1000};
+    _max_iterations = cap < T{1e9} ? static_cast<std::size_t>(cap)
+                                   : std::size_t{1000000000};
   }
 
   // Convenience overload accepting std::array — most callers don't
@@ -130,7 +155,13 @@ public:
       return sample_uniform_sphere();
     }
     T x = T{0};
+    std::size_t it = 0;
     while (true) {
+      if (++it > _max_iterations) {
+        throw std::runtime_error{
+            "bingham_distribution: rejection sampler exceeded its "
+            "iteration cap (|kappa| too large for the uniform proposal)"};
+      }
       const T u1 = _uniform(_engine.get());
       x = T{2} * u1 - T{1};   // candidate cos θ in [-1, 1]
       const T u2 = _uniform(_engine.get());
@@ -179,8 +210,17 @@ private:
   // products — guards against the degenerate case where mean_axis is
   // close to ẑ.
   void set_mean_axis(vector_type axis) {
-    const T n2 = gte::Dot(axis, axis);
-    if (n2 > T{0}) axis /= std::sqrt(n2);
+    if (!std::isfinite(axis[0]) || !std::isfinite(axis[1]) ||
+        !std::isfinite(axis[2])) {
+      throw std::invalid_argument{
+          "bingham_distribution: mean_axis must be finite"};
+    }
+    // Robust normalise scales by the max |component| first, so very
+    // large or very small (but non-zero) axes still normalise cleanly.
+    if (!(gte::Normalize(axis, true) > T{0})) {
+      throw std::invalid_argument{
+          "bingham_distribution: mean_axis must be non-zero"};
+    }
     _mean_axis = axis;
     // Pick the auxiliary vector farthest from `_mean_axis` to maximise
     // the cross-product magnitude. Choosing the world axis with the
@@ -228,6 +268,7 @@ private:
   vector_type _frame_x;
   vector_type _frame_y;
   T _kappa;
+  std::size_t _max_iterations{0};
   std::reference_wrapper<engine_type> _engine;
   std::uniform_real_distribution<T> _uniform;
 };
