@@ -32,32 +32,27 @@ public:
   rectangle_input(parameter_handler_t const& handler,
                   distribution_map_t<value_type> const& distributions)
       : rectangle_input(
-            *distributions.at(handler.template get<std::string>("pos_x_dist")),
-            *distributions.at(handler.template get<std::string>("pos_y_dist")),
-            *distributions.at(handler.template get<std::string>("width_dist")),
-            *distributions.at(handler.template get<std::string>("height_dist"))) {
+            *distributions.at(fields::template value<"pos_x_dist">(handler)),
+            *distributions.at(fields::template value<"pos_y_dist">(handler)),
+            *distributions.at(fields::template value<"width_dist">(handler)),
+            *distributions.at(fields::template value<"height_dist">(handler))) {
     this->read_metadata(handler);
   }
 
+  using fields = field_list<
+      field<"pos_x_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the rectangle centre x">>,
+      field<"pos_y_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the rectangle centre y">>,
+      field<"width_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the rectangle width">>,
+      field<"height_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the rectangle height">>,
+      input_phase_name_field,
+      input_metadata_field>;
+
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::string>("pos_x_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle centre x">>();
-    s.template insert<std::string>("pos_y_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle centre y">>();
-    s.template insert<std::string>("width_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle width">>();
-    s.template insert<std::string>("height_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the rectangle height">>();
-    s.template insert<std::string>("phase_name")
-        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
-    s.template insert<std::string>("metadata")
-        .template add<numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>();
-    return s;
+    return fields::schema();
   }
 
   // Draw order: x, y, width, height.

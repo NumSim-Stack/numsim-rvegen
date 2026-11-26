@@ -13,6 +13,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "post_process_base.h"
+#include "../schema/field_list.h"
 #include "../phase/phase.h"
 #include "../types.h"
 #include "voxel_grid.h"
@@ -50,28 +51,29 @@ public:
       : _nx{nx}, _ny{ny}, _nz{nz}, _output_path{std::move(output_path)} {}
 
   explicit voxel_writer(parameter_handler_t const& handler)
-      : _nx{handler.template get<std::size_t>("nx")},
-        _ny{handler.template get<std::size_t>("ny")},
-        _nz{handler.template get<std::size_t>("nz")},
-        _output_path{handler.template get<std::string>("output_path")} {}
+      : _nx{fields::template value<"nx">(handler)},
+        _ny{fields::template value<"ny">(handler)},
+        _nz{fields::template value<"nz">(handler)},
+        _output_path{fields::template value<"output_path">(handler)} {}
+
+  using fields = field_list<
+      field<"nx", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::unit_label<"cells">,
+            numsim_core::description_label<"voxel-grid resolution along x">>,
+      field<"ny", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::unit_label<"cells">,
+            numsim_core::description_label<"voxel-grid resolution along y">>,
+      field<"nz", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::unit_label<"cells">,
+            numsim_core::description_label<"voxel-grid resolution along z (collapses to 1 for 2D RVEs)">>,
+      field<"output_path", std::string, true,
+            numsim_core::description_label<"destination path for the voxel-grid file">>>;
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::size_t>("nx").template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::unit_label<"cells">>()
-        .template add<numsim_core::description_label<"voxel-grid resolution along x">>();
-    s.template insert<std::size_t>("ny").template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::unit_label<"cells">>()
-        .template add<numsim_core::description_label<"voxel-grid resolution along y">>();
-    s.template insert<std::size_t>("nz").template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::unit_label<"cells">>()
-        .template add<numsim_core::description_label<"voxel-grid resolution along z (collapses to 1 for 2D RVEs)">>();
-    s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"destination path for the voxel-grid file">>();
-    return s;
+    return fields::schema();
   }
 
   void resolution(std::size_t nx, std::size_t ny, std::size_t nz) noexcept {

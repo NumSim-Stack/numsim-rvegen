@@ -8,6 +8,15 @@
 //     QSpinBox defaults to 0..99 if no range is given, which is wrong
 //     for nearly every count/dimension we have.
 //
+//   * No field is both required (is_required) and defaulted
+//     (set_default) — a defaulted field is optional by definition.
+//
+// It also records each field's required / optional / optional-with-
+// default status and checks it for a set of known fields (e.g. the
+// gmsh_geo writer's mesh knobs are optional with a default, the shape
+// inputs' phase_name / metadata are optional), so the field_list
+// optional-field support (#1) is visible in the audited schemas.
+//
 // Floating-point fields are exempt from the second rule: distribution
 // parameters (a/b/mean/value) are user-supplied bounds with no inherent
 // constraint, and QDoubleSpinBox accepts a generous default range from
@@ -26,6 +35,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <random>
 #include <string>
@@ -73,12 +83,23 @@ struct hint_summary {
   bool has_description = false;
   bool has_range = false;
   bool has_units = false;
+  bool is_required = false;
+  bool has_default = false;
 };
+
+// "registry/type/field" -> "required" | "optional" | "default".
+std::map<std::string, std::string> field_status;
 
 template <typename T>
 hint_summary inspect_typed(typed_t<T> const& p) {
+  using K = std::string;
+  using H = rvegen::parameter_handler_t;
   hint_summary s;
   for (auto const& check : p.checks()) {
+    if (dynamic_cast<numsim_core::is_required<T, K, H> const*>(check.get()))
+      s.is_required = true;
+    if (dynamic_cast<numsim_core::set_default<T, K, H> const*>(check.get()))
+      s.has_default = true;
     if (dynamic_cast<numsim_core::description_hint_base const*>(check.get()))
       s.has_description = true;
     if (dynamic_cast<numsim_core::range_hint_base const*>(check.get()))
@@ -103,6 +124,8 @@ std::optional<hint_summary> inspect(base_t const& base) {
     return inspect_typed(*p);
   if (auto const* p = dynamic_cast<typed_t<float> const*>(&base))
     return inspect_typed(*p);
+  if (auto const* p = dynamic_cast<typed_t<bool> const*>(&base))
+    return inspect_typed(*p);
   if (auto const* p = dynamic_cast<typed_t<std::string> const*>(&base))
     return inspect_typed(*p);
   return std::nullopt;
@@ -114,6 +137,13 @@ void audit_schema(Schema const& schema, std::string const& registry_name,
   for (auto const& [field_key, param_ptr] : schema) {
     auto hints = inspect(*param_ptr);
     if (!hints) continue;  // unknown T; skip silently
+    field_status[registry_name + "/" + type_name + "/" + field_key] =
+        hints->is_required ? "required"
+                           : (hints->has_default ? "default" : "optional");
+    if (hints->is_required && hints->has_default) {
+      all_violations.push_back({registry_name, type_name, field_key,
+                                "field is both required and defaulted"});
+    }
     if (!hints->has_description) {
       all_violations.push_back({registry_name, type_name, field_key,
                                 "missing description"});
@@ -166,6 +196,38 @@ int main() {
   audit_shape<rvegen::ellipse<>>(  "ellipse");
   audit_shape<rvegen::sphere<>>(   "sphere");
   audit_shape<rvegen::box<>>(      "box");
+
+  // Required / optional status of known fields.
+  struct expectation {
+    char const* key;
+    char const* status;
+  };
+  constexpr expectation expected[] = {
+      {"post_process/gmsh_geo/output_path", "required"},
+      {"post_process/gmsh_geo/periodic", "default"},
+      {"post_process/gmsh_geo/char_length_min", "default"},
+      {"post_process/gmsh_geo/char_length_max", "default"},
+      {"post_process/gmsh_geo/element_order", "default"},
+      {"post_process/gmsh_geo/algorithm", "default"},
+      {"post_process/gmsh_geo/recombine_quads", "default"},
+      {"post_process/voxel/nx", "required"},
+      {"input/circle_input/radius_dist", "required"},
+      {"input/circle_input/phase_name", "optional"},
+      {"input/circle_input/metadata", "optional"},
+      {"input/mesh_inclusion_input/mesh_path", "optional"},
+      {"input/mesh_inclusion_input/stl_path", "optional"},
+      {"input/polyline_tube_directional_input/length_dist", "required"},
+  };
+  for (auto const& e : expected) {
+    auto it = field_status.find(e.key);
+    if (it == field_status.end()) {
+      all_violations.push_back({"expectation", e.key, "", "field not found"});
+    } else if (it->second != e.status) {
+      all_violations.push_back({"expectation", e.key, "",
+                                "status '" + it->second + "', expected '" +
+                                    e.status + "'"});
+    }
+  }
 
   if (!all_violations.empty()) {
     std::cerr << "schema_audit_test: " << all_violations.size()

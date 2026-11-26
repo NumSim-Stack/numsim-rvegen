@@ -73,48 +73,39 @@ public:
   polyline_tube_directional_input(parameter_handler_t const& handler,
                                   distribution_map_t<value_type> const& d)
       : polyline_tube_directional_input(
-            *d.at(handler.template get<std::string>("position_x_dist")),
-            *d.at(handler.template get<std::string>("position_y_dist")),
-            *d.at(handler.template get<std::string>("position_z_dist")),
-            *d.at(handler.template get<std::string>("direction_x_dist")),
-            *d.at(handler.template get<std::string>("direction_y_dist")),
-            *d.at(handler.template get<std::string>("direction_z_dist")),
-            *d.at(handler.template get<std::string>("length_dist")),
-            *d.at(handler.template get<std::string>("radius_dist"))) {
+            *d.at(fields::template value<"position_x_dist">(handler)),
+            *d.at(fields::template value<"position_y_dist">(handler)),
+            *d.at(fields::template value<"position_z_dist">(handler)),
+            *d.at(fields::template value<"direction_x_dist">(handler)),
+            *d.at(fields::template value<"direction_y_dist">(handler)),
+            *d.at(fields::template value<"direction_z_dist">(handler)),
+            *d.at(fields::template value<"length_dist">(handler)),
+            *d.at(fields::template value<"radius_dist">(handler))) {
     this->read_metadata(handler);
   }
 
+  using fields = field_list<
+      field<"position_x_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube centre x-coordinate">>,
+      field<"position_y_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube centre y-coordinate">>,
+      field<"position_z_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube centre z-coordinate">>,
+      field<"direction_x_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube direction x-component (renormalised inside new_shape)">>,
+      field<"direction_y_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube direction y-component (renormalised inside new_shape)">>,
+      field<"direction_z_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube direction z-component (renormalised inside new_shape)">>,
+      field<"length_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube length">>,
+      field<"radius_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube radius">>,
+      input_phase_name_field,
+      input_metadata_field>;
+
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::string>("position_x_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube centre x-coordinate">>();
-    s.template insert<std::string>("position_y_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube centre y-coordinate">>();
-    s.template insert<std::string>("position_z_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube centre z-coordinate">>();
-    s.template insert<std::string>("direction_x_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube direction x-component (renormalised inside new_shape)">>();
-    s.template insert<std::string>("direction_y_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube direction y-component (renormalised inside new_shape)">>();
-    s.template insert<std::string>("direction_z_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube direction z-component (renormalised inside new_shape)">>();
-    s.template insert<std::string>("length_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube length">>();
-    s.template insert<std::string>("radius_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube radius">>();
-    s.template insert<std::string>("phase_name")
-        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
-    s.template insert<std::string>("metadata")
-        .template add<numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>();
-    return s;
+    return fields::schema();
   }
 
   // Degenerate-direction note: if the direction distributions

@@ -87,30 +87,28 @@ public:
                        distribution_map_t<value_type> const& d)
       : mesh_inclusion_input(
             resolve_mesh_path(handler),
-            *d.at(handler.template get<std::string>("position_x_dist")),
-            *d.at(handler.template get<std::string>("position_y_dist")),
-            *d.at(handler.template get<std::string>("position_z_dist"))) {}
+            *d.at(fields::template value<"position_x_dist">(handler)),
+            *d.at(fields::template value<"position_y_dist">(handler)),
+            *d.at(fields::template value<"position_z_dist">(handler))) {}
+
+  using fields = field_list<
+      // `mesh_path` is the canonical name. `stl_path` is the deprecated
+      // alias kept for back-compat — exactly one of the two must be
+      // present (enforced at ctor time, not by the schema layer, since
+      // a "one of N" group constraint isn't expressible there).
+      field<"mesh_path", std::string, false,
+            numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias)">>,
+      field<"stl_path", std::string, false,
+            numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>,
+      field<"position_x_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre x-coordinate">>,
+      field<"position_y_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre y-coordinate">>,
+      field<"position_z_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre z-coordinate">>>;
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    // `mesh_path` is the canonical name. `stl_path` is the deprecated
-    // alias kept for back-compat — exactly one of the two must be
-    // present (enforced at ctor time, not by the schema layer, since
-    // a "one of N" group constraint isn't expressible there).
-    s.template insert<std::string>("mesh_path")
-        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias)">>();
-    s.template insert<std::string>("stl_path")
-        .template add<numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>();
-    s.template insert<std::string>("position_x_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre x-coordinate">>();
-    s.template insert<std::string>("position_y_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre y-coordinate">>();
-    s.template insert<std::string>("position_z_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre z-coordinate">>();
-    return s;
+    return fields::schema();
   }
 
   // Zero-copy placement: the shared_ptr is captured by `mesh_inclusion`,
@@ -131,20 +129,20 @@ private:
   // the handler; exactly one of the two must be present. Supplying
   // neither or both is rejected with a clear error.
   static std::string resolve_mesh_path(parameter_handler_t const& h) {
-    const bool has_mesh = h.contains("mesh_path");
-    const bool has_stl  = h.contains("stl_path");
-    if (has_mesh && has_stl) {
+    const auto mesh = fields::template value<"mesh_path">(h);
+    const auto stl  = fields::template value<"stl_path">(h);
+    if (mesh && stl) {
       throw std::runtime_error{
           "mesh_inclusion_input: both 'mesh_path' and the deprecated "
           "'stl_path' alias are set in the JSON config — please use "
           "only 'mesh_path'."};
     }
-    if (!has_mesh && !has_stl) {
+    if (!mesh && !stl) {
       throw std::runtime_error{
           "mesh_inclusion_input: 'mesh_path' is required (or the "
           "deprecated 'stl_path' alias for back-compat)."};
     }
-    return h.template get<std::string>(has_mesh ? "mesh_path" : "stl_path");
+    return mesh ? *mesh : *stl;
   }
 
   std::string _mesh_path;

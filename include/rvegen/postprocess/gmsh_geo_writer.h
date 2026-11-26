@@ -14,6 +14,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "post_process_base.h"
+#include "../schema/field_list.h"
 #include "../phase/phase.h"
 #include "../shapes/box.h"
 #include "../shapes/circle.h"
@@ -58,52 +59,41 @@ public:
       : _output_path{std::move(output_path)}, _periodic{periodic} {}
 
   explicit gmsh_geo_writer(parameter_handler_t const& handler)
-      : _output_path{handler.template get<std::string>("output_path")},
-        _periodic{handler.contains("periodic")
-                      ? handler.template get<bool>("periodic")
-                      : false},
-        _char_length_min{handler.contains("char_length_min")
-                             ? handler.template get<value_type>("char_length_min")
-                             : value_type{0}},
-        _char_length_max{handler.contains("char_length_max")
-                             ? handler.template get<value_type>("char_length_max")
-                             : value_type{0}},
-        _element_order{handler.contains("element_order")
-                           ? handler.template get<int>("element_order")
-                           : 0},
-        _algorithm{handler.contains("algorithm")
-                       ? handler.template get<int>("algorithm")
-                       : 0},
-        _recombine_quads{handler.contains("recombine_quads")
-                             ? handler.template get<bool>("recombine_quads")
-                             : false} {}
+      : _output_path{fields::template value<"output_path">(handler)},
+        _periodic{fields::template value<"periodic">(handler)},
+        _char_length_min{fields::template value<"char_length_min">(handler)},
+        _char_length_max{fields::template value<"char_length_max">(handler)},
+        _element_order{fields::template value<"element_order">(handler)},
+        _algorithm{fields::template value<"algorithm">(handler)},
+        _recombine_quads{fields::template value<"recombine_quads">(handler)} {}
+
+  using fields = field_list<
+      field<"output_path", std::string, true,
+            numsim_core::description_label<"destination path for the gmsh .geo script">>,
+      // Optional — default false. Schema does NOT mark it required so existing
+      // configs keep working unchanged.
+      field_with_default<"periodic", bool, false,
+            numsim_core::description_label<"emit Periodic Curve/Surface directives + Coherence; for FE-RVE workflows that need matching nodes on opposite faces (default false)">>,
+      // Optional mesh-size knobs. When > 0, the writer emits
+      // `Mesh.CharacteristicLengthMin/Max = X;` directives so the
+      // generated .geo runs through gmsh with the requested element
+      // size without manual editing. Default 0 keeps the original
+      // commented-placeholder behaviour.
+      field_with_default<"char_length_min", value_type, value_type{0},
+            numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMin = <value> in the .geo header (controls minimum element size). Default 0 = no directive emitted.">>,
+      field_with_default<"char_length_max", value_type, value_type{0},
+            numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMax = <value> in the .geo header (controls maximum element size). Default 0 = no directive emitted.">>,
+      field_with_default<"element_order", int, 0,
+            numsim_core::description_label<"if > 0, emits Mesh.ElementOrder = <value> in the .geo header — 1 for linear elements (gmsh default), 2 for quadratic (better accuracy on elliptic FE problems). Default 0 = no directive emitted.">,
+            numsim_core::range<0, 5>>,
+      field_with_default<"algorithm", int, 0,
+            numsim_core::description_label<"if > 0, emits Mesh.Algorithm = <value> in the .geo header — gmsh 2D meshing algorithm choice (1=MeshAdapt, 2=Auto, 3=Initial only, 5=Delaunay, 6=Frontal-Delaunay, 7=BAMG, 8=Frontal-Delaunay for quads, 9=Packing of parallelograms). Default 0 = no directive emitted (gmsh defaults to 6/Frontal-Delaunay).">,
+            numsim_core::range<0, 10>>,
+      field_with_default<"recombine_quads", bool, false,
+            numsim_core::description_label<"if true, emits Mesh.RecombineAll = 1 in the header — gmsh recombines the triangular mesh into quadrilateral / hexahedral elements. Useful for FE-RVE workflows that need structured-style elements. Default false.">>>;
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"destination path for the gmsh .geo script">>();
-    // Optional — default false. Schema does NOT mark it required so existing
-    // configs keep working unchanged.
-    s.template insert<bool>("periodic")
-        .template add<numsim_core::description_label<"emit Periodic Curve/Surface directives + Coherence; for FE-RVE workflows that need matching nodes on opposite faces (default false)">>();
-    // Optional mesh-size knobs. When > 0, the writer emits
-    // `Mesh.CharacteristicLengthMin/Max = X;` directives so the
-    // generated .geo runs through gmsh with the requested element
-    // size without manual editing. Default 0 keeps the original
-    // commented-placeholder behaviour.
-    s.template insert<value_type>("char_length_min")
-        .template add<numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMin = <value> in the .geo header (controls minimum element size). Default 0 = no directive emitted.">>();
-    s.template insert<value_type>("char_length_max")
-        .template add<numsim_core::description_label<"if > 0, emits Mesh.CharacteristicLengthMax = <value> in the .geo header (controls maximum element size). Default 0 = no directive emitted.">>();
-    s.template insert<int>("element_order")
-        .template add<numsim_core::description_label<"if > 0, emits Mesh.ElementOrder = <value> in the .geo header — 1 for linear elements (gmsh default), 2 for quadratic (better accuracy on elliptic FE problems). Default 0 = no directive emitted.">>()
-        .template add<numsim_core::range<0, 5>>();
-    s.template insert<int>("algorithm")
-        .template add<numsim_core::description_label<"if > 0, emits Mesh.Algorithm = <value> in the .geo header — gmsh 2D meshing algorithm choice (1=MeshAdapt, 2=Auto, 3=Initial only, 5=Delaunay, 6=Frontal-Delaunay, 7=BAMG, 8=Frontal-Delaunay for quads, 9=Packing of parallelograms). Default 0 = no directive emitted (gmsh defaults to 6/Frontal-Delaunay).">>()
-        .template add<numsim_core::range<0, 10>>();
-    s.template insert<bool>("recombine_quads")
-        .template add<numsim_core::description_label<"if true, emits Mesh.RecombineAll = 1 in the header — gmsh recombines the triangular mesh into quadrilateral / hexahedral elements. Useful for FE-RVE workflows that need structured-style elements. Default false.">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] bool periodic() const noexcept { return _periodic; }

@@ -24,6 +24,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "post_process_base.h"
+#include "../schema/field_list.h"
 #include "../shapes/box.h"
 #include "../shapes/sphere.h"
 #include "../types.h"
@@ -44,14 +45,14 @@ public:
   // The HTML is responsive to window size, so the only schema parameter
   // is the destination output_path.
   explicit three_js_writer(parameter_handler_t const& handler)
-      : _output_path{handler.template get<std::string>("output_path")} {}
+      : _output_path{fields::template value<"output_path">(handler)} {}
+
+  using fields = field_list<
+      field<"output_path", std::string, true,
+            numsim_core::description_label<"destination path for the self-contained Three.js HTML viewer">>>;
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::string>("output_path")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"destination path for the self-contained Three.js HTML viewer">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] std::string const& output_path() const noexcept {

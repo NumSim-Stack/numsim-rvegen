@@ -9,10 +9,21 @@
 
 #include "../distributions/distribution_base.h"
 #include "../metadata/info.h"
+#include "../schema/field_list.h"
 #include "../shapes/shape_base.h"
 #include "../types.h"
 
 namespace rvegen {
+
+// Schema fields every shape input shares; read by
+// shape_input_base::read_metadata(). Concrete inputs append them to
+// their own `fields` list.
+using input_phase_name_field = field<
+    "phase_name", std::string, false,
+    numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>;
+using input_metadata_field = field<
+    "metadata", std::string, false,
+    numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>;
 
 // Polymorphic input descriptor. One per shape kind (circle_input, sphere_input,
 // rectangle_input, ...). Owns or references the distributions for its

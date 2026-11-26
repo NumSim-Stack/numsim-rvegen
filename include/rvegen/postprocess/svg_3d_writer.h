@@ -26,6 +26,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "post_process_base.h"
+#include "../schema/field_list.h"
 #include "../shapes/box.h"
 #include "../shapes/sphere.h"
 #include "../types.h"
@@ -44,20 +45,19 @@ public:
       : _canvas_width{canvas_width}, _output_path{std::move(output_path)} {}
 
   explicit svg_3d_writer(parameter_handler_t const& handler)
-      : _canvas_width{handler.template get<value_type>("canvas_width")},
-        _output_path{handler.template get<std::string>("output_path")} {}
+      : _canvas_width{fields::template value<"canvas_width">(handler)},
+        _output_path{fields::template value<"output_path">(handler)} {}
+
+  using fields = field_list<
+      field<"canvas_width", value_type, true,
+            min_only<value_type{1}>,
+            numsim_core::unit_label<"px">,
+            numsim_core::description_label<"rendered SVG canvas width in CSS pixels (height derived from view)">>,
+      field<"output_path", std::string, true,
+            numsim_core::description_label<"destination path for the 3D SVG file">>>;
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<value_type>("canvas_width")
-        .template add<numsim_core::is_required>()
-        .template add<min_only<value_type{1}>>()
-        .template add<numsim_core::unit_label<"px">>()
-        .template add<numsim_core::description_label<"rendered SVG canvas width in CSS pixels (height derived from view)">>();
-    s.template insert<std::string>("output_path")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"destination path for the 3D SVG file">>();
-    return s;
+    return fields::schema();
   }
 
   [[nodiscard]] std::string const& output_path() const noexcept {

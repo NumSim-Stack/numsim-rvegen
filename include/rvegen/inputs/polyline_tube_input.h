@@ -61,44 +61,36 @@ public:
   polyline_tube_input(parameter_handler_t const& handler,
                       distribution_map_t<value_type> const& distributions)
       : polyline_tube_input(
-            *distributions.at(handler.template get<std::string>("start_x_dist")),
-            *distributions.at(handler.template get<std::string>("start_y_dist")),
-            *distributions.at(handler.template get<std::string>("start_z_dist")),
-            *distributions.at(handler.template get<std::string>("end_x_dist")),
-            *distributions.at(handler.template get<std::string>("end_y_dist")),
-            *distributions.at(handler.template get<std::string>("end_z_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+            *distributions.at(fields::template value<"start_x_dist">(handler)),
+            *distributions.at(fields::template value<"start_y_dist">(handler)),
+            *distributions.at(fields::template value<"start_z_dist">(handler)),
+            *distributions.at(fields::template value<"end_x_dist">(handler)),
+            *distributions.at(fields::template value<"end_y_dist">(handler)),
+            *distributions.at(fields::template value<"end_z_dist">(handler)),
+            *distributions.at(fields::template value<"radius_dist">(handler))) {
     this->read_metadata(handler);
   }
 
+  using fields = field_list<
+      field<"start_x_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube start x-coordinate">>,
+      field<"start_y_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube start y-coordinate">>,
+      field<"start_z_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube start z-coordinate">>,
+      field<"end_x_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube end x-coordinate">>,
+      field<"end_y_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube end y-coordinate">>,
+      field<"end_z_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube end z-coordinate">>,
+      field<"radius_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the tube radius">>,
+      input_phase_name_field,
+      input_metadata_field>;
+
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::string>("start_x_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube start x-coordinate">>();
-    s.template insert<std::string>("start_y_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube start y-coordinate">>();
-    s.template insert<std::string>("start_z_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube start z-coordinate">>();
-    s.template insert<std::string>("end_x_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube end x-coordinate">>();
-    s.template insert<std::string>("end_y_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube end y-coordinate">>();
-    s.template insert<std::string>("end_z_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube end z-coordinate">>();
-    s.template insert<std::string>("radius_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the tube radius">>();
-    s.template insert<std::string>("phase_name")
-        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
-    s.template insert<std::string>("metadata")
-        .template add<numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>();
-    return s;
+    return fields::schema();
   }
 
   // Draw order: start x, y, z, end x, y, z, radius.

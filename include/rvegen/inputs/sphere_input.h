@@ -32,32 +32,27 @@ public:
   sphere_input(parameter_handler_t const& handler,
                distribution_map_t<value_type> const& distributions)
       : sphere_input(
-            *distributions.at(handler.template get<std::string>("pos_x_dist")),
-            *distributions.at(handler.template get<std::string>("pos_y_dist")),
-            *distributions.at(handler.template get<std::string>("pos_z_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+            *distributions.at(fields::template value<"pos_x_dist">(handler)),
+            *distributions.at(fields::template value<"pos_y_dist">(handler)),
+            *distributions.at(fields::template value<"pos_z_dist">(handler)),
+            *distributions.at(fields::template value<"radius_dist">(handler))) {
     this->read_metadata(handler);
   }
 
+  using fields = field_list<
+      field<"pos_x_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the sphere x-position">>,
+      field<"pos_y_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the sphere y-position">>,
+      field<"pos_z_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the sphere z-position">>,
+      field<"radius_dist", std::string, true,
+            numsim_core::description_label<"name of a distribution sampled for the sphere radius">>,
+      input_phase_name_field,
+      input_metadata_field>;
+
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::string>("pos_x_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere x-position">>();
-    s.template insert<std::string>("pos_y_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere y-position">>();
-    s.template insert<std::string>("pos_z_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere z-position">>();
-    s.template insert<std::string>("radius_dist")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"name of a distribution sampled for the sphere radius">>();
-    s.template insert<std::string>("phase_name")
-        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
-    s.template insert<std::string>("metadata")
-        .template add<numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>();
-    return s;
+    return fields::schema();
   }
 
   // Draw order: x, y, z, radius.

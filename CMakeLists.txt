@@ -197,6 +197,13 @@ target_link_libraries(rvegen_input_validation_test PRIVATE
 )
 add_test(NAME input_validation_test COMMAND rvegen_input_validation_test)
 
+add_executable(rvegen_field_list_defaults_test tests/field_list_defaults_test.cpp)
+target_link_libraries(rvegen_field_list_defaults_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME field_list_defaults_test COMMAND rvegen_field_list_defaults_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console

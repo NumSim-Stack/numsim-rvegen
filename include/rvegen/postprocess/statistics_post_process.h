@@ -23,6 +23,7 @@
 #include "../statistics/microstructure_stats.h"
 #include "../types.h"
 #include "post_process_base.h"
+#include "../schema/field_list.h"
 
 namespace rvegen {
 
@@ -35,31 +36,28 @@ public:
   statistics_post_process() = default;
 
   explicit statistics_post_process(parameter_handler_t const& handler)
-      : _output_path{handler.template get<std::string>("output_path")},
-        _nx{handler.template get<std::size_t>("nx")},
-        _ny{handler.template get<std::size_t>("ny")},
-        _nbins{handler.template get<std::size_t>("nbins")} {}
+      : _output_path{fields::template value<"output_path">(handler)},
+        _nx{fields::template value<"nx">(handler)},
+        _ny{fields::template value<"ny">(handler)},
+        _nbins{fields::template value<"nbins">(handler)} {}
+
+  using fields = field_list<
+      field<"output_path", std::string, true,
+            numsim_core::description_label<"destination CSV path">>,
+      field<"nx", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::unit_label<"cells">,
+            numsim_core::description_label<"voxel-grid resolution along x for S2 sampling">>,
+      field<"ny", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::unit_label<"cells">,
+            numsim_core::description_label<"voxel-grid resolution along y for S2 sampling">>,
+      field<"nbins", std::size_t, true,
+            min_only<std::size_t{1}>,
+            numsim_core::description_label<"number of radial bins for S2(r) and g(r)">>>;
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    parameter_controller_t s;
-    s.template insert<std::string>("output_path")
-        .template add<numsim_core::is_required>()
-        .template add<numsim_core::description_label<"destination CSV path">>();
-    s.template insert<std::size_t>("nx")
-        .template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::unit_label<"cells">>()
-        .template add<numsim_core::description_label<"voxel-grid resolution along x for S2 sampling">>();
-    s.template insert<std::size_t>("ny")
-        .template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::unit_label<"cells">>()
-        .template add<numsim_core::description_label<"voxel-grid resolution along y for S2 sampling">>();
-    s.template insert<std::size_t>("nbins")
-        .template add<numsim_core::is_required>()
-        .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::description_label<"number of radial bins for S2(r) and g(r)">>();
-    return s;
+    return fields::schema();
   }
 
   void run(shape_vector const& shapes,

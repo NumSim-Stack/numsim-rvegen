@@ -38,20 +38,37 @@
 // parameter (the canonical way to opt in to required-ness in rvegen);
 // the annotation pack carries everything else.
 //
-// Out of scope here, ships in follow-up PRs against #1:
-//   * Migration of registered types one-by-one — circle, sphere,
-//     rectangle, etc. Each migration is a self-contained PR that
-//     verifies its `schema()` output matches the pre-migration schema.
-//   * Default values for `Required = false` fields. Today an optional
-//     field still throws on missing key in `extract`; a separate
-//     `field_with_default<...>` or `default_value<...>` annotation
-//     will land in a follow-up.
+// Phase 3: optional fields.
+//   * `field<Name, T, false, ...>` — optional, no default. Emitted
+//     without `is_required`; `extract()` yields `std::optional<T>`
+//     (empty when the key is absent).
+//   * `field_with_default<Name, T, Default, ...>` — optional with a
+//     compile-time default. Emitted without `is_required` and with
+//     numsim-core's `set_default` check (added before the annotations,
+//     so range checks also see the default), which makes
+//     `input_parameter_controller::accept()` insert the default into
+//     the handler when the key is missing. `extract()` also falls back
+//     to the default, so a hand-built handler that never went through
+//     `accept()` behaves the same. `Default` is an NTTP: an arithmetic
+//     or bool value convertible to T, or a string literal (via
+//     numsim_core::fixed_string) for std::string fields.
+//     Limitation: numsim-core has no hint side-base for defaults
+//     (`set_default` keeps its value private), so a GUI walking the
+//     schema can tell that a default exists (dynamic_cast to
+//     `set_default<T, K, H>`) but cannot read its value. Put the
+//     default in the field's description_label until numsim-core grows
+//     a `default_hint_base`.
+//   * `field_list::value<"name">(handler)` — extracts one field by
+//     name (same semantics as `extract()`), so ctors that initialise
+//     members one at a time don't index the tuple by position.
 
 #include <array>
 #include <cstddef>
 #include <string>
+#include <optional>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 
 #include <numsim-core/input_parameter_controller.h>
 
@@ -69,9 +86,8 @@ namespace rvegen {
 // Default `Required = true` mirrors the rvegen convention that nearly
 // every schema field is required (matches the explicit `is_required`
 // add()s in every existing `parameters()` declaration). Pass
-// `Required=false` for the rare optional field — note that today
-// `extract()` will still throw on a missing key, so optional fields
-// need defaults to be useful (follow-up work against #1).
+// `Required=false` for an optional field without a default (extracted
+// as std::optional<T>), or use `field_with_default` below.
 //
 // Annotation types must be valid arguments to `slot.add<A>()` — they
 // are folded into the slot at schema-build time. Example:
@@ -88,7 +104,34 @@ struct field {
   static constexpr auto name = Name;
   using value_type = T;
   static constexpr bool required = Required;
+  static constexpr bool has_default = false;
   using annotations = std::tuple<Annotations...>;
+};
+
+// Optional field with a compile-time default; see the header comment.
+//
+//   field_with_default<"periodic", bool, false,
+//                      numsim_core::description_label<"... (default false)">>
+//   field_with_default<"label", std::string, numsim_core::fixed_string{"abc"},
+//                      numsim_core::description_label<"...">>
+template <numsim_core::fixed_string Name, typename T, auto Default,
+          typename... Annotations>
+struct field_with_default {
+  static constexpr auto name = Name;
+  using value_type = T;
+  static constexpr bool required = false;
+  static constexpr bool has_default = true;
+  using annotations = std::tuple<Annotations...>;
+
+  [[nodiscard]] static T default_value() {
+    if constexpr (std::is_same_v<T, std::string>) {
+      return std::string{Default.view()};
+    } else {
+      static_assert(std::is_convertible_v<decltype(Default), T>,
+                    "field_with_default: Default must convert to T");
+      return static_cast<T>(Default);
+    }
+  }
 };
 
 namespace detail {
@@ -130,23 +173,62 @@ struct field_list {
     return s;
   }
 
-  // Returns a `std::tuple<typename Fields::value_type...>` populated
-  // by name-keyed lookups against the supplied handler. The intent is
-  // for ctors to forward this through `std::make_from_tuple` once
-  // richer field annotations are wired in (follow-up).
+  // Returns a tuple with one element per field, in declaration order,
+  // populated by name-keyed lookups against the supplied handler:
+  //   * required field            -> T (throws if the key is missing)
+  //   * field<..., false>         -> std::optional<T>
+  //   * field_with_default<...>   -> T (the default if the key is missing)
   [[nodiscard]] static auto extract(parameter_handler_t const& handler) {
-    return std::make_tuple(
-        handler.template get<typename Fields::value_type>(
-            std::string{Fields::name.view()})...);
+    return std::make_tuple(extract_one<Fields>(handler)...);
+  }
+
+  // Index of the field called `Name` (compile error if there is none).
+  template <numsim_core::fixed_string Name>
+  [[nodiscard]] static consteval std::size_t index_of() {
+    constexpr std::array<std::string_view, sizeof...(Fields)> names{
+        Fields::name.view()...};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      if (names[i] == Name.view()) return i;
+    }
+    throw "field_list::index_of: no field with this name";
+  }
+
+  // Extracts the single field called `Name`, with the same semantics as
+  // the corresponding element of `extract()`. Lets ctors that
+  // initialise members one by one read by name:
+  //   _nx{fields::template value<"nx">(handler)}
+  template <numsim_core::fixed_string Name>
+  [[nodiscard]] static auto value(parameter_handler_t const& handler) {
+    using F = std::tuple_element_t<index_of<Name>(), std::tuple<Fields...>>;
+    return extract_one<F>(handler);
   }
 
 private:
+  template <typename F>
+  [[nodiscard]] static auto extract_one(parameter_handler_t const& handler) {
+    using T = typename F::value_type;
+    const std::string key{F::name.view()};
+    if constexpr (F::has_default) {
+      return handler.contains(key) ? T{handler.template get<T>(key)}
+                                   : F::default_value();
+    } else if constexpr (!F::required) {
+      return handler.contains(key)
+                 ? std::optional<T>{handler.template get<T>(key)}
+                 : std::optional<T>{};
+    } else {
+      return T{handler.template get<T>(key)};
+    }
+  }
+
   template <typename F>
   static void insert_one(parameter_controller_t& s) {
     auto& slot = s.template insert<typename F::value_type>(
         std::string{F::name.view()});
     if constexpr (F::required) {
       slot.template add<numsim_core::is_required>();
+    }
+    if constexpr (F::has_default) {
+      slot.template add<numsim_core::set_default>(F::default_value());
     }
     apply_annotations<F>(slot, typename F::annotations{});
   }
