@@ -77,6 +77,41 @@ if(NOT nlohmann_json_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
+# Optional mean-field homogenization (include/rvegen/homogenization/).
+#
+# Pulls numsim-materials (mean-field kernels, Eshelby tensors) and tmech.
+# Default OFF so the header-only core stays free of both. numsim-materials is
+# taken from an installed package, else from RVEGEN_NUMSIM_MATERIALS_DIR
+# (a checkout that contains include/numsim-materials/mean_field/). Its
+# siblings numsim-core / tmech / numsim-cmake are looked up next to that
+# checkout (NUMSIM_DEVEL_DIR), the NumSim-Stack development layout.
+# ---------------------------------------------------------------------------
+option(RVEGEN_WITH_HOMOGENIZATION "Build the mean-field homogenization module (needs numsim-materials + tmech)" OFF)
+set(RVEGEN_NUMSIM_MATERIALS_DIR "" CACHE PATH
+    "numsim-materials checkout providing mean_field/ (used if no installed package is found)")
+if(RVEGEN_WITH_HOMOGENIZATION)
+  find_package(numsim-materials CONFIG QUIET)
+  if(NOT TARGET numsim-materials::numsim-materials)
+    if(NOT RVEGEN_NUMSIM_MATERIALS_DIR OR
+       NOT EXISTS "${RVEGEN_NUMSIM_MATERIALS_DIR}/include/numsim-materials/mean_field/kernel_registry.h")
+      message(FATAL_ERROR
+        "RVEGEN_WITH_HOMOGENIZATION=ON needs numsim-materials with mean_field/ support: "
+        "install it, or set -DRVEGEN_NUMSIM_MATERIALS_DIR=<checkout>.")
+    endif()
+    get_filename_component(_rvegen_devel "${RVEGEN_NUMSIM_MATERIALS_DIR}" DIRECTORY)
+    set(NUMSIM_DEVEL_DIR "${_rvegen_devel}" CACHE PATH "" FORCE)
+    if(NOT DEFINED FETCHCONTENT_SOURCE_DIR_NUMSIM-CMAKE AND
+       EXISTS "${_rvegen_devel}/numsim-cmake/cmake/NumSimDependency.cmake")
+      set(FETCHCONTENT_SOURCE_DIR_NUMSIM-CMAKE "${_rvegen_devel}/numsim-cmake")
+    endif()
+    set(NUMSIM_MATERIALS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NUMSIM_MATERIALS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(NUMSIM_MATERIALS_INSTALL OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${RVEGEN_NUMSIM_MATERIALS_DIR}" numsim-materials EXCLUDE_FROM_ALL)
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # rvegen library (header-only).
 #
 # In-tree consumers (apps/, tests/, examples/) get the BUILD_INTERFACE
@@ -189,6 +224,15 @@ add_test(NAME schema_audit_test COMMAND rvegen_schema_audit_test)
 add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
 add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
+
+if(RVEGEN_WITH_HOMOGENIZATION)
+  add_executable(rvegen_homogenization_test tests/homogenization_test.cpp)
+  target_link_libraries(rvegen_homogenization_test PRIVATE
+      rvegen_lib
+      numsim-materials::numsim-materials
+  )
+  add_test(NAME homogenization_test COMMAND rvegen_homogenization_test)
+endif()
 
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
