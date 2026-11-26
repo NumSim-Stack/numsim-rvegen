@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -175,6 +176,27 @@ int run(int argc, char** argv) {
   std::cout << "rvegen: generated " << shapes.size() << " shape"
             << (shapes.size() == 1 ? "" : "s") << '\n';
 
+  // ---- 7b. Phases: material blobs + shape -> phase assignment -----------
+  // "phases" is an array of {name, material}; "phase_assignment" stamps
+  // phase names onto shapes the inputs left untagged. The collection is
+  // handed to every post-process through post_process_base::set_phases.
+  std::optional<rvegen::phase_collection<double>> phases;
+  if (config.contains("phases")) {
+    phases.emplace(rvegen::load_phases_from_json<double>(config.at("phases")));
+  }
+  if (config.contains("phase_assignment")) {
+    if (!phases) {
+      throw std::runtime_error{
+          "\"phase_assignment\" given without a \"phases\" array"};
+    }
+    const auto assigned =
+        rvegen::phase_assignment<double>::from_json(
+            config.at("phase_assignment"), *phases)
+            .apply(shapes);
+    std::cout << "rvegen: phase_assignment tagged " << assigned << " shape"
+              << (assigned == 1 ? "" : "s") << '\n';
+  }
+
   // ---- 8. Post-processing steps (each owns its sink) --------------------
   if (!config.contains("postprocess")) {
     std::cerr << "rvegen: warning — no \"postprocess\" entries in config; "
@@ -183,6 +205,7 @@ int run(int argc, char** argv) {
     for (auto const& spec : config.at("postprocess")) {
       auto pp = rvegen::build_from_json(
           rvegen::post_process_registry_t<>::instance(), spec);
+      if (phases) pp->set_phases(&*phases);
       pp->run(shapes, domain_box);
       std::cout << "rvegen: post-process '"
                 << spec.at("type").get<std::string>() << "' done\n";

@@ -1,0 +1,44 @@
+{
+  "_comment": "Phases + phase_assignment + DAMASK material.yaml. Circles become 'fibre' (by_shape_type), rectangles 'filler' (by_shape_type); material blobs are opaque to rvegen, the damask writer converts K/G to Hooke constants. Cells no shape covers stay id 0 (matrix gap, no material entry).",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 42,
+
+  "distributions": {
+    "uniform_x": { "type": "uniform_real", "a": 0.08, "b": 0.92 },
+    "uniform_y": { "type": "uniform_real", "a": 0.08, "b": 0.92 },
+    "circle_r":  { "type": "uniform_real", "a": 0.04, "b": 0.06 },
+    "rect_w":    { "type": "uniform_real", "a": 0.06, "b": 0.10 },
+    "rect_h":    { "type": "uniform_real", "a": 0.04, "b": 0.07 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",
+      "pos_x_dist": "uniform_x", "pos_y_dist": "uniform_y",
+      "radius_dist": "circle_r" },
+    { "type": "rectangle_input",
+      "pos_x_dist": "uniform_x", "pos_y_dist": "uniform_y",
+      "width_dist": "rect_w", "height_dist": "rect_h" }
+  ],
+
+  "phases": [
+    { "name": "fibre",
+      "material": { "type": "linear_elasticity", "E": 240.0e9, "nu": 0.25 } },
+    { "name": "filler",
+      "material": { "type": "linear_elasticity", "K": 8.0e9, "G": 3.0e9 } }
+  ],
+
+  "phase_assignment": {
+    "by_shape_type": { "circle": "fibre", "rectangle": "filler" }
+  },
+
+  "generator":   { "type": "only_inside", "max_attempts": 500000 },
+  "termination": { "type": "number_of_inclusions", "target": 12 },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 64, "ny": 64, "nz": 1,
+      "output_path": "phases_damask.vox" },
+    { "type": "damask_material_config",
+      "output_path": "phases_damask_material.yaml" }
+  ]
+}

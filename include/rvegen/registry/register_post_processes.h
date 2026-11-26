@@ -2,6 +2,7 @@
 
 #include <numsim-core/object_registry.h>
 
+#include "../postprocess/damask_material_config.h"
 #include "../postprocess/gmsh_geo_writer.h"
 #include "../postprocess/post_process_base.h"
 #include "../postprocess/statistics_post_process.h"
@@ -68,6 +69,13 @@ inline void register_statistics_post_process() {
 }
 
 template <typename T = double>
+inline void register_damask_material_config() {
+  post_process_registry_t<T>::instance()
+      .template register_type<damask_material_config<T>>(
+          "damask_material_config");
+}
+
+template <typename T = double>
 inline void register_all_post_processes() {
   register_gmsh_geo_writer<T>();
   register_voxel_writer<T>();
@@ -76,6 +84,7 @@ inline void register_all_post_processes() {
   register_three_js_writer<T>();
   register_svg_3d_writer<T>();
   register_statistics_post_process<T>();
+  register_damask_material_config<T>();
 }
 
 } // namespace rvegen

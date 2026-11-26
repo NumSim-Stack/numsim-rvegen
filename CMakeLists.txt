@@ -197,6 +197,13 @@ target_link_libraries(rvegen_deterministic_generators_test PRIVATE
 )
 add_test(NAME deterministic_generators_test COMMAND rvegen_deterministic_generators_test)
 
+add_executable(rvegen_phases_test tests/phases_test.cpp)
+target_link_libraries(rvegen_phases_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME phases_test COMMAND rvegen_phases_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console
@@ -350,6 +357,16 @@ foreach(_ex IN ITEMS voronoi_2d voronoi_3d plain_weave tow_weave bingham_fibres)
       PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes.*post-process '[a-z_]+' done"
   )
 endforeach()
+
+# JSON "phases" + "phase_assignment" + damask_material_config (#7).
+add_test(
+    NAME cli_phases_damask_example
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/phases_damask.json
+)
+set_tests_properties(cli_phases_damask_example PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "phase_assignment tagged 12 shapes.*post-process 'damask_material_config' done"
+)
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
