@@ -1,0 +1,23 @@
+{
+  "_comment": "Polydisperse circles with normally distributed radii (mean 0.05, standard deviation 0.01) packed inside the box, voxelised to a 128x128 grid for FFT solvers.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 11,
+
+  "distributions": {
+    "inner":  { "type": "uniform_real", "a": 0.05, "b": 0.95 },
+    "radius": { "type": "normal", "mean": 0.05, "stddev": 0.01 }
+  },
+
+  "shapes": [
+    { "type": "circle_input", "pos_x_dist": "inner", "pos_y_dist": "inner", "radius_dist": "radius" }
+  ],
+
+  "generator":   { "type": "only_inside",     "max_attempts": 300000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.35 },
+
+  "postprocess": [
+    { "type": "svg", "canvas_width": 800.0, "output_path": "polydisperse_circles.svg" },
+    { "type": "vtk_legacy", "nx": 128, "ny": 128, "nz": 1, "output_path": "polydisperse_circles.vtk" }
+  ]
+}

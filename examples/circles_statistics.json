@@ -1,0 +1,24 @@
+{
+  "_comment": "Dense periodic monodisperse circle pack (40 % area fraction) with the statistics post-process: two-point correlation S2(r), which starts at the area fraction and decays to its square, and the radial distribution g(r) of the centres, which shows the hard-core exclusion and the first-neighbour peak.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 4,
+
+  "distributions": {
+    "any":    { "type": "uniform_real", "a": 0.0, "b": 1.0 },
+    "radius": { "type": "constant", "value": 0.03 }
+  },
+
+  "shapes": [
+    { "type": "circle_input", "pos_x_dist": "any", "pos_y_dist": "any", "radius_dist": "radius" }
+  ],
+
+  "generator":   { "type": "periodic",        "max_attempts": 500000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.40 },
+
+  "postprocess": [
+    { "type": "svg", "canvas_width": 800.0, "output_path": "circles_statistics.svg" },
+    { "type": "statistics", "output_path": "circles_statistics.csv",
+      "nx": 256, "ny": 256, "nbins": 40 }
+  ]
+}

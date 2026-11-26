@@ -235,6 +235,25 @@ install(TARGETS rvegen
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# `cmake --build build --target gallery` renders every config in examples/
+# into docs/gallery/ (PNGs plus a README.md index). Not part of `all`:
+# it needs Python 3 with numpy + matplotlib, and optionally Inkscape,
+# Chrome and gmsh for the SVG, three.js and .geo outputs.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_target(gallery
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py
+                --rvegen $<TARGET_FILE:rvegen>
+                --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples
+        DEPENDS rvegen
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Rendering the example gallery into docs/gallery"
+        USES_TERMINAL
+        VERBATIM)
+endif()
+
 # ---------------------------------------------------------------------------
 # Install / export so downstream `find_package(rvegen)` works.
 #

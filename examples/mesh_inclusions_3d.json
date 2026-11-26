@@ -1,0 +1,22 @@
+{
+  "_comment": "Arbitrary inclusion geometry from a triangle mesh: copies of an octahedron read from data/octahedron.stl, placed without overlap and voxelised to 64^3.",
+
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 6,
+
+  "distributions": {
+    "inner": { "type": "uniform_real", "a": 0.1, "b": 0.9 }
+  },
+
+  "shapes": [
+    { "type": "mesh_inclusion_input", "mesh_path": "data/octahedron.stl",
+      "position_x_dist": "inner", "position_y_dist": "inner", "position_z_dist": "inner" }
+  ],
+
+  "generator":   { "type": "only_inside",          "max_attempts": 200000 },
+  "termination": { "type": "number_of_inclusions", "target": 40 },
+
+  "postprocess": [
+    { "type": "vtk_legacy", "nx": 64, "ny": 64, "nz": 64, "output_path": "mesh_inclusions_3d.vtk" }
+  ]
+}
