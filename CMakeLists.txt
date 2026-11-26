@@ -197,6 +197,10 @@ target_link_libraries(rvegen_input_validation_test PRIVATE
 )
 add_test(NAME input_validation_test COMMAND rvegen_input_validation_test)
 
+add_executable(rvegen_golden_random_test tests/golden_random_test.cpp)
+target_link_libraries(rvegen_golden_random_test PRIVATE rvegen_lib)
+add_test(NAME golden_random_test COMMAND rvegen_golden_random_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console

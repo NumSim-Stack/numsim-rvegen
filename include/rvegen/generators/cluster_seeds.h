@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include "../distributions/portable_random.h"
+
 namespace rvegen {
 
 template <typename T = double, typename Engine = std::mt19937>
@@ -59,9 +61,11 @@ template <typename T = double, typename Engine = std::mt19937>
         "cluster_seeds_2d: max_attempts_per_seed must be ≥ 1"};
   }
 
-  std::uniform_real_distribution<T> ux{T{0}, Lx};
-  std::uniform_real_distribution<T> uy{T{0}, Ly};
-  std::normal_distribution<T> gauss{T{0}, cluster_spread};
+  // Portable transforms (see portable_random.h): the same engine seed
+  // gives the same seeds on every standard library.
+  portable_uniform_real<T> ux{T{0}, Lx};
+  portable_uniform_real<T> uy{T{0}, Ly};
+  portable_normal<T> gauss{T{0}, cluster_spread};
 
   std::vector<std::array<T, 2>> seeds;
   seeds.reserve(n_clusters * n_per_cluster);

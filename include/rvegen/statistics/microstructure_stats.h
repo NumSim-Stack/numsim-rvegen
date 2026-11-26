@@ -22,6 +22,7 @@
 #include <random>
 #include <vector>
 
+#include "../distributions/portable_random.h"
 #include "../postprocess/voxel_grid.h"
 #include "../shapes/shape_base.h"
 
@@ -95,9 +96,11 @@ two_point_correlation_2d(
   out.reserve(nbins);
 
   std::mt19937_64 engine{seed};
-  std::uniform_int_distribution<std::size_t> ix{0, nx - 1};
-  std::uniform_int_distribution<std::size_t> iy{0, ny - 1};
-  std::uniform_real_distribution<double> theta{0.0, 2.0 * 3.14159265358979323846};
+  // Portable transforms (see portable_random.h) so the sampled pairs do
+  // not depend on the standard library.
+  portable_uniform_int<std::size_t> ix{0, nx - 1};
+  portable_uniform_int<std::size_t> iy{0, ny - 1};
+  portable_uniform_real<double> theta{0.0, 2.0 * 3.14159265358979323846};
 
   for (std::size_t b = 0; b < nbins; ++b) {
     const double r = max_r * (double(b) + 0.5) / double(nbins);
