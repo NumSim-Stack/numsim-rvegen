@@ -27,6 +27,8 @@ namespace rvegen {
 //   1..N    — index (1-based) of the inclusion the voxel falls inside
 //
 // 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz = 1).
+// For a 3D RVE written with nz = 1 the single slice is the mid-plane
+// z = Lz/2 (voxel centres, as along x and y).
 //
 // Output format: ASCII header + flat array, voxels in (k, j, i) order
 // (z-slice fastest-varying-axis is k). The format is intentionally

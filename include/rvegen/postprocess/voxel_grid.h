@@ -27,18 +27,18 @@ sample_voxel_grid_with_ids(
     std::array<T, 3> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz,
     std::vector<phase_id> const& shape_to_id) {
-  const std::size_t nz_eff = (domain_box[2] > T{0}) ? nz : 1;
+  // Key z on "is the domain 3D", not on nz > 1: a 3D domain sampled with
+  // nz = 1 must hit the mid-plane z = Lz/2, not the bottom face z = 0.
+  const bool is_3d = domain_box[2] > T{0};
+  const std::size_t nz_eff = is_3d ? nz : 1;
   std::vector<phase_id> grid(nx * ny * nz_eff, 0);
 
   const auto dx = domain_box[0] / static_cast<T>(nx);
   const auto dy = domain_box[1] / static_cast<T>(ny);
-  const auto dz = (nz_eff > 1) ? domain_box[2] / static_cast<T>(nz_eff)
-                               : T{0};
+  const auto dz = is_3d ? domain_box[2] / static_cast<T>(nz_eff) : T{0};
 
   for (std::size_t k = 0; k < nz_eff; ++k) {
-    const auto z = (nz_eff > 1)
-        ? (static_cast<T>(k) + T{0.5}) * dz
-        : T{0};
+    const auto z = is_3d ? (static_cast<T>(k) + T{0.5}) * dz : T{0};
     for (std::size_t j = 0; j < ny; ++j) {
       const auto y = (static_cast<T>(j) + T{0.5}) * dy;
       for (std::size_t i = 0; i < nx; ++i) {
@@ -64,7 +64,9 @@ sample_voxel_grid_with_ids(
 // or 0 if no shape contains it. First-match wins; later shapes don't
 // overwrite earlier ones.
 //
-// 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz_eff = 1).
+// 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz_eff = 1)
+// at z = 0. 3D RVEs sample voxel centres along z as well, so nz = 1 gives
+// the mid-plane slice z = Lz/2.
 // Returns the flat array in (k, j, i) order — k is the slowest-varying axis.
 template <typename T>
 [[nodiscard]] std::vector<phase_id>

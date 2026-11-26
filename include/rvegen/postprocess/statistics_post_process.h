@@ -9,7 +9,16 @@
 //   { "type": "statistics",
 //     "output_path": "stats.csv",
 //     "nx": 128, "ny": 128,
+//     "nz": 128,            // optional, 3D only; defaults to nx
 //     "nbins": 32 }
+//
+// Dispatches on the domain: a 2D domain (domain_box[2] == 0) uses
+// two_point_correlation_2d / radial_distribution_2d; a 3D domain uses
+// two_point_correlation_3d (S2 over an nx × ny × nz grid) and
+// radial_distribution_3d (spherical shells, density N/V). `nz` is ignored
+// in 2D. The 3D S2 voxelization costs O(nx·ny·nz · shapes) is_inside
+// calls — the default nz = nx turns a 128 × 128 config into 128³ ≈ 2.1 M
+// voxels, so lower nx/ny/nz if that is too slow for the shape count.
 
 #include <array>
 #include <cstddef>
@@ -38,6 +47,9 @@ public:
       : _output_path{handler.template get<std::string>("output_path")},
         _nx{handler.template get<std::size_t>("nx")},
         _ny{handler.template get<std::size_t>("ny")},
+        _nz{handler.contains("nz")
+                ? handler.template get<std::size_t>("nz")
+                : _nx},
         _nbins{handler.template get<std::size_t>("nbins")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
@@ -55,6 +67,11 @@ public:
         .template add<min_only<std::size_t{1}>>()
         .template add<numsim_core::unit_label<"cells">>()
         .template add<numsim_core::description_label<"voxel-grid resolution along y for S2 sampling">>();
+    // Optional — existing 2D configs without `nz` stay valid.
+    s.template insert<std::size_t>("nz")
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::unit_label<"cells">>()
+        .template add<numsim_core::description_label<"voxel-grid resolution along z for 3D S2 sampling (default nx; ignored for 2D RVEs). 3D cost scales with nx*ny*nz">>();
     s.template insert<std::size_t>("nbins")
         .template add<numsim_core::is_required>()
         .template add<min_only<std::size_t{1}>>()
@@ -75,12 +92,17 @@ public:
     }
 
     const double phi = volume_fraction_in_domain(shapes, domain_box);
-    auto s2 = two_point_correlation_2d(shapes, domain_box, _nx, _ny, _nbins);
-    auto rdf = radial_distribution_2d(shapes, domain_box, _nbins);
+    const bool is_3d = domain_box[2] > value_type{0};
+    auto s2 = is_3d
+        ? two_point_correlation_3d(shapes, domain_box, _nx, _ny, _nz, _nbins)
+        : two_point_correlation_2d(shapes, domain_box, _nx, _ny, _nbins);
+    auto rdf = is_3d ? radial_distribution_3d(shapes, domain_box, _nbins)
+                     : radial_distribution_2d(shapes, domain_box, _nbins);
 
     out << "# rvegen microstructure statistics\n"
         << "# domain_box = " << domain_box[0] << ' ' << domain_box[1]
         << ' ' << domain_box[2] << '\n'
+        << "# dimension = " << (is_3d ? "3D" : "2D") << '\n'
         << "# volume_fraction = " << phi << '\n'
         << "# columns: r, S2(r), g(r)\n";
 
@@ -94,6 +116,7 @@ private:
   std::string _output_path;
   std::size_t _nx{128};
   std::size_t _ny{128};
+  std::size_t _nz{128};
   std::size_t _nbins{32};
 };
 
