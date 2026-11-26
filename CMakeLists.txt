@@ -107,7 +107,6 @@ set_target_properties(rvegen_lib PROPERTIES EXPORT_NAME rvegen)
 target_include_directories(rvegen_lib INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/GeometricTools/GTE>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/rvegen/external>
 )
@@ -117,6 +116,31 @@ target_link_libraries(rvegen_lib INTERFACE
     nlohmann_json::nlohmann_json
 )
 target_compile_features(rvegen_lib INTERFACE cxx_std_23)
+
+# numsim-core: prefer its installed CMake package (target
+# numsim-core::numsim-core, shipped since numsim-core ef6d2ac). Point
+# CMAKE_PREFIX_PATH / numsim-core_DIR at the install prefix. If no package
+# is found, fall back to a sibling checkout (../../numsim-core/include) so
+# the historical layout keeps working.
+find_package(numsim-core CONFIG QUIET)
+set(RVEGEN_NUMSIM_CORE_FROM_PACKAGE OFF)
+if(numsim-core_FOUND)
+  message(STATUS "numsim-core: using CMake package (${numsim-core_DIR})")
+  target_link_libraries(rvegen_lib INTERFACE numsim-core::numsim-core)
+  set(RVEGEN_NUMSIM_CORE_FROM_PACKAGE ON)
+else()
+  set(_rvegen_core_sibling "${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include")
+  if(EXISTS "${_rvegen_core_sibling}/numsim-core")
+    message(STATUS "numsim-core: package not found, using sibling ${_rvegen_core_sibling}")
+  else()
+    message(WARNING
+      "numsim-core not found: no CMake package and no sibling checkout. "
+      "Install numsim-core and set CMAKE_PREFIX_PATH, or add its include "
+      "directory via CMAKE_CXX_FLAGS=-I<path>.")
+  endif()
+  target_include_directories(rvegen_lib INTERFACE
+      $<BUILD_INTERFACE:${_rvegen_core_sibling}>)
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests. Gated on BUILD_TESTING (CTest convention) so consumers that pull
@@ -365,6 +389,58 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# Output-checking CLI tests (#85): one test per config in examples/. Exit
+# status and stdout are not enough, so tests/cli_example_check.py runs the
+# CLI and then inspects every file the config's postprocess entries wrote
+# (voxel/VTK header vs value count, SVG as XML, statistics CSV, .geo through
+# gmsh when found). Needs Python 3.
+if(Python3_Interpreter_FOUND)
+  file(GLOB _rvegen_example_configs CONFIGURE_DEPENDS
+       ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.json)
+  foreach(_cfg IN LISTS _rvegen_example_configs)
+    get_filename_component(_name ${_cfg} NAME_WE)
+    add_test(NAME cli_check_${_name}
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples
+              --gmsh "${RVEGEN_GMSH_EXECUTABLE}"
+              ${_cfg})
+    set_tests_properties(cli_check_${_name} PROPERTIES
+      TIMEOUT 900 LABELS "cli"
+      PASS_REGULAR_EXPRESSION "PASS")
+  endforeach()
+
+  # The README type catalogue is generated from `rvegen --list-types`.
+  add_test(NAME readme_type_catalogue
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/readme_types_check.py
+            --rvegen $<TARGET_FILE:rvegen>
+            --readme ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
+
+  # Gallery smoke: render every example into a scratch directory. Needs
+  # numpy + matplotlib; Inkscape / Chrome / gmsh are optional and skipped
+  # by the script when absent (--browser none: no Chrome in the test).
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import numpy, matplotlib"
+    RESULT_VARIABLE _rvegen_py_plot_rc
+    OUTPUT_QUIET ERROR_QUIET)
+  if(_rvegen_py_plot_rc EQUAL 0)
+    add_test(NAME gallery_smoke
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --out ${CMAKE_CURRENT_BINARY_DIR}/gallery_smoke
+              --no-index --browser none
+              ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    set_tests_properties(gallery_smoke PROPERTIES TIMEOUT 1800 LABELS "cli")
+  else()
+    message(STATUS "numpy/matplotlib not found - skipping gallery_smoke")
+  endif()
+else()
+  message(STATUS "Python 3 not found - skipping CLI output checks")
+endif()
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
