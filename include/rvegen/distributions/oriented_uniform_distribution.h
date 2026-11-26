@@ -81,6 +81,13 @@ public:
       // Uniform on [-π, π].
       return _mean + (_uniform(_engine.get()) - value_type{0.5}) * two_pi;
     }
+    if (_kappa > value_type{1e12}) {
+      // Point mass at the mean. Above ~1e15 the rejection test's
+      // c = κ·(r − f) loses all precision to cancellation and nothing is
+      // ever accepted; up to 1e12 the sampler is still exact (κ·Var(θ) =
+      // 1.002 over 20k draws, same as at κ = 1e4), and there the spread 1/√κ ≤ 1e-6 rad is below any useful resolution.
+      return _mean;
+    }
 
     // a = 1 + √(1 + 4κ²); hypot avoids overflowing κ² for huge κ.
     const value_type a = value_type{1}
@@ -94,7 +101,7 @@ public:
     const value_type r = (value_type{1} + b * b) / (value_type{2} * b);
 
     // Best-Fisher accepts ≥ ~66 % of candidates for every κ, so hitting
-    // this cap means the arithmetic went non-finite, not bad luck.
+    // this cap means a numerical breakdown, not bad luck.
     constexpr std::size_t max_iterations = 10000;
     for (std::size_t it = 0; it < max_iterations; ++it) {
       const value_type u1 = _uniform(_engine.get());
@@ -112,8 +119,9 @@ public:
       }
     }
     throw std::runtime_error{
-        "oriented_uniform_distribution: rejection sampler did not accept "
-        "a candidate (non-finite intermediate for this kappa?)"};
+        "oriented_uniform_distribution: rejection sampler accepted no "
+        "candidate in 10000 tries (numerical breakdown; please report "
+        "the kappa used)"};
   }
 
   [[nodiscard]] value_type mean_angle() const noexcept { return _mean; }

@@ -46,8 +46,10 @@
 //   κ = −5 → 39.6 %, κ = −50 → 12.5 %, κ = −200 → 6.3 %. Prolate
 //   sampling therefore costs ~2κ candidates per draw: fine for κ ≲ 50,
 //   slow beyond a few hundred. A hard iteration cap (100× the
-//   worst-case expected trial count) turns runaway loops into a
-//   std::runtime_error. If callers need large prolate κ, replace with a
+//   worst-case expected trial count, clamped to 1e6 ≈ tens of ms) turns
+//   runaway loops into a std::runtime_error. The clamp binds above
+//   |κ| ≈ 5e3; spurious throws stay negligible up to |κ| ≈ 2e4 and the
+//   sampler reliably throws for prolate κ ≳ 1e7. If callers need large prolate κ, replace with a
 //   tailored envelope (Wood, or the Kent-Ganeiber-Mardia 2018 ACG
 //   proposal) — tracked as part of the Kume-Walker follow-up.
 //
@@ -94,11 +96,12 @@ public:
     // Hard cap on rejection candidates per sample. The acceptance rate is
     // ≥ 1 / (1 + 2|κ|) for every κ (see the header comment), so 100× the
     // worst-case expected trial count makes a spurious throw a < e⁻¹⁰⁰
-    // event while still turning a would-be hang into an exception.
+    // event. The 1e6 clamp bounds a doomed sample() to tens of ms instead
+    // of minutes.
     const T expected = T{1} + T{2} * std::abs(_kappa);
     const T cap = T{100} * expected + T{1000};
-    _max_iterations = cap < T{1e9} ? static_cast<std::size_t>(cap)
-                                   : std::size_t{1000000000};
+    _max_iterations = cap < T{1e6} ? static_cast<std::size_t>(cap)
+                                   : std::size_t{1000000};
   }
 
   // Convenience overload accepting std::array — most callers don't

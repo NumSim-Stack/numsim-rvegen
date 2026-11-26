@@ -7,9 +7,11 @@
 //    the header.
 // 3. bingham_distribution: zero / non-finite mean axis and non-finite κ
 //    throw; samples stay unit length, including for axes whose naive
-//    squared norm would under- or overflow.
+//    squared norm would under- or overflow; a hopeless prolate κ hits
+//    the iteration cap and throws quickly.
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -61,6 +63,30 @@ void test_von_mises_tiny_kappa_returns_finite_angles() {
       REQUIRE(theta >= mean - pi - 1e-12 && theta <= mean + pi + 1e-12);
     }
   }
+}
+
+void test_von_mises_huge_kappa_is_point_mass() {
+  // κ ≥ ~1e16 used to exhaust the rejection cap (cancellation in
+  // c = κ(r − f)); above 1e12 the sampler now returns the mean exactly,
+  // and just below it still samples with Var(θ) ≈ 1/κ.
+  const double mean = 0.7;
+  for (double kappa : {1e13, 1e16, 1e17, 1e300}) {
+    std::mt19937 engine{9};
+    rvegen::oriented_uniform_distribution<double> dist{mean, kappa, engine};
+    for (int i = 0; i < 100; ++i) REQUIRE(dist() == mean);
+  }
+  std::mt19937 engine{9};
+  const double kappa = 1e12;
+  rvegen::oriented_uniform_distribution<double> dist{mean, kappa, engine};
+  double sum_sq = 0.0;
+  const int n = 5000;
+  for (int i = 0; i < n; ++i) {
+    const double d = dist() - mean;
+    REQUIRE(std::isfinite(d));
+    sum_sq += d * d;
+  }
+  const double kvar = kappa * sum_sq / n;
+  REQUIRE(kvar > 0.9 && kvar < 1.1);
 }
 
 void test_von_mises_rejects_bad_kappa() {
@@ -138,14 +164,36 @@ void test_bingham_samples_are_unit_length() {
   }
 }
 
+void test_bingham_iteration_cap_throws_quickly() {
+  // Prolate κ = 1e9 needs ~2e9 candidates per draw; the 1e6 cap must
+  // turn that into a runtime_error within tens of ms, not minutes.
+  std::mt19937 engine{5};
+  rvegen::bingham_distribution<double> dist{std::array<double, 3>{0, 0, 1},
+                                            1e9, engine};
+  const auto t0 = std::chrono::steady_clock::now();
+  bool threw = false;
+  try {
+    (void)dist.sample();
+  } catch (std::runtime_error const&) {
+    threw = true;
+  }
+  const double secs = std::chrono::duration<double>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+  REQUIRE(threw);
+  REQUIRE(secs < 0.5);
+}
+
 } // namespace
 
 int main() {
   test_von_mises_tiny_kappa_returns_finite_angles();
+  test_von_mises_huge_kappa_is_point_mass();
   test_von_mises_rejects_bad_kappa();
   test_von_mises_order_parameter_matches_i2_over_i0();
   test_bingham_rejects_bad_axis_and_kappa();
   test_bingham_samples_are_unit_length();
+  test_bingham_iteration_cap_throws_quickly();
 
   if (failures > 0) {
     std::cerr << failures << " orientation sampler test failure(s)\n";
