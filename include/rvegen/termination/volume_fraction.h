@@ -19,8 +19,11 @@ namespace rvegen {
 // near box faces — the wraps share the primary's geometry but live with
 // their centres outside the domain. Counting wraps would double-count
 // the same physical inclusion, so we filter by centre-in-domain.
-// For non-periodic generators (only_inside, random) every accepted shape
-// has its centre in the domain, so the filter is a no-op.
+// only_inside_generator only accepts shapes inside the box, so the filter
+// is a no-op there. random_generator accepts shapes anywhere and has no
+// wraps, so it calls is_met(accepted, /*count_all=*/true): every accepted
+// shape contributes its full area / volume, including shapes whose centre
+// (or part of whose body) lies outside the box.
 //
 // Dimension is auto-detected: shape_base::area() is zero for 3D shapes,
 // shape_base::volume() is zero for 2D shapes — sum whichever is non-zero
@@ -58,12 +61,17 @@ public:
   }
 
   [[nodiscard]] bool operator()(shape_vector const& accepted) const override {
+    return is_met(accepted, false);
+  }
+
+  [[nodiscard]] bool is_met(shape_vector const& accepted,
+                            bool count_all) const override {
     value_type sum{};
     bool const have_box =
         _domain_box[0] > value_type{0} && _domain_box[1] > value_type{0};
     for (auto const& shape : accepted) {
       // Filter wrap copies: only count shapes whose centre is in domain.
-      if (have_box && !is_centre_in_domain(shape->get_middle_point(),
+      if (!count_all && have_box && !is_centre_in_domain(shape->get_middle_point(),
                                             _domain_box))
         continue;
       const auto v = shape->volume();

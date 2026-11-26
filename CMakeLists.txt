@@ -194,6 +194,13 @@ add_executable(rvegen_collision_pairs_test tests/collision_pairs_test.cpp)
 target_link_libraries(rvegen_collision_pairs_test PRIVATE rvegen_lib)
 add_test(NAME collision_pairs_test COMMAND rvegen_collision_pairs_test)
 
+add_executable(rvegen_placement_test tests/placement_test.cpp)
+target_link_libraries(rvegen_placement_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME placement_test COMMAND rvegen_placement_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console
