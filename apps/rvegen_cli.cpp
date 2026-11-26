@@ -1,7 +1,8 @@
 // rvegen — JSON-driven RVE (Representative Volume Element) generator.
 //
 // Usage:
-//   rvegen <config.json>
+//   rvegen <config.json> [--progress]
+//   rvegen --list-types
 //
 // The config file specifies (by registered name) which distributions, shape
 // inputs, generator strategy, termination predicate, and one or more
@@ -10,6 +11,7 @@
 // schema, so a single run can fan out to any combination of formats —
 // .geo for FEM, .vtk / .vox for FFT, .svg / .html for visualization.
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <exception>
@@ -31,13 +33,55 @@ constexpr int exit_config = 78;  // EX_CONFIG
 
 void print_usage(char const* argv0) {
   std::cerr
-      << "usage: " << argv0 << " <config.json> [--progress]\n\n"
+      << "usage: " << argv0 << " <config.json> [--progress]\n"
+      << "       " << argv0 << " --list-types\n\n"
       << "  config.json   JSON file describing the RVE generation pipeline.\n"
       << "                Each entry under \"postprocess\" carries its own\n"
       << "                output_path.\n\n"
       << "  --progress    Emit live progress lines to stderr every 50\n"
       << "                accepted shapes — \"[progress] placed=X / N | φ=…\".\n"
-      << "                Off by default so scripted output stays stable.\n";
+      << "                Off by default so scripted output stays stable.\n\n"
+      << "  --list-types  Print every registered JSON \"type\" per registry as\n"
+      << "                Markdown (README.md embeds this) and exit.\n";
+}
+
+template <typename Registry>
+void print_registry(char const* title, Registry const& reg) {
+  auto names = reg.registered_types();
+  std::sort(names.begin(), names.end());
+  std::cout << "- **" << title << "**:";
+  char const* sep = " ";
+  for (auto const& n : names) {
+    std::cout << sep << '`' << n << '`';
+    sep = ", ";
+  }
+  std::cout << '\n';
+}
+
+void register_everything() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_direction_distributions<>();
+  rvegen::register_all_terminations<>();
+  rvegen::register_all_generators<>();
+  rvegen::register_all_inputs<>();
+  rvegen::register_all_collision_pairs<>();   // precise dispatch in generators
+  rvegen::register_all_post_processes<>();
+}
+
+int list_types() {
+  register_everything();
+  print_registry("distributions (`distributions`)",
+                 rvegen::distribution_registry_t<>::instance());
+  print_registry("direction distributions (library API)",
+                 rvegen::direction_distribution_registry_t<>::instance());
+  print_registry("shapes (`shapes`)", rvegen::input_registry_t<>::instance());
+  print_registry("generators (`generator`)",
+                 rvegen::generator_registry_t<>::instance());
+  print_registry("terminations (`termination`)",
+                 rvegen::termination_registry_t<>::instance());
+  print_registry("post-processes (`postprocess`)",
+                 rvegen::post_process_registry_t<>::instance());
+  return EXIT_SUCCESS;
 }
 
 int run(int argc, char** argv) {
@@ -45,6 +89,8 @@ int run(int argc, char** argv) {
     print_usage(argv[0]);
     return exit_usage;
   }
+
+  if (std::string{argv[1]} == "--list-types") return list_types();
 
   // ---- 1. Load JSON config -----------------------------------------------
   std::ifstream config_file{argv[1]};
@@ -62,12 +108,7 @@ int run(int argc, char** argv) {
   }
 
   // ---- 2. Register every known type in every registry --------------------
-  rvegen::register_all_distributions<>();
-  rvegen::register_all_terminations<>();
-  rvegen::register_all_generators<>();
-  rvegen::register_all_inputs<>();
-  rvegen::register_all_collision_pairs<>();   // precise dispatch in generators
-  rvegen::register_all_post_processes<>();
+  register_everything();
 
   // ---- 3. Domain box + RNG seed (top-level config keys) ------------------
   std::array<double, 3> domain_box{1.0, 1.0, 0.0};
