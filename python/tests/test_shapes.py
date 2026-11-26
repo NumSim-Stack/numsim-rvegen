@@ -207,15 +207,15 @@ def test_voronoi_generator_2d_partition_invariant():
 
 
 def test_weave_generator_builds_expected_tube_count():
-    """4 warp + 3 weft yarns → 7 PolylineTubes in the output list."""
+    """4 warp + 2 weft yarns → 6 PolylineTubes in the output list."""
     gen = rvegen.WeaveGenerator(
         domain_box=(1.0, 1.0, 0.2),
         n_warp_yarns=4,
-        n_weft_yarns=3,
+        n_weft_yarns=2,
         yarn_radius=0.04,
-        amplitude=0.03)
+        amplitude=0.04)
     tubes = gen.build()
-    assert len(tubes) == 7
+    assert len(tubes) == 6
     for t in tubes:
         assert isinstance(t, rvegen.PolylineTube)
         assert t.radius == pytest.approx(0.04)
@@ -226,7 +226,7 @@ def test_weave_generator_phase_tagging_propagates():
     gen = rvegen.WeaveGenerator(
         domain_box=(1.0, 1.0, 0.2),
         n_warp_yarns=2, n_weft_yarns=2,
-        yarn_radius=0.04, amplitude=0.03)
+        yarn_radius=0.04, amplitude=0.04)
     gen.set_warp_phase_name("warp")
     gen.set_weft_phase_name("weft")
     assert gen.warp_phase_name == "warp"
@@ -248,6 +248,18 @@ def test_weave_generator_validates_inputs():
             domain_box=(1.0, 1.0, 0.2),
             n_warp_yarns=2, n_weft_yarns=2,
             yarn_radius=-0.01, amplitude=0.03)
+    with pytest.raises(RuntimeError, match="even"):
+        # Odd counts cannot tile a periodic plain weave.
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.2),
+            n_warp_yarns=3, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.04)
+    with pytest.raises(RuntimeError, match="amplitude must be"):
+        # amplitude < yarn_radius → yarns interpenetrate at crossings.
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.2),
+            n_warp_yarns=2, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.03)
     with pytest.raises(RuntimeError, match="2D domain"):
         # 2D (Lz=0) + non-zero amplitude is geometrically nonsensical.
         rvegen.WeaveGenerator(

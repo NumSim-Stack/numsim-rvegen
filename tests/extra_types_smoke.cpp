@@ -2029,15 +2029,16 @@ void test_direction_distribution_registry_schema_has_descriptions() {
 // ----------------------------------------------------------------------------
 // weave_generator (#109 / #3 headline): deterministic plain weave of
 // polyline_tubes — N warp yarns along +x and N weft yarns along +y with
-// sinusoidal z-undulation 180° out of phase.
+// sinusoidal z-undulation; over/under alternates at every crossing.
+// (Crossing clearance, periodicity and validation: weave_geometry_test.)
 // ----------------------------------------------------------------------------
 void test_weave_generator_tube_count_matches_warp_plus_weft() {
   rvegen::weave_generator<double> gen{
       /*domain=*/{1.0, 1.0, 0.2},
-      /*n_warp=*/4, /*n_weft=*/3,
-      /*yarn_radius=*/0.04, /*amplitude=*/0.03};
+      /*n_warp=*/4, /*n_weft=*/2,
+      /*yarn_radius=*/0.04, /*amplitude=*/0.04};
   auto shapes = gen.build();
-  REQUIRE(shapes.size() == 7);
+  REQUIRE(shapes.size() == 6);
   // Every produced shape is a polyline_tube.
   for (auto const& s : shapes) {
     REQUIRE(dynamic_cast<rvegen::polyline_tube<double>*>(s.get()) != nullptr);
@@ -2085,19 +2086,17 @@ void test_weave_generator_weft_yarns_run_along_y() {
 }
 
 void test_weave_generator_warp_and_weft_interlace_180_out_of_phase() {
-  // At the intersection (x_weft, y_warp), the warp's z and the weft's
-  // z must straddle z_centre symmetrically — that's what makes them
-  // interlock. With amplitude > 0, warp_z - z_centre = -weft_z + z_centre.
+  // At a crossing (x_weft, y_warp) the warp's z and the weft's z must
+  // straddle z_centre symmetrically at ±amplitude — that's what makes
+  // them interlock. 2 warp + 2 weft on the unit square: warp 0 at
+  // y = 0.25, weft 0 at x = 0.25, so (0.25, 0.25) is crossing (0, 0)
+  // and (i+j) = 0 is even → warp over, weft under.
   rvegen::weave_generator<double> gen{
-      {1.0, 1.0, 0.3}, 1, 1, 0.05, 0.05, 32};
+      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.05, 32};
   auto shapes = gen.build();
   auto* warp = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
-  auto* weft = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[1].get());
+  auto* weft = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[2].get());
 
-  // 1 warp + 1 weft → warp at y = 0.5, weft at x = 0.5. Sample at
-  // x = 0.25 (k=8 of 32 segments on Lx=1) — an exact control point.
-  // Warp z at x = 0.25: z_centre + 0.05·sin(2π·0.25/1) = z_centre + 0.05.
-  // Weft z at y = 0.25 (k=8 of 32 segments on Ly=1): z_centre - 0.05.
   const double z_centre = 0.15;
   const auto& wcl = warp->centerline();
   const auto& xcl = weft->centerline();
@@ -2110,7 +2109,7 @@ void test_weave_generator_warp_and_weft_interlace_180_out_of_phase() {
 
 void test_weave_generator_phase_tagging() {
   rvegen::weave_generator<double> gen{
-      {1.0, 1.0, 0.2}, 2, 2, 0.04, 0.03};
+      {1.0, 1.0, 0.2}, 2, 2, 0.04, 0.04};
   gen.set_warp_phase_name("warp");
   gen.set_weft_phase_name("weft");
   auto shapes = gen.build();
@@ -2122,22 +2121,22 @@ void test_weave_generator_phase_tagging() {
 
 void test_weave_generator_validation_throws_on_bad_input() {
   bool threw_zero_warp = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 0, 1, 0.05, 0.03}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 0, 2, 0.05, 0.05}; }
   catch (std::runtime_error const&) { threw_zero_warp = true; }
   REQUIRE(threw_zero_warp);
 
   bool threw_zero_weft = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 1, 0, 0.05, 0.03}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 0, 0.05, 0.05}; }
   catch (std::runtime_error const&) { threw_zero_weft = true; }
   REQUIRE(threw_zero_weft);
 
   bool threw_neg_radius = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, -0.01, 0.03}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, -0.01, 0.05}; }
   catch (std::runtime_error const&) { threw_neg_radius = true; }
   REQUIRE(threw_neg_radius);
 
   bool threw_too_few_segments = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.05, 0.03, 1}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.05, 0.05, 1}; }
   catch (std::runtime_error const&) { threw_too_few_segments = true; }
   REQUIRE(threw_too_few_segments);
 
@@ -2163,7 +2162,7 @@ void test_weave_generator_validation_throws_on_bad_input() {
 void test_tow_weave_generator_expands_each_yarn_to_n_fibres() {
   rvegen::weave_generator<double> base{
       {1.0, 1.0, 0.2}, /*n_warp=*/2, /*n_weft=*/2,
-      /*yarn_radius=*/0.05, /*amplitude=*/0.03};
+      /*yarn_radius=*/0.05, /*amplitude=*/0.05};
   rvegen::tow_weave_generator<double> gen{base, /*n_fibres=*/7,
                                           /*radius_factor=*/0.2};
   auto shapes = gen.build();
@@ -2179,21 +2178,21 @@ void test_tow_weave_generator_expands_each_yarn_to_n_fibres() {
 
 void test_tow_weave_generator_propagates_phase_names() {
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, 1, 1, 0.05, 0.03};
+      {1.0, 1.0, 0.2}, 2, 2, 0.05, 0.05};
   base.set_warp_phase_name("warp_fibre");
   base.set_weft_phase_name("weft_fibre");
   rvegen::tow_weave_generator<double> gen{base, 3, 0.2};
   auto shapes = gen.build();
-  // 1 warp + 1 weft × 3 fibres = 6 tubes; first 3 are warp_fibre.
-  REQUIRE(shapes.size() == 6);
+  // 2 warp + 2 weft × 3 fibres = 12 tubes; first 6 are warp_fibre.
+  REQUIRE(shapes.size() == 12);
   REQUIRE(shapes[0]->phase_name() == "warp_fibre");
-  REQUIRE(shapes[2]->phase_name() == "warp_fibre");
-  REQUIRE(shapes[3]->phase_name() == "weft_fibre");
-  REQUIRE(shapes[5]->phase_name() == "weft_fibre");
+  REQUIRE(shapes[5]->phase_name() == "warp_fibre");
+  REQUIRE(shapes[6]->phase_name() == "weft_fibre");
+  REQUIRE(shapes[11]->phase_name() == "weft_fibre");
 }
 
 void test_tow_weave_generator_validation_throws() {
-  rvegen::weave_generator<double> base{{1,1,0.2}, 2, 2, 0.05, 0.03};
+  rvegen::weave_generator<double> base{{1,1,0.2}, 2, 2, 0.05, 0.05};
 
   bool threw_zero_fibres = false;
   try { rvegen::tow_weave_generator<double>{base, 0, 0.2}; }
@@ -2348,10 +2347,10 @@ void test_tow_weave_generator_n_fibres_1_collapses_to_yarn_centerline() {
   // (offset {0,0}). Just a smaller-radius copy of the yarn. Useful
   // smoke check that the hex_pack_offsets degenerate path works.
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, 1, 1, 0.05, 0.03};
+      {1.0, 1.0, 0.2}, 2, 2, 0.05, 0.05};
   rvegen::tow_weave_generator<double> gen{base, 1, 0.5};
   auto shapes = gen.build();
-  REQUIRE(shapes.size() == 2);   // 1 warp + 1 weft
+  REQUIRE(shapes.size() == 4);   // 2 warp + 2 weft
   // Each fibre has the same centerline as the yarn (offset is 0).
   auto base_shapes = base.build();
   auto* yarn = dynamic_cast<rvegen::polyline_tube<double>*>(base_shapes[0].get());
