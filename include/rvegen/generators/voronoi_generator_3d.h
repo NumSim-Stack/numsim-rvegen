@@ -36,6 +36,22 @@
 //     std::runtime_error. Output types and the validation policy are
 //     identical for both backends.
 //
+// Periodic mode (#8): `periodic = true` tessellates the box as a 3-torus.
+// Each primary cell is the Voronoi cell of its seed against all 3x3x3 image
+// seeds (shifted by -L, 0, +L per axis), with NO box clipping. A cell that
+// crosses a box face is therefore returned as ONE whole convex polytope
+// that sticks out of [0,L]^3 (same convention as periodic inclusions with
+// wraps: the caller sees the cell around its seed, translation images are
+// implicit). Cell volumes sum to the box volume, and neighbouring faces
+// match across opposite boundaries up to a translation by L. The in-house
+// backend prunes the 27N image planes to those that can touch the cell
+// (two passes), but stays O(N^5)-ish: use Voro++ for large periodic N.
+//
+// Weights (#8, Laguerre / power diagram): optional per-seed weights w_i
+// [length^2] replace |x-P_i|^2 by |x-P_i|^2 - w_i, so cell volumes can be
+// tuned (see grain_size_control.h). A weighted cell may be empty (zero
+// volume placeholder) and need not contain its seed.
+//
 // Numerical robustness (scale-invariant, #79):
 //   * Every half-space is normalised to a unit normal, so the 3x3
 //     determinant is dimensionless and the feasibility / merge
@@ -93,9 +109,14 @@ public:
   using shape_vector = std::vector<std::unique_ptr<shape_base<T>>>;
 
   voronoi_generator_3d(T Lx, T Ly, T Lz, std::vector<seed_type> seeds,
-                       voronoi_backend backend = voronoi_backend::in_house)
+                       voronoi_backend backend = voronoi_backend::in_house,
+                       bool periodic = false, std::vector<T> weights = {})
       : _Lx{Lx}, _Ly{Ly}, _Lz{Lz}, _seeds{std::move(seeds)},
-        _backend{backend} {
+        _backend{backend}, _periodic{periodic}, _weights{std::move(weights)} {
+    if (!_weights.empty() && _weights.size() != _seeds.size()) {
+      throw std::runtime_error{
+          "voronoi_generator_3d: weights must be empty or one per seed"};
+    }
     if (backend == voronoi_backend::voro_pp && !voro_pp_available()) {
       throw std::runtime_error{
           "voronoi_generator_3d: Voro++ backend requested but rvegen was "
@@ -110,8 +131,10 @@ public:
           "voronoi_generator_3d: at least one seed required"};
     }
     detail::validate_voronoi_seeds<T, 3>({Lx, Ly, Lz}, _seeds,
-                                         "voronoi_generator_3d");
+                                         "voronoi_generator_3d", periodic);
   }
+
+  [[nodiscard]] bool periodic() const noexcept { return _periodic; }
 
   [[nodiscard]] std::size_t seed_count() const noexcept {
     return _seeds.size();
@@ -121,7 +144,8 @@ public:
   [[nodiscard]] shape_vector build() const {
 #ifdef RVEGEN_WITH_VORO_PP
     if (_backend == voronoi_backend::voro_pp) {
-      return detail::build_voronoi_cells_voro_pp<T>(_Lx, _Ly, _Lz, _seeds);
+      return detail::build_voronoi_cells_voro_pp<T>(_Lx, _Ly, _Lz, _seeds,
+                                                    _periodic, _weights);
     }
 #endif
     shape_vector out;
@@ -137,6 +161,8 @@ private:
   T _Lx, _Ly, _Lz;
   std::vector<seed_type> _seeds;
   voronoi_backend _backend;
+  bool _periodic;
+  std::vector<T> _weights;   // empty = plain Voronoi
 
   // Half-space: A·x + B·y + C·z ≤ D with a UNIT normal (A, B, C), so D is
   // a signed distance and all tolerances are plain lengths.
@@ -161,25 +187,96 @@ private:
     hs.push_back({T{ 0}, T{ 0}, T{ 1}, _Lz });
     // Bisector toward seed j: n · x ≤ n · (P_i + P_j)/2 with
     // n = (P_j − P_i)/|P_j − P_i|.
-    auto const& Pi = _seeds[i];
     for (std::size_t j = 0; j < _seeds.size(); ++j) {
       if (j == i) continue;
-      auto const& Pj = _seeds[j];
-      const T dx = Pj[0] - Pi[0], dy = Pj[1] - Pi[1], dz = Pj[2] - Pi[2];
-      const T len = std::sqrt(dx * dx + dy * dy + dz * dz);
-      const T nx = dx / len, ny = dy / len, nz = dz / len;
-      hs.push_back({nx, ny, nz,
-                    nx * (Pi[0] + Pj[0]) * T{0.5} +
-                    ny * (Pi[1] + Pj[1]) * T{0.5} +
-                    nz * (Pi[2] + Pj[2]) * T{0.5}});
+      hs.push_back(bisector(i, _seeds[j], weight(j)));
     }
     return hs;
+  }
+
+  [[nodiscard]] T weight(std::size_t k) const {
+    return _weights.empty() ? T{0} : _weights[k];
+  }
+
+  // Power-diagram plane between seed i and a (possibly image) seed Pj with
+  // weight wj, oriented so the cell of i is the n·x <= D side:
+  //   n = (Pj-Pi)/|Pj-Pi|,  D = n·(Pi+Pj)/2 - (wj-wi)/(2|Pj-Pi|).
+  [[nodiscard]] half_space bisector(std::size_t i, seed_type const& Pj,
+                                    T wj) const {
+    auto const& Pi = _seeds[i];
+    const T dx = Pj[0] - Pi[0], dy = Pj[1] - Pi[1], dz = Pj[2] - Pi[2];
+    const T len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const T nx = dx / len, ny = dy / len, nz = dz / len;
+    return {nx, ny, nz,
+            nx * (Pi[0] + Pj[0]) * T{0.5} + ny * (Pi[1] + Pj[1]) * T{0.5} +
+                nz * (Pi[2] + Pj[2]) * T{0.5} -
+                (wj - weight(i)) / (T{2} * len)};
+  }
+
+  // Periodic cell of seed i: planes against the 3x3x3 images, pruned in two
+  // passes (see header comment). No box planes: the 6 own-image planes
+  // already confine the cell to [Pi - L/2, Pi + L/2] per axis.
+  [[nodiscard]] std::unique_ptr<shape_base<T>>
+  build_periodic_cell(std::size_t i) const {
+    struct image { half_space h; T dist2; bool own_axis; };
+    std::vector<image> imgs;
+    imgs.reserve(27 * _seeds.size());
+    auto const& Pi = _seeds[i];
+    for (std::size_t j = 0; j < _seeds.size(); ++j) {
+      for (int sx = -1; sx <= 1; ++sx)
+        for (int sy = -1; sy <= 1; ++sy)
+          for (int sz = -1; sz <= 1; ++sz) {
+            const int nz_shift = (sx != 0) + (sy != 0) + (sz != 0);
+            if (j == i && nz_shift == 0) continue;
+            const seed_type Pj{_seeds[j][0] + sx * _Lx, _seeds[j][1] + sy * _Ly,
+                               _seeds[j][2] + sz * _Lz};
+            const T dx = Pj[0] - Pi[0], dy = Pj[1] - Pi[1], dz = Pj[2] - Pi[2];
+            imgs.push_back({bisector(i, Pj, weight(j)),
+                            dx * dx + dy * dy + dz * dz,
+                            j == i && nz_shift == 1});
+          }
+    }
+    // Pass 1: own axis images + the nearest images.
+    constexpr std::size_t nearest = 30;
+    std::vector<std::size_t> idx(imgs.size());
+    std::iota(idx.begin(), idx.end(), std::size_t{0});
+    const std::size_t m = std::min(nearest, idx.size());
+    std::partial_sort(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(m),
+                      idx.end(), [&](std::size_t a, std::size_t b) {
+                        return imgs[a].dist2 < imgs[b].dist2;
+                      });
+    std::vector<half_space> hs;
+    for (std::size_t k = 0; k < idx.size(); ++k) {
+      if (k < m || imgs[idx[k]].own_axis) hs.push_back(imgs[idx[k]].h);
+    }
+    auto first = build_cell_from(hs);
+    auto const* c1 = static_cast<voronoi_cell<T> const*>(first.get());
+    if (c1->vertices().empty()) return first;
+    // Pass 2: every plane that can still touch the cell. All of cell 1 lies
+    // within R of Pi, so planes farther than R from Pi are redundant.
+    T R{0};
+    for (auto const& v : c1->vertices()) {
+      const T dx = v[0] - Pi[0], dy = v[1] - Pi[1], dz = v[2] - Pi[2];
+      R = std::max(R, std::sqrt(dx * dx + dy * dy + dz * dz));
+    }
+    const T slack = R * T{1e-6} + static_cast<T>(detail::voronoi_rel_tol) * scale();
+    hs.clear();
+    for (auto const& im : imgs) {
+      const T dist = im.h.D - (im.h.A * Pi[0] + im.h.B * Pi[1] + im.h.C * Pi[2]);
+      if (dist <= R + slack) hs.push_back(im.h);
+    }
+    return build_cell_from(hs);
   }
 
   // Build cell i: enumerate vertices, group by face, order CCW,
   // wrap in a voronoi_cell.
   [[nodiscard]] std::unique_ptr<shape_base<T>> build_cell(std::size_t i) const {
-    const auto hs = half_spaces_for(i);
+    if (_periodic) return build_periodic_cell(i);
+    return build_cell_from(half_spaces_for(i));
+  }
+
+  [[nodiscard]] std::unique_ptr<shape_base<T>>
+  build_cell_from(std::vector<half_space> const& hs) const {
     const std::size_t H = hs.size();
 
     // For each candidate vertex, remember WHICH half-spaces it

@@ -234,6 +234,10 @@ add_executable(rvegen_voronoi_backend_test tests/voronoi_backend_test.cpp)
 target_link_libraries(rvegen_voronoi_backend_test PRIVATE rvegen_lib)
 add_test(NAME voronoi_backend_test COMMAND rvegen_voronoi_backend_test)
 
+add_executable(rvegen_voronoi_polycrystal_test tests/voronoi_polycrystal_test.cpp)
+target_link_libraries(rvegen_voronoi_polycrystal_test PRIVATE rvegen_lib)
+add_test(NAME voronoi_polycrystal_test COMMAND rvegen_voronoi_polycrystal_test)
+
 add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
 add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)

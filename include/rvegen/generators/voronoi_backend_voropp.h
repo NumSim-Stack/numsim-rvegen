@@ -17,6 +17,13 @@
 // problem is non-dimensionalised first: coordinates are divided by the
 // longest box edge, tessellated in a box of size <= 1, and the cell
 // vertices are scaled back (same scale-invariance as the in-house backend).
+//
+// Periodic mode uses the container's native x/y/z periodicity. Cells are
+// returned around their ORIGINAL seed position (unclipped, may stick out of
+// the box), matching the in-house periodic backend. Weighted (Laguerre)
+// mode uses voro::container_poly with radius r_i = sqrt(w_i - min w), which
+// is the same power diagram (weights are only defined up to a constant).
+// A weighted seed whose cell vanishes yields an empty voronoi_cell.
 
 #ifdef RVEGEN_WITH_VORO_PP
 
@@ -38,7 +45,9 @@ namespace rvegen::detail {
 template <typename T>
 [[nodiscard]] std::vector<std::unique_ptr<shape_base<T>>>
 build_voronoi_cells_voro_pp(T Lx, T Ly, T Lz,
-                            std::vector<std::array<T, 3>> const& seeds) {
+                            std::vector<std::array<T, 3>> const& seeds,
+                            bool periodic = false,
+                            std::vector<T> const& weights = {}) {
   const std::size_t n = seeds.size();
 
   // Block grid: aim for ~6 seeds per block (Voro++'s recommended density),
@@ -50,31 +59,47 @@ build_voronoi_cells_voro_pp(T Lx, T Ly, T Lz,
   auto blocks = [h](double L) {
     return std::clamp(static_cast<int>(L / h), 1, 64);
   };
-  voro::container con(0.0, ux, 0.0, uy, 0.0, uz, blocks(ux), blocks(uy),
-                      blocks(uz), false, false, false, 8);
+  const bool weighted = !weights.empty();
+  const int bx = blocks(ux), by = blocks(uy), bz = blocks(uz);
+  voro::container mono(0.0, ux, 0.0, uy, 0.0, uz, bx, by, bz, periodic,
+                       periodic, periodic, 8);
+  voro::container_poly poly(0.0, ux, 0.0, uy, 0.0, uz, bx, by, bz, periodic,
+                            periodic, periodic, 8);
 
   // Voro++ silently drops points with coordinate == upper bound, so seeds
   // on the upper faces are moved inward by one ulp (a ~1e-16 relative shift).
   auto inward = [](double x, double hi) {
     return x >= hi ? std::nextafter(hi, 0.0) : x;
   };
+  double wmin = 0.0;
+  if (weighted) wmin = static_cast<double>(*std::min_element(weights.begin(), weights.end()));
   for (std::size_t i = 0; i < n; ++i) {
-    con.put(static_cast<int>(i), inward(seeds[i][0] / sc, ux),
-            inward(seeds[i][1] / sc, uy), inward(seeds[i][2] / sc, uz));
+    const double px = inward(seeds[i][0] / sc, ux), py = inward(seeds[i][1] / sc, uy),
+                 pz = inward(seeds[i][2] / sc, uz);
+    if (weighted) {
+      const double r = std::sqrt((static_cast<double>(weights[i]) - wmin) / (sc * sc));
+      poly.put(static_cast<int>(i), px, py, pz, r);
+    } else {
+      mono.put(static_cast<int>(i), px, py, pz);
+    }
   }
 
   std::vector<std::unique_ptr<shape_base<T>>> out(n);
-  voro::c_loop_all loop(con);
   voro::voronoicell cell;
   std::vector<double> verts;
   std::vector<int> face_v;
   std::size_t produced = 0;
-  if (loop.start()) {
+  auto run = [&](auto& con) {
+    voro::c_loop_all loop(con);
+    if (!loop.start()) return;
     do {
       if (!con.compute_cell(cell, loop)) continue;   // cell fully clipped
       const auto id = static_cast<std::size_t>(loop.pid());
       double x, y, z;
       loop.pos(x, y, z);
+      if (periodic) {   // report the cell around the original seed
+        x = seeds[id][0] / sc; y = seeds[id][1] / sc; z = seeds[id][2] / sc;
+      }
       cell.vertices(x, y, z, verts);
       cell.face_vertices(face_v);
 
@@ -97,8 +122,13 @@ build_voronoi_cells_voro_pp(T Lx, T Ly, T Lz,
                                                    std::move(faces));
       ++produced;
     } while (loop.inc());
-  }
-  if (produced != n) {
+  };
+  if (weighted) run(poly); else run(mono);
+  if (weighted) {
+    for (auto& c : out) {
+      if (!c) c = std::make_unique<voronoi_cell<T>>();   // vanished cell
+    }
+  } else if (produced != n) {
     throw std::runtime_error{
         "voronoi_generator_3d (voro++): backend dropped " +
         std::to_string(n - produced) + " seed(s)"};

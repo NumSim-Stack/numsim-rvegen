@@ -28,7 +28,11 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <random>
+
+#include "rvegen/generators/grain_size_control.h"
 #include "rvegen/generators/voronoi_generator_2d.h"
+#include "rvegen/generators/voronoi_generator_3d.h"
 #include "rvegen/generators/weave_generator.h"
 #include "rvegen/shapes/box.h"
 #include "rvegen/shapes/circle.h"
@@ -270,8 +274,11 @@ PYBIND11_MODULE(_core, m) {
   // build_polygons() returns the raw vertex lists; build_cells()
   // returns them as ConvexPolygon objects ready for downstream use.
   py::class_<rvegen::voronoi_generator_2d<double>>(m, "VoronoiGenerator2d")
-      .def(py::init<double, double, std::vector<std::array<double, 2>>>(),
-           py::arg("Lx"), py::arg("Ly"), py::arg("seeds"))
+      .def(py::init<double, double, std::vector<std::array<double, 2>>, bool,
+                    std::vector<double>>(),
+           py::arg("Lx"), py::arg("Ly"), py::arg("seeds"),
+           py::arg("periodic") = false,
+           py::arg("weights") = std::vector<double>{})
       .def_property_readonly(
           "seed_count",
           [](rvegen::voronoi_generator_2d<double> const& g) {
@@ -302,6 +309,69 @@ PYBIND11_MODULE(_core, m) {
            },
            "Returns a list of ConvexPolygon — Voronoi cells ready for "
            "downstream is_inside / area queries.");
+
+  // Bounded or periodic 3D Voronoi / Laguerre tessellation (#8, #70).
+  // build() returns one VoronoiCell per seed, in seed order. Periodic
+  // cells are whole convex polytopes around their seed and may extend
+  // outside the box.
+  m.def("voro_pp_available", &rvegen::voro_pp_available,
+        "True if rvegen was built with the Voro++ backend.");
+  auto parse_backend = [](std::string const& name) {
+    if (name == "in_house") return rvegen::voronoi_backend::in_house;
+    if (name == "voro_pp") return rvegen::voronoi_backend::voro_pp;
+    throw py::value_error("backend must be 'in_house' or 'voro_pp'");
+  };
+  py::class_<rvegen::voronoi_generator_3d<double>>(m, "VoronoiGenerator3d")
+      .def(py::init([parse_backend](double Lx, double Ly, double Lz,
+                                    std::vector<std::array<double, 3>> seeds,
+                                    bool periodic, std::string const& backend,
+                                    std::vector<double> weights) {
+             return rvegen::voronoi_generator_3d<double>{
+                 Lx, Ly, Lz, std::move(seeds), parse_backend(backend),
+                 periodic, std::move(weights)};
+           }),
+           py::arg("Lx"), py::arg("Ly"), py::arg("Lz"), py::arg("seeds"),
+           py::arg("periodic") = false, py::arg("backend") = "in_house",
+           py::arg("weights") = std::vector<double>{})
+      .def_property_readonly(
+          "seed_count",
+          [](rvegen::voronoi_generator_3d<double> const& g) {
+            return g.seed_count();
+          })
+      .def_property_readonly(
+          "periodic",
+          [](rvegen::voronoi_generator_3d<double> const& g) {
+            return g.periodic();
+          })
+      .def("build",
+           [](rvegen::voronoi_generator_3d<double> const& g) {
+             std::vector<rvegen::voronoi_cell<double>> out;
+             for (auto const& sh : g.build()) {
+               out.push_back(
+                   static_cast<rvegen::voronoi_cell<double> const&>(*sh));
+             }
+             return out;
+           },
+           "Returns a list of VoronoiCell, one per seed (index = seed index).");
+
+  // Lognormal grain-size control: seeds + Laguerre weights (see
+  // grain_size_control.h). Returns a dict.
+  m.def("lognormal_grain_seeds_3d",
+        [parse_backend](double L, double mean_diameter, double sigma_ln,
+                        unsigned rng_seed, std::string const& backend) {
+          std::mt19937 eng{rng_seed};
+          auto r = rvegen::lognormal_grain_seeds_3d<double>(
+              L, L, L, mean_diameter, sigma_ln, eng, parse_backend(backend));
+          py::dict d;
+          d["seeds"] = r.seeds;
+          d["weights"] = r.weights;
+          d["target_diameters"] = r.target_diameters;
+          d["diameters"] = r.diameters;
+          d["max_rel_volume_error"] = r.max_rel_volume_error;
+          return d;
+        },
+        py::arg("L"), py::arg("mean_diameter"), py::arg("sigma_ln"),
+        py::arg("rng_seed") = 0, py::arg("backend") = "in_house");
 
   // Deterministic plain-weave generator (#3 / #109). build() returns
   // a Python list of PolylineTube — every yarn the generator produces

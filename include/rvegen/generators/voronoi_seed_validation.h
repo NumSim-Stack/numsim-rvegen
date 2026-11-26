@@ -29,7 +29,7 @@ inline constexpr double voronoi_rel_tol = 1e-9;
 template <typename T, std::size_t D>
 void validate_voronoi_seeds(std::array<T, D> const& extent,
                             std::vector<std::array<T, D>> const& seeds,
-                            char const* who) {
+                            char const* who, bool periodic = false) {
   T scale{0};
   for (auto e : extent) scale = std::max(scale, e);
   const T tol = static_cast<T>(voronoi_rel_tol) * scale;
@@ -67,6 +67,28 @@ void validate_voronoi_seeds(std::array<T, D> const& extent,
       }
     }
   }
+
+  // Periodic: seeds on opposite faces (x = 0 and x = L) are the same point
+  // modulo the box; check the minimum-image distance too. O(N^2).
+  if (periodic) {
+    for (std::size_t i = 0; i < seeds.size(); ++i) {
+      for (std::size_t j = i + 1; j < seeds.size(); ++j) {
+        T d2{0};
+        for (std::size_t k = 0; k < D; ++k) {
+          T d = std::abs(seeds[i][k] - seeds[j][k]);
+          d = std::min(d, extent[k] - d);
+          d2 += d * d;
+        }
+        if (d2 <= tol * tol) {
+          throw std::runtime_error{
+              std::string{who} + ": seeds " + std::to_string(i) + " and " +
+              std::to_string(j) +
+              " are coincident modulo the periodic box"};
+        }
+      }
+    }
+  }
 }
 
 } // namespace rvegen::detail
+

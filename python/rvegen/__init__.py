@@ -16,7 +16,10 @@ from ._core import (
     Sphere,
     VoronoiCell,
     VoronoiGenerator2d,
+    VoronoiGenerator3d,
     WeaveGenerator,
+    lognormal_grain_seeds_3d,
+    voro_pp_available,
 )
 
 __all__ = [
@@ -30,6 +33,9 @@ __all__ = [
     "Sphere",
     "VoronoiCell",
     "VoronoiGenerator2d",
+    "VoronoiGenerator3d",
     "WeaveGenerator",
+    "lognormal_grain_seeds_3d",
+    "voro_pp_available",
 ]
 __version__ = "0.1.0"
