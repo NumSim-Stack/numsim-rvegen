@@ -7,9 +7,9 @@
 # real downstream-consumer experience than `ctest` against the build
 # tree.
 #
-# numsim-core's headers must be on the include path; until numsim-core
-# itself ships a CMake config the workflow injects them via
-# CMAKE_CXX_FLAGS=-I... rather than relying on find_dependency.
+# numsim-core is found transitively: rvegenConfig.cmake calls
+# find_dependency(numsim-core CONFIG), so CMAKE_PREFIX_PATH must include
+# numsim-core's install prefix (the workflow passes both prefixes).
 
 cmake_minimum_required(VERSION 3.20)
 project(rvegen_install_smoke LANGUAGES CXX)
