@@ -41,17 +41,23 @@
 //   that gives near-100 % acceptance even at very high |κ|. The naive
 //   uniform proposal here accepts ∫₀¹ exp(κ(x² − 1)) dx ≈ 1 / (2κ) of
 //   candidates for prolate κ > 0, and ∫₀¹ exp(κx²) dx ≈ ½ √(π / |κ|)
-//   for oblate κ < 0 (both ≥ 1 / (1 + 2|κ|) for every κ). Measured with
-//   200k samples: κ = 5 → 11.6 %, κ = 50 → 1.0 %, κ = 200 → 0.25 %;
-//   κ = −5 → 39.6 %, κ = −50 → 12.5 %, κ = −200 → 6.3 %. Prolate
-//   sampling therefore costs ~2κ candidates per draw: fine for κ ≲ 50,
-//   slow beyond a few hundred. A hard iteration cap (100× the
-//   worst-case expected trial count, clamped to 1e6 ≈ tens of ms) turns
-//   runaway loops into a std::runtime_error. The clamp binds above
-//   |κ| ≈ 5e3; spurious throws stay negligible up to |κ| ≈ 2e4 and the
-//   sampler reliably throws for prolate κ ≳ 1e7. If callers need large prolate κ, replace with a
-//   tailored envelope (Wood, or the Kent-Ganeiber-Mardia 2018 ACG
-//   proposal) — tracked as part of the Kume-Walker follow-up.
+//   for oblate κ < 0. Rigorous lower bounds (checked by quadrature over
+//   κ ∈ [1e-6, 1e10]): p ≥ 1 / (1 + 2κ) prolate, p ≥ 1 / (3(1 + √|κ|))
+//   oblate. Measured with 200k samples: κ = 5 → 11.6 %, κ = 50 → 1.0 %,
+//   κ = 200 → 0.25 %; κ = −5 → 39.6 %, κ = −50 → 12.5 %, κ = −200 →
+//   6.3 %. Prolate sampling therefore costs ~2κ candidates per draw.
+//
+// Supported κ range and iteration cap:
+//   * κ ∈ [−1e10, 1e5] (`min_kappa` / `max_kappa`); anything outside
+//     throws std::invalid_argument at construction. Both ends cost
+//     ~1e5–2e5 candidates (a few ms) per draw; beyond them the uniform
+//     proposal is impractical and needs a tailored envelope (Wood, or
+//     the Kent-Ganeiber-Mardia 2018 ACG proposal; see #77).
+//   * Each sample() is capped at 40× the bound-implied expected trial
+//     count, so a spurious std::runtime_error has probability
+//     ≤ (1 − p)^cap ≤ e⁻⁴⁰ for every accepted κ. The cap only fires on a
+//     genuine numerical breakdown. `set_max_iterations` overrides it
+//     (tests use a tiny cap to exercise the throw path).
 //
 // Out of scope here, ships in follow-up PRs against #6:
 //   * Generic 3×3 Bingham (Kume-Walker sampler) — also fixes the
@@ -92,17 +98,32 @@ public:
       throw std::invalid_argument{
           "bingham_distribution: kappa must be finite"};
     }
+    if (_kappa > max_kappa) {
+      throw std::invalid_argument{
+          "bingham_distribution: prolate kappa above 1e5 needs a better "
+          "proposal than the uniform cos(theta) envelope (supported range "
+          "[-1e10, 1e5]); see #77"};
+    }
+    if (_kappa < min_kappa) {
+      throw std::invalid_argument{
+          "bingham_distribution: oblate kappa below -1e10 needs a better "
+          "proposal than the uniform cos(theta) envelope (supported range "
+          "[-1e10, 1e5]); see #77"};
+    }
     set_mean_axis(mean_axis);
-    // Hard cap on rejection candidates per sample. The acceptance rate is
-    // ≥ 1 / (1 + 2|κ|) for every κ (see the header comment), so 100× the
-    // worst-case expected trial count makes a spurious throw a < e⁻¹⁰⁰
-    // event. The 1e6 clamp bounds a doomed sample() to tens of ms instead
-    // of minutes.
-    const T expected = T{1} + T{2} * std::abs(_kappa);
-    const T cap = T{100} * expected + T{1000};
-    _max_iterations = cap < T{1e6} ? static_cast<std::size_t>(cap)
-                                   : std::size_t{1000000};
+    // 40× the expected trial count implied by the acceptance lower bound
+    // (header comment): spurious throw probability ≤ e⁻⁴⁰. At the range
+    // ends this is ~8e6 (prolate) / ~1.2e7 (oblate) candidates.
+    const T expected = _kappa >= T{0}
+                           ? T{1} + T{2} * _kappa
+                           : T{3} * (T{1} + std::sqrt(-_kappa));
+    _max_iterations =
+        static_cast<std::size_t>(std::ceil(T{40} * expected)) + 64;
   }
+
+  // Supported concentration range; see the header comment.
+  static constexpr T max_kappa = T{1e5};
+  static constexpr T min_kappa = T{-1e10};
 
   // Convenience overload accepting std::array — most callers don't
   // already have a gte::Vector handy.
@@ -163,7 +184,7 @@ public:
       if (++it > _max_iterations) {
         throw std::runtime_error{
             "bingham_distribution: rejection sampler exceeded its "
-            "iteration cap (|kappa| too large for the uniform proposal)"};
+            "iteration cap (numerical breakdown or an overridden cap)"};
       }
       const T u1 = _uniform(_engine.get());
       x = T{2} * u1 - T{1};   // candidate cos θ in [-1, 1]
@@ -188,6 +209,13 @@ public:
   }
 
   [[nodiscard]] T kappa() const noexcept { return _kappa; }
+
+  // Rejection-candidate cap per sample(); see the header comment. The
+  // setter exists so tests can exercise the throw path cheaply.
+  [[nodiscard]] std::size_t max_iterations() const noexcept {
+    return _max_iterations;
+  }
+  void set_max_iterations(std::size_t n) noexcept { _max_iterations = n; }
   [[nodiscard]] vector_type const& mean_axis() const noexcept {
     return _mean_axis;
   }

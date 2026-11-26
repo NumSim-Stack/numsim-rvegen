@@ -165,11 +165,13 @@ void test_bingham_samples_are_unit_length() {
 }
 
 void test_bingham_iteration_cap_throws_quickly() {
-  // Prolate κ = 1e9 needs ~2e9 candidates per draw; the 1e6 cap must
-  // turn that into a runtime_error within tens of ms, not minutes.
+  // At the prolate range end (κ = 1e5, acceptance ≈ 5e-6) an injected
+  // cap of 16 candidates is essentially certain to run out; the throw
+  // must be a runtime_error and immediate.
   std::mt19937 engine{5};
   rvegen::bingham_distribution<double> dist{std::array<double, 3>{0, 0, 1},
-                                            1e9, engine};
+                                            1e5, engine};
+  dist.set_max_iterations(16);
   const auto t0 = std::chrono::steady_clock::now();
   bool threw = false;
   try {
@@ -184,6 +186,31 @@ void test_bingham_iteration_cap_throws_quickly() {
   REQUIRE(secs < 0.5);
 }
 
+void test_bingham_kappa_range_and_default_cap() {
+  using dist_t = rvegen::bingham_distribution<double>;
+  using arr = std::array<double, 3>;
+  std::mt19937 engine{6};
+  // Outside the supported range: explicit construction-time rejection.
+  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, 1e5 * 1.01, engine}; }));
+  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, 1e9, engine}; }));
+  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, -1e11, engine}; }));
+  // The default cap keeps the spurious-throw bound exp(-p·cap) ≤ e⁻³⁰,
+  // using the documented acceptance lower bounds p.
+  for (double kappa : {1e-3, 1.0, 50.0, 1e3, 1e5, -1.0, -50.0, -1e6, -1e10}) {
+    dist_t d{arr{0, 0, 1}, kappa, engine};
+    const double p = kappa > 0 ? 1.0 / (1.0 + 2.0 * kappa)
+                               : 1.0 / (3.0 * (1.0 + std::sqrt(-kappa)));
+    REQUIRE(p * static_cast<double>(d.max_iterations()) >= 30.0);
+  }
+  // Valid large prolate κ still samples (no random throws) — a few
+  // draws at κ = 1e4 cost ~2e4 candidates each.
+  dist_t d{arr{0, 0, 1}, 1e4, engine};
+  for (int i = 0; i < 5; ++i) {
+    const auto v = d.sample();
+    REQUIRE(std::abs(v[2]) > 0.99);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -194,6 +221,7 @@ int main() {
   test_bingham_rejects_bad_axis_and_kappa();
   test_bingham_samples_are_unit_length();
   test_bingham_iteration_cap_throws_quickly();
+  test_bingham_kappa_range_and_default_cap();
 
   if (failures > 0) {
     std::cerr << failures << " orientation sampler test failure(s)\n";
