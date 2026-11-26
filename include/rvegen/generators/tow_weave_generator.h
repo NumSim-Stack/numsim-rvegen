@@ -18,7 +18,9 @@
 //     centre, then ring k (k = 1..K) with up to 6k fibres at radius
 //     k·d, d = (yarn_radius − r_f)/K, so the outermost fibres touch
 //     the yarn surface from inside. A partially filled outer ring is
-//     spread evenly around the full circle.
+//     spread evenly around the full circle; if it would hold a single
+//     fibre (n = 2, 8, 20, ...) the centre is left empty and the outer
+//     ring gets two opposite fibres, so the bundle stays centred.
 //   * Non-overlap: the closest fibre pairs are radial neighbours (gap
 //     d) and adjacent fibres on ring 1 (chord 2d·sin 30° = d); every
 //     other in-ring chord 2kd·sin(π/6k) is ≥ d. So fibres are disjoint
@@ -175,15 +177,22 @@ private:
   }
 
   // Ring-packed 2D offsets in a disk of given enclosing radius.
-  // Deterministic, centred on origin, scaled so all N points fit
-  // inside the disk. For N = 1, returns the single offset {0, 0}.
+  // Deterministic, centred on origin (centroid exactly 0), scaled so
+  // all N points fit inside the disk. For N = 1, returns the single
+  // offset {0, 0}.
   static std::vector<std::array<T, 2>> hex_pack_offsets(
       std::size_t n_points, T enclosing_radius) {
     using std::numbers::pi_v;
     std::vector<std::array<T, 2>> pts;
     if (n_points == 0) return pts;
-    pts.push_back({T{0}, T{0}});
-    if (n_points == 1) return pts;
+    if (n_points == 1) return {{T{0}, T{0}}};
+    // A last ring holding a single point would pull the centroid off
+    // the yarn axis. In that case (n = 2, 8, 20, ...) leave the centre
+    // empty and put two diametrically opposite points on the last
+    // ring instead; spacing only grows, so non-overlap is unaffected.
+    const std::size_t K = rings_for(n_points);
+    const bool skip_centre = n_points - (1 + 3 * (K - 1) * K) == 1;
+    if (!skip_centre) pts.push_back({T{0}, T{0}});
     // Walk rings outward until we have N points. Ring k (k ≥ 1) has
     // 6·k points at radius k·d, where d is the ring spacing; a
     // partially filled last ring spreads its points evenly over the

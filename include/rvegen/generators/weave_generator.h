@@ -39,32 +39,35 @@
 //     (for 2D — amplitude must be 0 then; a flat 2D weave is a
 //     projection and its yarns overlap at the crossings by design).
 //   * Yarn radii are uniform across both warp and weft.
-//   * `n_segments_per_yarn` controls how finely each yarn's
-//     centerline is sampled. It is rounded UP to a multiple of
-//     2·(number of crossings along the yarn) so every crossing (crimp
-//     peak) and every mid-point (z = z_c) is an exact control point.
-//     16 segments is plenty for visualisation, 32–64 for fine voxel
-//     grids.
+//   * `n_segments_per_yarn` is the MINIMUM number of segments per
+//     yarn centerline. Each yarn family uses 2·N·q segments (N = the
+//     number of yarns it crosses), so every crossing (crimp peak) and
+//     every mid-point (z = z_c) is an exact control point; q is the
+//     smallest value that meets the request AND the polyline
+//     clearance below. The result is capped at `max_segments_per_yarn`
+//     (the request too); configs needing more throw.
 //
 // Feasibility (3D, checked in the ctor, with r = yarn_radius,
-// A = amplitude, s = min(s_x, s_y)):
-//   * A ≥ r — warp and weft are 2A apart at each crossing, so this is
-//     what keeps the tubes from interpenetrating there.
-//   * r ≤ s / (π√2) — the crossing is the closest approach between
-//     warp i and weft j only while A ≤ s/(π√2); beyond that the steep
-//     flanks of the crimp come closer than 2A. Since the closest
-//     approach grows monotonically with A, the centreline clearance is
-//     ≥ 2·min(A, s/(π√2)) for every (i, j) pair, including periodic
-//     images, and these two bounds together give clearance ≥ 2r. (This
-//     also implies s > 2r, so parallel neighbours never touch.)
+// A = amplitude, s = min(s_x, s_y), m = min(A, s/(π√2))):
+//   * Analytic clearance. Warp and weft are 2A apart at each
+//     crossing. The crossing is their closest approach only while
+//     A ≤ s/(π√2); beyond that the steep flanks come closer than 2A.
+//     The closest approach grows monotonically with A, so the analytic
+//     centreline clearance is ≥ 2m for every (i, j) pair, including
+//     periodic images. (m > r also implies s > 2r, so parallel
+//     neighbours never touch.)
+//   * Polyline clearance. The emitted polylines are inscribed in the
+//     curves, and linear interpolation deviates from a curve by at
+//     most h²·max|z''|/8 = A·π²/(32·q²) (h = s/(2q) per segment). Each
+//     yarn polyline is therefore within e = A·π²/(32q²) of its curve,
+//     and the polylines are ≥ 2m − 2e apart. q is raised until
+//     e ≤ m − r, which guarantees clearance ≥ 2r for the polylines that
+//     are actually emitted. This needs A > r and r < s/(π√2) STRICTLY:
+//     at A = r an inscribed polyline always dips below the crimp peak
+//     next to the crossing node, so no finite segment count reaches 2r.
 //   * r·A·π² ≤ s² — the minimum radius of curvature of the crimp,
 //     s²/(π²A) at the peaks, must be ≥ r or the tube folds over itself.
 //   * A + r ≤ Lz/2 — z_c ± (A + r) must stay inside [0, Lz].
-//   These are guarantees for the analytic centreline. The polyline
-//   samples it exactly at every crossing; between nodes each chord
-//   deviates by at most A·π²·h²/(8·s²) (h = segment length), which
-//   is how much closer two polyline yarns may come at the bounds.
-//   Raise n_segments_per_yarn to shrink that error quadratically.
 //
 // What this header lands today (phase 1 of #3):
 //   * Direct ctor with all weave parameters as floats.
@@ -128,7 +131,9 @@ public:
         _n_weft{n_weft_yarns},
         _yarn_radius{yarn_radius},
         _amplitude{amplitude},
-        _n_segments{n_segments_per_yarn} {
+        _n_segments{n_segments_per_yarn},
+        _n_seg_warp{0},
+        _n_seg_weft{0} {
     if (n_warp_yarns == 0 || n_weft_yarns == 0) {
       throw std::runtime_error{
           "weave_generator: n_warp_yarns and n_weft_yarns must both be ≥ 1"};
@@ -141,6 +146,11 @@ public:
       throw std::runtime_error{
           "weave_generator: n_segments_per_yarn must be ≥ 2 (the "
           "polyline_tube needs at least two centerline points)"};
+    }
+    if (n_segments_per_yarn > max_segments_per_yarn) {
+      throw std::runtime_error{
+          "weave_generator: n_segments_per_yarn must be ≤ "
+          + std::to_string(max_segments_per_yarn)};
     }
     if (_domain[0] <= value_type{0} || _domain[1] <= value_type{0}) {
       throw std::runtime_error{
@@ -163,8 +173,17 @@ public:
           "crossing, so an odd count breaks the alternation at the "
           "periodic seam"};
     }
-    if (_domain[2] > value_type{0}) validate_clearance();
+    // Segment multiplier q needed for polyline clearance (3D only;
+    // a flat 2D weave has no crimp to resolve).
+    std::size_t q_clearance = 1;
+    if (_domain[2] > value_type{0}) q_clearance = validate_clearance();
+    _n_seg_warp = segments_for(_n_weft, q_clearance);
+    _n_seg_weft = segments_for(_n_warp, q_clearance);
   }
+
+  // Upper limit on segments per yarn centerline, for both the request
+  // and the automatic refinement.
+  static constexpr std::size_t max_segments_per_yarn = 4096;
 
   // Optional phase-name tags applied to every produced yarn. By
   // default both are empty (untagged); writers attach a
@@ -185,6 +204,15 @@ public:
   [[nodiscard]] std::size_t n_warp_yarns() const noexcept { return _n_warp; }
   [[nodiscard]] std::size_t n_weft_yarns() const noexcept { return _n_weft; }
 
+  // Segments actually emitted per warp / weft centerline (≥ the
+  // requested n_segments_per_yarn; see the header comment).
+  [[nodiscard]] std::size_t n_segments_warp() const noexcept {
+    return _n_seg_warp;
+  }
+  [[nodiscard]] std::size_t n_segments_weft() const noexcept {
+    return _n_seg_weft;
+  }
+
   // Build the woven layout. Returns one polyline_tube per yarn,
   // first the warp yarns (along +x) then the weft yarns (along +y).
   [[nodiscard]] shape_vector build() const {
@@ -203,7 +231,7 @@ public:
     // edge-flush layout would leave the interior non-uniform). Weft
     // uses the same convention along x, so the crossings are at
     // ((j+½)·s_x, (i+½)·s_y).
-    const std::size_t n_seg_warp = segments_for(_n_weft);
+    const std::size_t n_seg_warp = _n_seg_warp;
     for (std::size_t i = 0; i < _n_warp; ++i) {
       const value_type y = yarn_position(i, _n_warp, Ly);
       std::vector<std::array<value_type, 3>> centerline;
@@ -222,7 +250,7 @@ public:
     // Weft yarns run along +y at evenly-spaced x, with the opposite
     // crimp sign so warp and weft sit on opposite sides of z_centre at
     // every crossing.
-    const std::size_t n_seg_weft = segments_for(_n_warp);
+    const std::size_t n_seg_weft = _n_seg_weft;
     for (std::size_t j = 0; j < _n_weft; ++j) {
       const value_type x = yarn_position(j, _n_weft, Lx);
       std::vector<std::array<value_type, 3>> centerline;
@@ -248,6 +276,8 @@ private:
   value_type _yarn_radius;
   value_type _amplitude;
   std::size_t _n_segments;
+  std::size_t _n_seg_warp;
+  std::size_t _n_seg_weft;
   std::string _warp_phase;
   std::string _weft_phase;
 
@@ -275,15 +305,35 @@ private:
     return sign * _amplitude * std::sin(pi_v<value_type> * t / spacing);
   }
 
-  // Segments for a yarn that crosses `n_crossing` others: the requested
-  // count rounded up to a multiple of 2·n_crossing, so each crossing
-  // (j+½)·s and each mid-point j·s lands on a control point.
-  [[nodiscard]] std::size_t segments_for(std::size_t n_crossing) const noexcept {
+  // Segments for a yarn that crosses `n_crossing` others: 2·n_crossing·q
+  // with q ≥ q_min and 2·n_crossing·q ≥ the requested count, so each
+  // crossing (j+½)·s and each mid-point j·s lands on a control point.
+  // Throws if that exceeds max_segments_per_yarn. Overflow-safe: the
+  // request is already ≤ the cap.
+  [[nodiscard]] std::size_t segments_for(std::size_t n_crossing,
+                                         std::size_t q_min) const {
+    if (n_crossing > max_segments_per_yarn / 2) {
+      throw std::runtime_error{
+          "weave_generator: too many yarns — each yarn needs 2 segments "
+          "per crossing and at most "
+          + std::to_string(max_segments_per_yarn) + " segments are allowed"};
+    }
     const std::size_t step = 2 * n_crossing;
-    return ((_n_segments + step - 1) / step) * step;
+    const std::size_t q = std::max((_n_segments + step - 1) / step, q_min);
+    if (q > max_segments_per_yarn / step) {
+      throw std::runtime_error{
+          "weave_generator: the polyline needs more than "
+          + std::to_string(max_segments_per_yarn) + " segments per yarn to "
+          "keep warp and weft 2·yarn_radius apart — increase amplitude "
+          "and/or the yarn spacing, or reduce yarn_radius, to widen the "
+          "margin min(amplitude, spacing/(π·√2)) − yarn_radius"};
+    }
+    return step * q;
   }
 
-  void validate_clearance() const {
+  // Checks the 3D feasibility conditions and returns the segment
+  // multiplier q needed for the polyline clearance (see header).
+  [[nodiscard]] std::size_t validate_clearance() const {
     using std::numbers::pi_v;
     using std::numbers::sqrt2_v;
     const value_type r = _yarn_radius;
@@ -295,15 +345,17 @@ private:
     // A + r == Lz/2) are not rejected by rounding.
     const value_type tol = value_type{1}
         + value_type{64} * std::numeric_limits<value_type>::epsilon();
-    if (A * tol < r) {
+    const value_type a_flank = s / (pi_v<value_type> * sqrt2_v<value_type>);
+    if (!(A > r)) {
       throw std::runtime_error{
-          "weave_generator: amplitude must be ≥ yarn_radius — warp and "
-          "weft centrelines are 2·amplitude apart at each crossing, so a "
-          "smaller amplitude makes the yarns interpenetrate"};
+          "weave_generator: amplitude must be > yarn_radius — warp and "
+          "weft centrelines are 2·amplitude apart at each crossing, and "
+          "the sampled polyline dips below the crimp peak next to it, so "
+          "amplitude ≤ yarn_radius makes the yarns interpenetrate"};
     }
-    if (r * pi_v<value_type> * sqrt2_v<value_type> > s * tol) {
+    if (!(r < a_flank)) {
       throw std::runtime_error{
-          "weave_generator: yarn_radius must be ≤ spacing/(π·√2), with "
+          "weave_generator: yarn_radius must be < spacing/(π·√2), with "
           "spacing = min(Lx/n_weft_yarns, Ly/n_warp_yarns) — otherwise "
           "the crimp flanks bring warp and weft closer than 2·yarn_radius "
           "next to the crossings"};
@@ -319,6 +371,15 @@ private:
           "weave_generator: amplitude + yarn_radius must be ≤ Lz/2 so "
           "the yarns stay inside [0, Lz]"};
     }
+    // Polyline clearance: smallest q with A·π²/(32q²) ≤ m − r.
+    const value_type margin = std::min(A, a_flank) - r;
+    const value_type q_needed =
+        pi_v<value_type> * std::sqrt(A / (value_type{32} * margin));
+    if (!(q_needed < static_cast<value_type>(max_segments_per_yarn))) {
+      return max_segments_per_yarn + 1;   // segments_for() throws
+    }
+    return std::max<std::size_t>(
+        1, static_cast<std::size_t>(std::ceil(q_needed)));
   }
 };
 

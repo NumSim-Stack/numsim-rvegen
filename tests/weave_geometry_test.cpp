@@ -114,11 +114,21 @@ struct weave_cfg {
 // ----------------------------------------------------------------------------
 // 1. Plain weave geometry.
 // ----------------------------------------------------------------------------
-void check_weave(weave_cfg const& c) {
+// Returns the measured minimum warp–weft polyline distance.
+double check_weave(weave_cfg const& c) {
   rvegen::weave_generator<double> gen{c.box, c.n_warp, c.n_weft, c.r, c.A,
                                       c.n_seg};
   auto shapes = gen.build();
   REQUIRE(shapes.size() == c.n_warp + c.n_weft);
+  // Emitted segment counts: reported correctly, ≥ the request, and a
+  // multiple of 2·(crossings) so crossings are nodes.
+  REQUIRE(as_tube(shapes[0]).centerline().size() == gen.n_segments_warp() + 1);
+  REQUIRE(as_tube(shapes[c.n_warp]).centerline().size()
+          == gen.n_segments_weft() + 1);
+  REQUIRE(gen.n_segments_warp() >= c.n_seg);
+  REQUIRE(gen.n_segments_weft() >= c.n_seg);
+  REQUIRE(gen.n_segments_warp() % (2 * c.n_weft) == 0);
+  REQUIRE(gen.n_segments_weft() % (2 * c.n_warp) == 0);
   const double Lx = c.box[0], Ly = c.box[1];
   const double sx = Lx / static_cast<double>(c.n_weft);
   const double sy = Ly / static_cast<double>(c.n_warp);
@@ -148,19 +158,8 @@ void check_weave(weave_cfg const& c) {
     }
   }
 
-  // Full centreline clearance between every warp and weft, including
-  // the weft's ±Lx images and the warp's ±Ly images. The analytic
-  // centrelines are ≥ 2r apart; each polyline deviates from its curve
-  // by at most the chord sagitta h²·max|z''|/8 = A·π²·h²/(8·s²), so
-  // the polylines may come that much closer per yarn.
-  const auto sagitta = [&](std::size_t n_nodes, double L, double s) {
-    const double h = L / static_cast<double>(n_nodes - 1);
-    const double pi = std::numbers::pi;
-    return c.A * pi * pi * h * h / (8.0 * s * s);
-  };
-  const double chord_slack =
-      sagitta(as_tube(shapes[0]).centerline().size(), Lx, sx)
-      + sagitta(as_tube(shapes[c.n_warp]).centerline().size(), Ly, sy);
+  // Clearance of the EMITTED polylines between every warp and weft,
+  // including the weft's ±Lx and ±Ly images: ≥ 2r up to rounding.
   double min_dist = std::numeric_limits<double>::infinity();
   for (std::size_t i = 0; i < c.n_warp; ++i) {
     auto const& warp = as_tube(shapes[i]).centerline();
@@ -174,7 +173,7 @@ void check_weave(weave_cfg const& c) {
       }
     }
   }
-  REQUIRE(min_dist >= 2.0 * c.r - chord_slack - 1e-12);
+  REQUIRE(min_dist >= 2.0 * c.r - 1e-12);
 
   // Periodicity: every yarn starts and ends at the same z with the
   // same end-segment slope.
@@ -193,15 +192,26 @@ void check_weave(weave_cfg const& c) {
       REQUIRE(p[2] + c.r <= c.box[2] + tol);
     }
   }
+  return min_dist;
 }
 
 void test_weave_crossings_clear_and_alternate() {
   check_weave({{1.0, 1.0, 0.3}, 4, 4, 0.04, 0.05, 32});
   // Non-square, unequal counts, segment count not a multiple of the
-  // crossing count (rounded up internally so crossings are nodes).
+  // crossing count; A beyond s/(π√2), so the flanks set the clearance.
   check_weave({{2.0, 1.0, 0.4}, 2, 6, 0.05, 0.08, 20});
-  // Exactly on the A == r and A + r == Lz/2 bounds.
-  check_weave({{1.0, 1.0, 0.2}, 2, 2, 0.05, 0.05, 16});
+  // Generous: A = 1.3r, dense 8×8, coarsest request.
+  check_weave({{1.0, 1.0, 0.3}, 8, 8, 0.02, 0.026, 2});
+  // On the A + r == Lz/2 bound.
+  check_weave({{1.0, 1.0, 0.22}, 2, 2, 0.05, 0.06, 16});
+  // Near the review's failing configs (A = r there; see validation):
+  // a sliver of margin forces automatic refinement from n_seg = 2.
+  for (std::size_t n_seg : {2u, 8u, 32u}) {
+    check_weave({{1.0, 1.0, 1.0}, 4, 4, 0.056, 0.0562, n_seg});
+  }
+  for (std::size_t n_seg : {2u, 16u, 32u}) {
+    check_weave({{1.0, 1.0, 1.0}, 2, 2, 0.11, 0.112, n_seg});
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -215,6 +225,23 @@ void test_weave_validation() {
   // Amplitude below yarn radius → yarns interpenetrate at crossings.
   REQUIRE(throws([] { G{{1, 1, 0.3}, 2, 2, 0.05, 0.03}; }));
   REQUIRE(throws([] { G{{1, 1, 0.3}, 2, 2, 0.05, 0.0}; }));
+  // A == r: an inscribed polyline always dips below the crimp peak next
+  // to the crossing node, so no segment count reaches 2r. These are
+  // the review's configs (15% overlap at the coarsest sampling before).
+  for (std::size_t n_seg : {2u, 8u, 32u}) {
+    REQUIRE(throws([&] { G{{1, 1, 1}, 4, 4, 0.056, 0.056, n_seg}; }));
+  }
+  for (std::size_t n_seg : {2u, 16u, 32u}) {
+    REQUIRE(throws([&] { G{{1, 1, 1}, 2, 2, 0.11, 0.11, n_seg}; }));
+  }
+  // Margin so thin the polyline would need > max_segments_per_yarn.
+  REQUIRE(throws([] { G{{1, 1, 1}, 2, 2, 0.1, 0.1 * (1 + 1e-9)}; }));
+  // Segment request above the cap (also guards segments_for overflow).
+  REQUIRE(throws([] { G{{1, 1, 0.3}, 2, 2, 0.04, 0.05, G::max_segments_per_yarn + 1}; }));
+  REQUIRE(throws([] {
+    G{{1, 1, 0.3}, 2, 2, 0.04, 0.05, std::numeric_limits<std::size_t>::max()};
+  }));
+  REQUIRE(!throws([] { G{{1, 1, 0.3}, 2, 2, 0.04, 0.05, G::max_segments_per_yarn}; }));
   // z_centre ± (A + r) leaves [0, Lz].
   REQUIRE(throws([] { G{{1, 1, 0.2}, 2, 2, 0.05, 0.06}; }));
   // Yarn too thick for the spacing: r > s/(π√2) (s = 0.25 → 0.0563).
@@ -267,7 +294,11 @@ void check_tow(std::size_t n_fibres, double factor) {
 
 void test_tow_fibres_do_not_overlap() {
   check_tow(7, 0.2);      // default factor, 1 ring
+  check_tow(2, 0.2);      // ring 1 with one site → centre empty, ±d
   check_tow(3, 0.2);      // partial ring 1 (2 of 6 sites)
+  check_tow(4, 0.2);      // partial ring 1 (3 of 6 sites)
+  check_tow(5, 0.2);      // partial ring 1 (4 of 6 sites)
+  check_tow(8, 0.15);     // ring 2 with one site → centre empty
   check_tow(25, 0.125);   // 3 rings, partial ring 3 (6 of 18 sites)
 }
 

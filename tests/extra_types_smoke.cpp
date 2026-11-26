@@ -2036,7 +2036,7 @@ void test_weave_generator_tube_count_matches_warp_plus_weft() {
   rvegen::weave_generator<double> gen{
       /*domain=*/{1.0, 1.0, 0.2},
       /*n_warp=*/4, /*n_weft=*/2,
-      /*yarn_radius=*/0.04, /*amplitude=*/0.04};
+      /*yarn_radius=*/0.04, /*amplitude=*/0.05};
   auto shapes = gen.build();
   REQUIRE(shapes.size() == 6);
   // Every produced shape is a polyline_tube.
@@ -2049,7 +2049,7 @@ void test_weave_generator_warp_yarns_run_along_x() {
   // For 2 warp + 2 weft, the first 2 entries are warp (along +x).
   // A warp yarn's centerline spans x ∈ [0, Lx] at fixed y.
   rvegen::weave_generator<double> gen{
-      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.05, /*segments=*/16};
+      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.06, /*segments=*/16};
   auto shapes = gen.build();
   REQUIRE(shapes.size() == 4);
   auto* warp0 = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
@@ -2069,7 +2069,7 @@ void test_weave_generator_warp_yarns_run_along_x() {
 
 void test_weave_generator_weft_yarns_run_along_y() {
   rvegen::weave_generator<double> gen{
-      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.05, 16};
+      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.06, 16};
   auto shapes = gen.build();
   // Weft yarns are shapes[2] and shapes[3].
   auto* weft0 = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[2].get());
@@ -2092,7 +2092,7 @@ void test_weave_generator_warp_and_weft_interlace_180_out_of_phase() {
   // y = 0.25, weft 0 at x = 0.25, so (0.25, 0.25) is crossing (0, 0)
   // and (i+j) = 0 is even → warp over, weft under.
   rvegen::weave_generator<double> gen{
-      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.05, 32};
+      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.06, 32};
   auto shapes = gen.build();
   auto* warp = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
   auto* weft = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[2].get());
@@ -2103,13 +2103,13 @@ void test_weave_generator_warp_and_weft_interlace_180_out_of_phase() {
   REQUIRE(wcl.size() == 33 && xcl.size() == 33);
   REQUIRE(std::abs(wcl[8][0] - 0.25) < 1e-12);
   REQUIRE(std::abs(xcl[8][1] - 0.25) < 1e-12);
-  REQUIRE(std::abs(wcl[8][2] - (z_centre + 0.05)) < 1e-12);
-  REQUIRE(std::abs(xcl[8][2] - (z_centre - 0.05)) < 1e-12);
+  REQUIRE(std::abs(wcl[8][2] - (z_centre + 0.06)) < 1e-12);
+  REQUIRE(std::abs(xcl[8][2] - (z_centre - 0.06)) < 1e-12);
 }
 
 void test_weave_generator_phase_tagging() {
   rvegen::weave_generator<double> gen{
-      {1.0, 1.0, 0.2}, 2, 2, 0.04, 0.04};
+      {1.0, 1.0, 0.2}, 2, 2, 0.04, 0.05};
   gen.set_warp_phase_name("warp");
   gen.set_weft_phase_name("weft");
   auto shapes = gen.build();
@@ -2121,12 +2121,12 @@ void test_weave_generator_phase_tagging() {
 
 void test_weave_generator_validation_throws_on_bad_input() {
   bool threw_zero_warp = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 0, 2, 0.05, 0.05}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 0, 2, 0.04, 0.05}; }
   catch (std::runtime_error const&) { threw_zero_warp = true; }
   REQUIRE(threw_zero_warp);
 
   bool threw_zero_weft = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 0, 0.05, 0.05}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 0, 0.04, 0.05}; }
   catch (std::runtime_error const&) { threw_zero_weft = true; }
   REQUIRE(threw_zero_weft);
 
@@ -2136,7 +2136,7 @@ void test_weave_generator_validation_throws_on_bad_input() {
   REQUIRE(threw_neg_radius);
 
   bool threw_too_few_segments = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.05, 0.05, 1}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.04, 0.05, 1}; }
   catch (std::runtime_error const&) { threw_too_few_segments = true; }
   REQUIRE(threw_too_few_segments);
 
@@ -2161,8 +2161,8 @@ void test_weave_generator_validation_throws_on_bad_input() {
 // N hex-packed finer fibres sharing the yarn's undulation.
 void test_tow_weave_generator_expands_each_yarn_to_n_fibres() {
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, /*n_warp=*/2, /*n_weft=*/2,
-      /*yarn_radius=*/0.05, /*amplitude=*/0.05};
+      {1.0, 1.0, 0.3}, /*n_warp=*/2, /*n_weft=*/2,
+      /*yarn_radius=*/0.05, /*amplitude=*/0.06};
   rvegen::tow_weave_generator<double> gen{base, /*n_fibres=*/7,
                                           /*radius_factor=*/0.2};
   auto shapes = gen.build();
@@ -2178,7 +2178,7 @@ void test_tow_weave_generator_expands_each_yarn_to_n_fibres() {
 
 void test_tow_weave_generator_propagates_phase_names() {
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, 2, 2, 0.05, 0.05};
+      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.06};
   base.set_warp_phase_name("warp_fibre");
   base.set_weft_phase_name("weft_fibre");
   rvegen::tow_weave_generator<double> gen{base, 3, 0.2};
@@ -2192,7 +2192,7 @@ void test_tow_weave_generator_propagates_phase_names() {
 }
 
 void test_tow_weave_generator_validation_throws() {
-  rvegen::weave_generator<double> base{{1,1,0.2}, 2, 2, 0.05, 0.05};
+  rvegen::weave_generator<double> base{{1,1,0.3}, 2, 2, 0.05, 0.06};
 
   bool threw_zero_fibres = false;
   try { rvegen::tow_weave_generator<double>{base, 0, 0.2}; }
@@ -2347,7 +2347,7 @@ void test_tow_weave_generator_n_fibres_1_collapses_to_yarn_centerline() {
   // (offset {0,0}). Just a smaller-radius copy of the yarn. Useful
   // smoke check that the hex_pack_offsets degenerate path works.
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, 2, 2, 0.05, 0.05};
+      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.06};
   rvegen::tow_weave_generator<double> gen{base, 1, 0.5};
   auto shapes = gen.build();
   REQUIRE(shapes.size() == 4);   // 2 warp + 2 weft
