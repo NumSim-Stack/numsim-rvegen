@@ -1,0 +1,52 @@
+name: Wheels
+
+# Build manylinux wheels (CPython 3.10-3.13) with cibuildwheel. Runs on
+# version tags and on manual dispatch; pull requests are covered by ci.yml.
+# Wheel build settings live in python/pyproject.toml ([tool.cibuildwheel]).
+# This workflow only builds and uploads artifacts; it does not publish.
+# No sdist job: python/ pulls the parent rvegen headers in via
+# add_subdirectory(..), so an sdist cut from python/ alone would not build.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-wheels:
+    name: Wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+
+    steps:
+      - name: Checkout rvegen
+        uses: actions/checkout@v4
+
+      # numsim-core is a header-only sibling dependency. cibuildwheel mounts
+      # only the repository root into the manylinux container (as /project),
+      # so numsim-core is checked out INSIDE the workspace; pyproject.toml
+      # points the compiler at /project/_deps/numsim-core/include. Pinned to
+      # the same SHA as ci.yml.
+      - name: Checkout numsim-core (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: NumSim-Stack/numsim-core
+          ref: a56bc466f8cfbbdc79936f140166fb60fcaabb90
+          path: _deps/numsim-core
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.22.0
+        with:
+          package-dir: python
+          output-dir: wheelhouse
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error

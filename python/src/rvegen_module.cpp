@@ -25,8 +25,18 @@
 //   * Wheels via cibuildwheel — separate from the conda/vcpkg
 //     packaging in the packaging PR.
 
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+
+#include <algorithm>
+#include <fstream>
+#include <optional>
+
+#include "rvegen/phase/phase_assignment.h"
+#include "rvegen/pipeline.h"
+#include "rvegen/postprocess/voxel_grid.h"
+#include "rvegen/schema/schema_to_json.h"
 
 #include "rvegen/generators/voronoi_generator_2d.h"
 #include "rvegen/generators/weave_generator.h"
@@ -43,31 +53,105 @@
 
 namespace py = pybind11;
 
-// Add the shape_base phase_name accessors to a bound shape. Used at
-// the tail of every shape's binding chain so Python users can tag
-// shapes for the per-phase output story (gmsh Physical groups,
-// voxel phase IDs). Templated on the concrete shape type so the
-// lambda captures pick the right `phase_name()` / `set_phase_name`
-// overload through normal name lookup.
-//
-// Takes the bound class by value so the entire `py::class_<X>(...).def(...)
-// ....def(...)` chain can be passed inline at the call site —
-// pybind11's `py::class_` wraps a Python type handle, so the copy is
-// cheap and registers methods on the same underlying Python type.
-template <typename Shape>
-void add_phase_name(py::class_<Shape> cls) {
-  cls.def_property("phase_name",
-      [](Shape const& s) { return s.phase_name(); },
-      [](Shape& s, std::string const& n) { s.set_phase_name(n); });
+namespace {
+
+using shape_ptr = std::unique_ptr<rvegen::shape_base<double>>;
+
+// ---- JSON <-> Python helpers (via the stdlib json module; no extra dep) ----
+nlohmann::json py_to_json(py::handle obj) {
+  auto const text =
+      py::module_::import("json").attr("dumps")(obj).cast<std::string>();
+  return nlohmann::json::parse(text);
 }
+
+py::object json_to_py(nlohmann::json const& j) {
+  return py::module_::import("json").attr("loads")(j.dump());
+}
+
+// A config is a dict (JSON-style) or a path (str / os.PathLike) to a JSON file.
+nlohmann::json load_config(py::object const& cfg) {
+  if (py::isinstance<py::dict>(cfg)) return py_to_json(cfg);
+  if (py::isinstance<py::str>(cfg) || py::hasattr(cfg, "__fspath__")) {
+    auto const path =
+        py::module_::import("os").attr("fspath")(cfg).cast<std::string>();
+    std::ifstream in{path};
+    if (!in)
+      throw std::runtime_error{"rvegen.run: cannot open config file: " + path};
+    try {
+      nlohmann::json j;
+      in >> j;
+      return j;
+    } catch (std::exception const& e) {
+      throw std::runtime_error{"rvegen.run: parse error in " + path + ": " +
+                               e.what()};
+    }
+  }
+  throw std::invalid_argument{
+      "rvegen.run: config must be a dict or a path to a JSON file"};
+}
+
+// Result of rvegen.run(): a sequence of shapes plus a summary dict.
+struct run_result {
+  py::list shapes;
+  py::dict summary;
+};
+
+// Registry introspection submodule: keys() and schema(name).
+template <typename Registry>
+void bind_registry(py::module_& parent, char const* name) {
+  auto sub = parent.def_submodule(name, "Registered types in this category.");
+  sub.def("keys", []() {
+    rvegen::register_all_types();
+    auto keys = Registry::instance().registered_types();
+    std::vector<std::string> out(keys.begin(), keys.end());
+    std::sort(out.begin(), out.end());
+    return out;
+  }, "Sorted names of every registered type.");
+  sub.def("schema", [](std::string const& type) {
+    rvegen::register_all_types();
+    auto& reg = Registry::instance();
+    if (!reg.contains(type))
+      throw py::key_error{"unknown type '" + type + "'"};
+    return json_to_py(rvegen::schema_to_json(reg.schema(type)));
+  }, py::arg("name"),
+     "Parameter schema of a type: {field: {type, required, description, ...}}.");
+}
+
+} // namespace
 
 PYBIND11_MODULE(_core, m) {
   m.doc() =
-      "rvegen — Representative Volume Element generator (Python bindings, "
-      "phase-2 shape surface: Circle, Sphere, Rectangle, Box, Ellipse, "
-      "PolylineTube, MeshInclusion, VoronoiCell).";
+      "rvegen — Representative Volume Element generator (Python bindings: "
+      "shape primitives, registry introspection, JSON-driven run(), "
+      "voxelize()).";
+  rvegen::register_all_types();   // populate every registry once
 
-  add_phase_name(py::class_<rvegen::circle<double>>(m, "Circle")
+  // Polymorphic base: lets rvegen.run() hand back shapes that pybind11
+  // downcasts to their concrete bound type (Circle, Sphere, ...).
+  py::class_<rvegen::shape_base<double>>(m, "Shape")
+      .def_property_readonly("kind", [](rvegen::shape_base<double> const& s) {
+        return rvegen::shape_type_name(s);
+      })
+      .def_property_readonly("center", [](rvegen::shape_base<double> const& s) {
+        return s.get_middle_point();
+      })
+      .def("area", &rvegen::shape_base<double>::area)
+      .def("volume", &rvegen::shape_base<double>::volume)
+      .def("is_inside",
+           [](rvegen::shape_base<double> const& s, double x, double y, double z) {
+             return s.is_inside({x, y, z});
+           },
+           py::arg("x"), py::arg("y"), py::arg("z") = 0.0)
+      .def_property("phase_name",
+          [](rvegen::shape_base<double> const& s) { return s.phase_name(); },
+          [](rvegen::shape_base<double>& s, std::string const& n) {
+            s.set_phase_name(n);
+          })
+      .def_property_readonly("info", [](rvegen::shape_base<double> const& s) {
+        return json_to_py(s.info().json());
+      });
+
+  py::class_<rvegen::circle<double>, rvegen::shape_base<double>>(m, "Circle")
       .def(py::init<double, double, double>(), py::arg("x"), py::arg("y"),
            py::arg("radius"))
       .def_property_readonly("x",
@@ -78,9 +162,9 @@ PYBIND11_MODULE(_core, m) {
           "radius", [](rvegen::circle<double> const& c) { return c.radius; })
       .def("is_inside", [](rvegen::circle<double> const& c, double x,
                            double y) { return c.is_inside({x, y, 0.0}); })
-      .def("area", &rvegen::circle<double>::area));
+      .def("area", &rvegen::circle<double>::area);
 
-  add_phase_name(py::class_<rvegen::sphere<double>>(m, "Sphere")
+  py::class_<rvegen::sphere<double>, rvegen::shape_base<double>>(m, "Sphere")
       .def(py::init<double, double, double, double>(), py::arg("x"),
            py::arg("y"), py::arg("z"), py::arg("radius"))
       .def_property_readonly("x",
@@ -95,9 +179,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::sphere<double> const& s, double x, double y, double z) {
              return s.is_inside({x, y, z});
            })
-      .def("volume", &rvegen::sphere<double>::volume));
+      .def("volume", &rvegen::sphere<double>::volume);
 
-  add_phase_name(py::class_<rvegen::rectangle<double>>(m, "Rectangle")
+  py::class_<rvegen::rectangle<double>, rvegen::shape_base<double>>(m, "Rectangle")
       .def(py::init<double, double, double, double>(), py::arg("x"),
            py::arg("y"), py::arg("width"), py::arg("height"))
       .def_property_readonly(
@@ -113,9 +197,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::rectangle<double> const& r, double x, double y) {
              return r.is_inside({x, y, 0.0});
            })
-      .def("area", &rvegen::rectangle<double>::area));
+      .def("area", &rvegen::rectangle<double>::area);
 
-  add_phase_name(py::class_<rvegen::box<double>>(m, "Box")
+  py::class_<rvegen::box<double>, rvegen::shape_base<double>>(m, "Box")
       .def(py::init<double, double, double, double, double, double>(),
            py::arg("x"), py::arg("y"), py::arg("z"), py::arg("width"),
            py::arg("height"), py::arg("depth"))
@@ -135,9 +219,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::box<double> const& b, double x, double y, double z) {
              return b.is_inside({x, y, z});
            })
-      .def("volume", &rvegen::box<double>::volume));
+      .def("volume", &rvegen::box<double>::volume);
 
-  add_phase_name(py::class_<rvegen::ellipse<double>>(m, "Ellipse")
+  py::class_<rvegen::ellipse<double>, rvegen::shape_base<double>>(m, "Ellipse")
       .def(py::init<double, double, double, double, double>(),
            py::arg("x"), py::arg("y"), py::arg("radius_a"),
            py::arg("radius_b"), py::arg("rotation_rad"))
@@ -155,9 +239,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::ellipse<double> const& e, double x, double y) {
              return e.is_inside({x, y, 0.0});
            })
-      .def("area", &rvegen::ellipse<double>::area));
+      .def("area", &rvegen::ellipse<double>::area);
 
-  add_phase_name(py::class_<rvegen::polyline_tube<double>>(m, "PolylineTube")
+  py::class_<rvegen::polyline_tube<double>, rvegen::shape_base<double>>(m, "PolylineTube")
       // Centerline as a Python list of (x, y, z) tuples — converted to
       // std::vector<std::array<double, 3>> via pybind11/stl.h.
       .def(py::init<std::vector<std::array<double, 3>> const&, double>(),
@@ -178,9 +262,9 @@ PYBIND11_MODULE(_core, m) {
       .def("is_inside",
            [](rvegen::polyline_tube<double> const& t, double x, double y,
               double z) { return t.is_inside({x, y, z}); })
-      .def("volume", &rvegen::polyline_tube<double>::volume));
+      .def("volume", &rvegen::polyline_tube<double>::volume);
 
-  add_phase_name(py::class_<rvegen::mesh_inclusion<double>>(m, "MeshInclusion")
+  py::class_<rvegen::mesh_inclusion<double>, rvegen::shape_base<double>>(m, "MeshInclusion")
       // `from_stl_file(path)` factory — the natural Python entry point.
       // Direct ctor from a Python triangle list is more painful (would
       // need to bind gte::Triangle3) and offers no win over loading via
@@ -202,9 +286,9 @@ PYBIND11_MODULE(_core, m) {
       .def("volume", &rvegen::mesh_inclusion<double>::volume)
       .def("set_middle_point",
            [](rvegen::mesh_inclusion<double>& m, double x, double y,
-              double z) { m.set_middle_point({x, y, z}); }));
+              double z) { m.set_middle_point({x, y, z}); });
 
-  add_phase_name(py::class_<rvegen::voronoi_cell<double>>(m, "VoronoiCell")
+  py::class_<rvegen::voronoi_cell<double>, rvegen::shape_base<double>>(m, "VoronoiCell")
       // Vertices: list of (x, y, z) tuples.
       // Faces: list of vertex-index lists per face.
       .def(py::init([](std::vector<std::array<double, 3>> const& verts,
@@ -235,11 +319,11 @@ PYBIND11_MODULE(_core, m) {
       .def("is_inside",
            [](rvegen::voronoi_cell<double> const& c, double x, double y,
               double z) { return c.is_inside({x, y, z}); })
-      .def("volume", &rvegen::voronoi_cell<double>::volume));
+      .def("volume", &rvegen::voronoi_cell<double>::volume);
 
   // 2D convex polygon — Voronoi-cell-ready, full shape_base contract
   // on the C++ side.
-  add_phase_name(py::class_<rvegen::convex_polygon<double>>(m, "ConvexPolygon")
+  py::class_<rvegen::convex_polygon<double>, rvegen::shape_base<double>>(m, "ConvexPolygon")
       .def(py::init<std::vector<std::array<double, 2>>>(),
            py::arg("vertices"),
            "Construct from a CCW-ordered list of (x, y) tuples; ≥ 3 "
@@ -264,7 +348,7 @@ PYBIND11_MODULE(_core, m) {
       .def("set_middle_point",
            [](rvegen::convex_polygon<double>& p, double x, double y) {
              p.set_middle_point({x, y, 0.0});
-           }));
+           });
 
   // Bounded 2D Voronoi tessellation by seed points (#114 phase 1).
   // build_polygons() returns the raw vertex lists; build_cells()
@@ -356,4 +440,99 @@ PYBIND11_MODULE(_core, m) {
              }
              return out;
            });
+
+  // ---- Registry introspection: rvegen.<category>.keys() / .schema(name) ----
+  bind_registry<rvegen::distribution_registry_t<>>(m, "distributions");
+  bind_registry<rvegen::direction_distribution_registry_t<>>(
+      m, "direction_distributions");
+  bind_registry<rvegen::input_registry_t<>>(m, "inputs");
+  bind_registry<rvegen::generator_registry_t<>>(m, "generators");
+  bind_registry<rvegen::termination_registry_t<>>(m, "terminations");
+  bind_registry<rvegen::post_process_registry_t<>>(m, "post_processes");
+  m.attr("shapes") = m.attr("inputs");   // "shapes" config section == shape inputs
+
+  // ---- Pipeline ----------------------------------------------------------
+  py::class_<run_result>(m, "RunResult",
+      "Shapes produced by rvegen.run(): a sequence of Shape objects plus a "
+      "`summary` dict (seed, n_shapes, domain_box, volume_fraction, phases, "
+      "postprocess).")
+      .def_readonly("shapes", &run_result::shapes)
+      .def_readonly("summary", &run_result::summary)
+      .def("__len__", [](run_result const& r) { return r.shapes.size(); })
+      .def("__iter__", [](run_result const& r) { return py::iter(r.shapes); })
+      .def("__getitem__", [](run_result const& r, py::object idx) {
+        return r.shapes.attr("__getitem__")(idx);
+      });
+
+  m.def("run",
+      [](py::object const& config, std::optional<std::uint64_t> seed,
+         bool postprocess) {
+        auto const cfg = load_config(config);
+        rvegen::pipeline_options opts;
+        opts.seed = seed;
+        opts.run_postprocess = postprocess;
+        rvegen::pipeline_result res;
+        {
+          py::gil_scoped_release release;   // pure C++ until the result is built
+          res = rvegen::run_pipeline(cfg, opts);
+        }
+        run_result out;
+        py::dict sm;
+        sm["seed"] = res.seed;
+        sm["n_shapes"] = res.shapes.size();
+        sm["domain_box"] = res.domain_box;
+        sm["volume_fraction"] =
+            rvegen::current_volume_fraction<double>(res.shapes, res.domain_box);
+        std::vector<std::string> phase_names;
+        if (res.phases)
+          for (auto const* p : res.phases->ordered())
+            phase_names.push_back(p->name);
+        sm["phases"] = phase_names;
+        sm["postprocess"] = res.post_processes_run;
+        for (auto& sh : res.shapes) out.shapes.append(py::cast(std::move(sh)));
+        out.summary = sm;
+        return out;
+      },
+      py::arg("config"), py::arg("seed") = py::none(),
+      py::arg("postprocess") = true,
+      "Run a full rvegen pipeline. `config` is a dict (same schema as the "
+      "CLI JSON) or a path to a JSON file; `seed` overrides the config "
+      "seed. Writers under \"postprocess\" run unless postprocess=False. "
+      "Returns a RunResult (sequence of shapes + summary).");
+
+  // ---- Voxelisation ---------------------------------------------------------
+  m.def("voxelize",
+      [](std::vector<rvegen::shape_base<double> const*> const& shapes,
+         std::array<double, 3> domain, std::size_t nx, std::size_t ny,
+         std::size_t nz) {
+        // sample_voxel_grid wants unique_ptrs; clone() leaves the caller's
+        // shapes untouched.
+        std::vector<shape_ptr> owned;
+        owned.reserve(shapes.size());
+        for (auto const* s : shapes) owned.push_back(s->clone());
+        std::vector<std::uint32_t> flat;
+        {
+          py::gil_scoped_release release;
+          flat = rvegen::sample_voxel_grid<double>(owned, domain, nx, ny, nz);
+        }
+        const std::size_t nz_eff = rvegen::effective_nz(domain, nz);
+        // Core order is (k, j, i) with i fastest; expose it as an array
+        // indexed [i, j, k] (shape (nx, ny, nz_eff)) without reshuffling.
+        auto* heap = new std::vector<std::uint32_t>(std::move(flat));
+        py::capsule owner{heap, [](void* p) {
+          delete static_cast<std::vector<std::uint32_t>*>(p);
+        }};
+        constexpr auto sz = static_cast<py::ssize_t>(sizeof(std::uint32_t));
+        return py::array_t<std::uint32_t>(
+            {static_cast<py::ssize_t>(nx), static_cast<py::ssize_t>(ny),
+             static_cast<py::ssize_t>(nz_eff)},
+            {sz, sz * static_cast<py::ssize_t>(nx),
+             sz * static_cast<py::ssize_t>(nx * ny)},
+            heap->data(), owner);
+      },
+      py::arg("shapes"), py::arg("domain"), py::arg("nx"), py::arg("ny"),
+      py::arg("nz") = 1,
+      "Sample shapes onto an nx*ny*nz grid; returns a uint32 array indexed "
+      "[i, j, k]. Voxel value = 1-based index of the first containing shape "
+      "(0 = outside). 2D domains (z == 0) collapse to nz = 1.");
 }

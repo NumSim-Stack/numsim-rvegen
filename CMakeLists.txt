@@ -204,6 +204,14 @@ target_link_libraries(rvegen_phases_test PRIVATE
 )
 add_test(NAME phases_test COMMAND rvegen_phases_test)
 
+add_executable(rvegen_pipeline_test tests/pipeline_test.cpp)
+target_link_libraries(rvegen_pipeline_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME pipeline_test COMMAND rvegen_pipeline_test
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console

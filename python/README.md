@@ -1,7 +1,7 @@
 # rvegen Python bindings
 
-Phase-2 shape surface: all eight shape primitives. Distributions, generators,
-and the JSON-driven config path land in follow-up PRs.
+Shape primitives, a JSON-driven `rvegen.run()`, `rvegen.voxelize()` and
+registry introspection.
 
 ## Build & install (editable, from this directory)
 
@@ -79,7 +79,7 @@ A pytest suite under `python/tests/` exercises one method per bound
 shape. After an editable install (in your venv):
 
 ```bash
-pip install pytest
+pip install pytest numpy
 pytest python/tests/
 ```
 
@@ -89,9 +89,50 @@ is what links the compiled `_core.so` next to the package.
 
 The CI workflow runs this on every PR (see `.github/workflows/ci.yml`).
 
+## Pipeline, voxelization, introspection
+
+```python
+import rvegen
+
+# Same JSON schema as the CLI; pass a dict or a path to a JSON file.
+config = {
+    "domain_box": [1.0, 1.0, 0.0],
+    "distributions": {"x": {"type": "uniform_real", "a": 0.1, "b": 0.9},
+                      "r": {"type": "uniform_real", "a": 0.03, "b": 0.05}},
+    "shapes": [{"type": "circle_input", "pos_x_dist": "x",
+                "pos_y_dist": "x", "radius_dist": "r"}],
+    "generator": {"type": "only_inside", "max_attempts": 100000},
+    "termination": {"type": "number_of_inclusions", "target": 50},
+}
+res = rvegen.run(config, seed=2026)   # RunResult: sequence of shapes + summary
+print(len(res), res.summary)          # seed, n_shapes, domain_box, volume_fraction, ...
+for s in res:
+    print(s.kind, s.center, s.area())
+
+# Writers under "postprocess" run too (set postprocess=False to skip them).
+# Deterministic generators (voronoi_2d/3d, weave, tow_weave) need no
+# "shapes" / "termination" sections.
+
+# numpy uint32 grid indexed [i, j, k]; value = 1-based index of the first
+# containing shape, 0 = outside. 2D domains collapse to nz = 1.
+grid = rvegen.voxelize(list(res), [1.0, 1.0, 0.0], nx=64, ny=64, nz=1)
+
+# Registry introspection: distributions, direction_distributions,
+# inputs (alias: shapes), generators, terminations, post_processes.
+print(rvegen.generators.keys())
+print(rvegen.generators.schema("weave"))   # {field: {type, required, description, min, ...}}
+```
+
+The Python entry point calls the same `rvegen::run_pipeline`
+(`include/rvegen/pipeline.h`) as the `rvegen` CLI.
+
+## Wheels
+
+`.github/workflows/wheels.yml` builds manylinux wheels for CPython
+3.10-3.13 with cibuildwheel (on `v*` tags or manual dispatch); settings
+live under `[tool.cibuildwheel]` in `pyproject.toml`.
+
 ## What's NOT exposed yet
 
-- Distributions (need engine reference + GIL handling)
-- Generators, terminations, post-processes
-- JSON config path (`rvegen.run_from_json(...)`)
-- Wheels via cibuildwheel (planned alongside the conda-forge feedstock)
+- Distributions / generators / terminations as standalone Python objects (use `rvegen.run` with a config dict)
+- Pickle support for shapes
