@@ -182,6 +182,10 @@ add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
 
+add_executable(rvegen_visualization_writers_test tests/visualization_writers_test.cpp)
+target_link_libraries(rvegen_visualization_writers_test PRIVATE rvegen_lib)
+add_test(NAME visualization_writers_test COMMAND rvegen_visualization_writers_test)
+
 add_executable(rvegen_schema_audit_test tests/schema_audit_test.cpp)
 target_link_libraries(rvegen_schema_audit_test PRIVATE rvegen_lib)
 add_test(NAME schema_audit_test COMMAND rvegen_schema_audit_test)

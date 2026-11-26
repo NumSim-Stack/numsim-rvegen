@@ -172,9 +172,11 @@ to_mesh(polyline_tube<T> const& tube,
     const std::size_t base_b = (i + 1) * N;
     for (std::size_t k = 0; k < N; ++k) {
       const std::size_t k1 = (k + 1) % N;
-      // Two triangles per quad: (a_k, b_k, a_k1) and (b_k, b_k1, a_k1).
-      m.tris.push_back({base_a + k,  base_b + k,  base_a + k1});
-      m.tris.push_back({base_b + k,  base_b + k1, base_a + k1});
+      // Two triangles per quad, CCW seen from outside (ring runs CCW
+      // about the tangent, so (a_k, a_k1, b_k) has an outward normal):
+      // (a_k, a_k1, b_k) and (b_k, a_k1, b_k1).
+      m.tris.push_back({base_a + k,  base_a + k1, base_b + k});
+      m.tris.push_back({base_b + k,  base_a + k1, base_b + k1});
     }
   }
 
