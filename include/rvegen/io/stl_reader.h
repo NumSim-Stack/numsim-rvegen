@@ -43,6 +43,8 @@
 //   normals against the right-hand-rule of the vertex order; that's
 //   the producer's responsibility.
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <cstddef>
@@ -139,52 +141,110 @@ inline float le_f32(unsigned char const* p) {
 
 } // namespace detail
 
+namespace detail {
+
+inline bool iequals(std::string const& a, char const* b) {
+  const std::size_t n = std::strlen(b);
+  if (a.size() != n) return false;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline std::string stl_facet_context(std::size_t facet) {
+  return "read_stl_ascii: facet " + std::to_string(facet) + ": ";
+}
+
+// Read the next token and require it to equal `expected`
+// (case-insensitively). Truncated input and mismatches both throw.
+inline void stl_expect_keyword(std::istream& in, char const* expected,
+                               std::size_t facet) {
+  std::string token;
+  if (!(in >> token)) {
+    throw std::runtime_error{
+        stl_facet_context(facet) + "unexpected end of input, expected '" +
+        expected + "'" + position_marker(in)};
+  }
+  if (!iequals(token, expected)) {
+    throw std::runtime_error{
+        stl_facet_context(facet) + "expected '" + expected + "' got '" +
+        token + "'" + position_marker(in)};
+  }
+}
+
+// Read the next token and parse the WHOLE token as a number. "1,5",
+// "1.0abc" and a missing token (truncated file) all throw.
+inline double stl_read_number(std::istream& in, char const* what,
+                              std::size_t facet) {
+  std::string token;
+  if (!(in >> token)) {
+    throw std::runtime_error{
+        stl_facet_context(facet) + "unexpected end of input while reading " +
+        what + position_marker(in)};
+  }
+  double v = 0.0;
+  if (!parse_real(token, v)) {
+    throw std::runtime_error{
+        stl_facet_context(facet) + "malformed number '" + token +
+        "' for " + what + position_marker(in)};
+  }
+  return v;
+}
+
+} // namespace detail
+
+// ASCII STL grammar (keywords case-insensitive):
+//   solid [name]
+//     facet normal nx ny nz
+//       outer loop
+//         vertex x y z     (exactly three)
+//       endloop
+//     endfacet
+//     ...
+//   endsolid [name]
+// Every keyword and number is checked; a truncated file, a malformed
+// number, a missing/misspelt keyword or a stray top-level token throws
+// std::runtime_error naming the (0-based) facet index and byte offset.
 template <typename T = double>
 [[nodiscard]] std::vector<gte::Triangle3<T>> read_stl_ascii(std::istream& in) {
   detail::reject_binary_stl(in);
   std::vector<gte::Triangle3<T>> triangles;
   std::string token;
   while (in >> token) {
-    if (token == "solid" || token == "endsolid") {
+    if (detail::iequals(token, "solid") || detail::iequals(token, "endsolid")) {
       // Skip the optional name on the same line.
       std::string rest;
       std::getline(in, rest);
       continue;
     }
-    if (token == "facet") {
-      // facet normal nx ny nz
-      std::string n;
-      in >> n;   // "normal"
-      T nx, ny, nz;
-      in >> nx >> ny >> nz;
-      // outer loop
-      in >> token;
-      if (token != "outer") {
-        throw std::runtime_error{
-            "read_stl_ascii: expected 'outer' got '" + token + "'" +
-            detail::position_marker(in)};
-      }
-      in >> token;   // "loop"
-
-      gte::Triangle3<T> tri;
-      for (int i = 0; i < 3; ++i) {
-        in >> token;   // "vertex"
-        if (token != "vertex") {
-          throw std::runtime_error{
-              "read_stl_ascii: expected 'vertex' got '" + token + "'" +
-              detail::position_marker(in)};
-        }
-        T vx, vy, vz;
-        in >> vx >> vy >> vz;
-        tri.v[i][0] = vx;
-        tri.v[i][1] = vy;
-        tri.v[i][2] = vz;
-      }
-      triangles.push_back(tri);
-
-      in >> token;   // "endloop"
-      in >> token;   // "endfacet"
+    const std::size_t facet = triangles.size();
+    if (!detail::iequals(token, "facet")) {
+      throw std::runtime_error{
+          detail::stl_facet_context(facet) + "expected 'facet' or "
+          "'endsolid' got '" + token + "'" + detail::position_marker(in)};
     }
+    // facet normal nx ny nz — the normal is validated but discarded.
+    detail::stl_expect_keyword(in, "normal", facet);
+    for (char const* what : {"normal x", "normal y", "normal z"}) {
+      (void)detail::stl_read_number(in, what, facet);
+    }
+    detail::stl_expect_keyword(in, "outer", facet);
+    detail::stl_expect_keyword(in, "loop", facet);
+
+    gte::Triangle3<T> tri;
+    for (int i = 0; i < 3; ++i) {
+      detail::stl_expect_keyword(in, "vertex", facet);
+      tri.v[i][0] = static_cast<T>(detail::stl_read_number(in, "vertex x", facet));
+      tri.v[i][1] = static_cast<T>(detail::stl_read_number(in, "vertex y", facet));
+      tri.v[i][2] = static_cast<T>(detail::stl_read_number(in, "vertex z", facet));
+    }
+    detail::stl_expect_keyword(in, "endloop", facet);
+    detail::stl_expect_keyword(in, "endfacet", facet);
+    triangles.push_back(tri);
   }
   return triangles;
 }
@@ -246,7 +306,26 @@ template <typename T = double>
         ") — probably a malformed file"};
   }
 
-  triangles.reserve(n_tris);
+  // Never reserve on the strength of an unchecked header count. On a
+  // seekable stream the payload must hold AT LEAST 50·n bytes; we
+  // accept trailing bytes after the last record (some exporters pad
+  // or append metadata) but refuse a count the data cannot back. On a
+  // non-seekable stream we cap the up-front reservation and let the
+  // per-record short-read check catch truncation.
+  constexpr std::uint64_t record_bytes = 50;
+  if (const auto remaining = detail::remaining_bytes(in)) {
+    if (*remaining < record_bytes * n_tris) {
+      throw std::runtime_error{
+          "read_stl_binary: header advertises " + std::to_string(n_tris) +
+          " triangles (" + std::to_string(record_bytes * n_tris) +
+          " bytes) but only " + std::to_string(*remaining) +
+          " bytes of triangle data follow"};
+    }
+    triangles.reserve(n_tris);
+  } else {
+    constexpr std::uint32_t non_seekable_reserve_cap = 1u << 20;
+    triangles.reserve(std::min(n_tris, non_seekable_reserve_cap));
+  }
 
   // 50-byte triangle records.
   std::array<unsigned char, 50> rec;

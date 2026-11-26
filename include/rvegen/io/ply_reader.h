@@ -1,6 +1,6 @@
 #pragma once
 
-// PLY (Stanford Polygon) reader, ASCII subset.
+// PLY (Stanford Polygon) reader — ASCII and binary little/big endian.
 //
 // PLY differs from STL in that it stores a deduplicated vertex table
 // plus a face element list that references vertices by index. STL,
@@ -10,43 +10,53 @@
 // (notably `mesh_inclusion`) consume the exact same data structure
 // as the STL reader.
 //
-// API surface (phase 1, this header):
+// API surface:
 //   * `read_ply_ascii(istream)` / `read_ply_ascii_file(path)` —
-//     ASCII PLY only. Binary PLY (little- or big-endian) is detected
-//     in the header and refused with a clear "binary not yet
-//     supported" error, mirroring the way the STL reader handled
-//     binary in its first cut.
-//   * `read_ply(istream)` / `read_ply_file(path)` — auto-detect
-//     entry points that today only accept ASCII. They are exposed so
-//     consumers (e.g. mesh_inclusion_input once it grows a `format
-//     auto` mode) don't need to be edited when binary PLY support
-//     lands.
+//     ASCII PLY only; a binary `format` line is refused with a clear
+//     error pointing at the binary / auto-detect entry points.
+//   * `read_ply_binary(istream)` / `read_ply_binary_file(path)` —
+//     binary little- or big-endian PLY; an ASCII `format` line is
+//     refused.
+//   * `read_ply(istream)` / `read_ply_file(path)` — auto-detect:
+//     sniff the `format` line, rewind, dispatch. Most callers want
+//     this.
 //
 // Subset of PLY this reader handles:
-//   * Header lines: `ply`, `format ascii 1.0`, `comment ...`,
-//     `element vertex N`, `element face N`, `property <type> <name>`,
-//     `property list <count_type> <index_type> <name>`,
-//     `end_header`.
+//   * Header lines: `ply`, `format <ascii|binary_*> 1.0`,
+//     `comment ...`, `obj_info ...`, `element vertex N`,
+//     `element face N`, `property <type> <name>`,
+//     `property list <count_type> <index_type> <name>`, `end_header`.
+//     Unknown private header lines are skipped.
 //   * Vertex element MUST declare `x`, `y`, `z` properties of any
 //     scalar type the reader can parse (float, double, int*, uint*).
 //     Extra properties (nx, ny, nz, red, green, blue, alpha,
-//     intensity, etc.) are silently skipped per-vertex.
-//   * Face element MUST declare a single `vertex_indices` (or
-//     `vertex_index`, the older name) list property. Other face
-//     properties are rejected — see the format quirks note below.
+//     intensity, etc.) are read and silently discarded per-vertex.
+//   * Face element MUST declare a `vertex_indices` (or `vertex_index`,
+//     the older name) list property. Other face properties — scalars
+//     or lists, before or after the index list — are read and
+//     discarded.
+//   * `vertex` and `face` may be declared in either order; the
+//     payload is read in declaration order and faces are resolved
+//     against the vertex table once both are read.
 //   * Faces with >3 indices are fan-triangulated around index 0.
 //
+// Validation (hostile / malformed input throws std::runtime_error):
+//   * Element counts are capped (`max_ply_element_count`) and, on a
+//     seekable stream, checked against the remaining payload size
+//     BEFORE any reservation — every row needs at least one byte per
+//     property (ASCII) or the sum of its fixed scalar sizes (binary).
+//     Non-seekable streams reserve at most `non_seekable_reserve_cap`.
+//   * List counts must be finite, non-negative integers no larger
+//     than `max_ply_list_count`; long lists are also checked against
+//     the remaining payload. Index storage grows only as data is
+//     actually read, never from a declared count.
+//   * Vertex indices must be finite, non-negative, integral and less
+//     than the vertex count. No unchecked double → size_t casts.
+//   * ASCII scalars must parse as a whole token ("1,5" is an error).
+//
 // What it does NOT handle:
-//   * Binary little/big endian PLY (header parses fine; payload is
-//     refused — clear error message). Easy follow-up: same scaffolding
-//     as the binary STL reader.
 //   * Multi-element files beyond `vertex` + `face` (other elements
 //     like `edge`, `material`, `tristrips` are rejected).
-//   * Per-face properties beyond the index list. In real PLY files
-//     these exist (e.g. `red green blue` per face), but parsing them
-//     requires knowing each property's type at field-skipping time,
-//     and the value isn't useful for our consumer (a polygon mesh
-//     fed into `is_inside`).
 //
 // Tolerances:
 //   Header keywords are lowercase by spec but the reader matches
@@ -57,12 +67,14 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <istream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -76,6 +88,14 @@
 namespace rvegen {
 
 namespace detail {
+
+// Absolute sanity caps, independent of the stream size. 100M rows
+// matches the binary-STL cap; a single polygon with more than ~1M
+// corners is certainly malformed.
+inline constexpr std::uint64_t max_ply_element_count = 100'000'000;
+inline constexpr std::uint64_t max_ply_list_count = 1u << 20;
+// Upper bound on an up-front reserve() when the stream size is unknown.
+inline constexpr std::size_t non_seekable_reserve_cap = 1u << 20;
 
 inline std::string to_lower(std::string s) {
   std::transform(s.begin(), s.end(), s.begin(),
@@ -130,9 +150,26 @@ inline ply_format parse_format_keyword(std::string const& fmt) {
   throw std::runtime_error{"read_ply: unknown format '" + fmt + "'"};
 }
 
-// Parse the header up to `end_header`. Reports the format, the
-// element table, and the count of bytes consumed (we don't need that
-// here, but exposed for symmetry with binary support).
+// Validate a count (element row count or list length) that arrived
+// as a double: finite, non-negative, integral, within `cap`.
+inline std::size_t checked_count(double v, std::uint64_t cap,
+                                 std::string const& what) {
+  if (!std::isfinite(v) || v < 0.0 || v != std::floor(v)) {
+    throw std::runtime_error{
+        "read_ply: " + what + " must be a non-negative integer, got " +
+        std::to_string(v)};
+  }
+  if (v > static_cast<double>(cap)) {
+    throw std::runtime_error{
+        "read_ply: " + what + " " + std::to_string(v) +
+        " exceeds sanity limit (" + std::to_string(cap) +
+        ") — probably a malformed file"};
+  }
+  return static_cast<std::size_t>(v);
+}
+
+// Parse the header up to `end_header`. Reports the format and the
+// element table.
 inline std::pair<ply_format, std::vector<ply_element>>
 read_ply_header(std::istream& in) {
   std::string first;
@@ -153,14 +190,28 @@ read_ply_header(std::istream& in) {
 
   std::vector<ply_element> elems;
   std::string line;
+  bool saw_end_header = false;
   while (next_header_line(in, line)) {
     const auto lower = to_lower(line);
-    if (lower == "end_header") break;
+    if (lower == "end_header") { saw_end_header = true; break; }
     if (lower.rfind("element", 0) == 0) {
       std::istringstream es{line};
-      std::string kw, name;
-      std::size_t count;
-      es >> kw >> name >> count;
+      std::string kw, name, count_token;
+      double count_value = 0.0;
+      if (!(es >> kw >> name >> count_token) ||
+          !parse_real(count_token, count_value)) {
+        throw std::runtime_error{
+            "read_ply: malformed element line '" + line + "'"};
+      }
+      const auto count = checked_count(
+          count_value, max_ply_element_count,
+          "element '" + name + "' count");
+      for (auto const& e : elems) {
+        if (e.name == name) {
+          throw std::runtime_error{
+              "read_ply: element '" + name + "' declared twice"};
+        }
+      }
       elems.push_back({name, count, {}});
     } else if (lower.rfind("property", 0) == 0) {
       if (elems.empty()) {
@@ -172,12 +223,18 @@ read_ply_header(std::istream& in) {
       ps >> kw >> type_or_list;
       if (to_lower(type_or_list) == "list") {
         std::string count_type, index_type, name;
-        ps >> count_type >> index_type >> name;
+        if (!(ps >> count_type >> index_type >> name)) {
+          throw std::runtime_error{
+              "read_ply: malformed list property line '" + line + "'"};
+        }
         elems.back().props.push_back(
             {name, index_type, true, count_type});
       } else {
         std::string name;
-        ps >> name;
+        if (!(ps >> name)) {
+          throw std::runtime_error{
+              "read_ply: malformed property line '" + line + "'"};
+        }
         elems.back().props.push_back({name, type_or_list, false, ""});
       }
     } else {
@@ -190,17 +247,27 @@ read_ply_header(std::istream& in) {
       // appear" check.
     }
   }
+  if (!saw_end_header) {
+    throw std::runtime_error{"read_ply: header has no 'end_header' line"};
+  }
   return {format, elems};
 }
 
 // Read a single ASCII scalar value as double — covers every numeric
 // PLY scalar type because we only need the value for x/y/z (cast to
-// T at use site) and for the list count / index (cast to size_t).
+// T at use site) and for the list count / index (validated before
+// any conversion to size_t). The whole token must be a number.
 inline double read_ascii_scalar(std::istream& in) {
-  double v;
-  if (!(in >> v)) {
+  std::string token;
+  if (!(in >> token)) {
     throw std::runtime_error{
         "read_ply_ascii: ran out of input mid-element" +
+        position_marker(in)};
+  }
+  double v = 0.0;
+  if (!parse_real(token, v)) {
+    throw std::runtime_error{
+        "read_ply_ascii: malformed number '" + token + "'" +
         position_marker(in)};
   }
   return v;
@@ -336,6 +403,175 @@ inline std::size_t face_list_property_index(ply_element const& face) {
       "read_ply: face element is missing 'vertex_indices' list property"};
 }
 
+// Validate a vertex index that arrived as a double before it is ever
+// converted: finite, non-negative, integral, < n_verts.
+inline std::size_t checked_vertex_index(double v, std::size_t n_verts,
+                                        std::size_t face, char const* who) {
+  if (!std::isfinite(v) || v < 0.0 || v != std::floor(v) ||
+      v >= static_cast<double>(n_verts)) {
+    throw std::runtime_error{
+        std::string{who} + ": face " + std::to_string(face) +
+        " references invalid vertex index " + std::to_string(v) +
+        " (vertex count " + std::to_string(n_verts) + ")"};
+  }
+  return static_cast<std::size_t>(v);
+}
+
+// Shared payload reader for ASCII and binary PLY. `read_scalar(kind)`
+// returns the next scalar as double; `min_bytes(kind)` is the fewest
+// bytes a scalar of that kind can occupy in the payload (1 for ASCII,
+// the fixed width for binary). Elements are read in header order, so
+// `face` may precede `vertex`; triangles are assembled at the end.
+template <typename T, typename ReadScalar, typename MinBytes>
+std::vector<gte::Triangle3<T>> read_ply_payload(
+    std::istream& in, std::vector<ply_element> const& elems,
+    char const* who, ReadScalar&& read_scalar, MinBytes&& min_bytes) {
+  ply_element const* vertex = nullptr;
+  ply_element const* face   = nullptr;
+  for (auto const& e : elems) {
+    if (e.name == "vertex") vertex = &e;
+    else if (e.name == "face") face = &e;
+    else throw std::runtime_error{
+        std::string{who} + ": unsupported element '" + e.name + "'"};
+  }
+  if (!vertex) throw std::runtime_error{
+      std::string{who} + ": no 'vertex' element declared"};
+  if (!face)   throw std::runtime_error{
+      std::string{who} + ": no 'face' element declared"};
+
+  const auto xyz = vertex_xyz_offsets(*vertex);
+  const auto face_list_prop = face_list_property_index(*face);
+
+  // Pre-resolve each property's scalar kind into a small enum so the
+  // inner loops never touch strings.
+  const auto vtyped = make_typed_props(*vertex);
+  const auto ftyped = make_typed_props(*face);
+
+  auto min_row_bytes = [&](std::vector<typed_property> const& props) {
+    std::uint64_t b = 0;
+    for (auto const& p : props) {
+      b += min_bytes(p.is_list ? p.list_count_kind : p.kind);
+    }
+    return b;
+  };
+
+  // Bound header counts by what the stream can actually hold before
+  // reserving anything. Counts are already capped at
+  // max_ply_element_count, so the products cannot overflow.
+  const auto remaining = remaining_bytes(in);
+  std::optional<std::uint64_t> end_offset;
+  if (remaining) {
+    const std::uint64_t need =
+        vertex->count * min_row_bytes(vtyped) +
+        face->count * min_row_bytes(ftyped);
+    if (need > *remaining) {
+      throw std::runtime_error{
+          std::string{who} + ": header declares " +
+          std::to_string(vertex->count) + " vertices and " +
+          std::to_string(face->count) + " faces (at least " +
+          std::to_string(need) + " bytes) but only " +
+          std::to_string(*remaining) + " bytes of payload remain"};
+    }
+    end_offset = static_cast<std::uint64_t>(in.tellg()) + *remaining;
+  }
+  auto reserve_hint = [&](std::size_t n) {
+    return remaining ? n : std::min(n, non_seekable_reserve_cap);
+  };
+
+  // Read and validate a list count. Long lists are additionally
+  // checked against the bytes left in the stream (cheap tellg only
+  // when the list is suspiciously long).
+  auto read_list_count = [&](typed_property const& prop,
+                             char const* what) -> std::size_t {
+    const auto n = checked_count(read_scalar(prop.list_count_kind),
+                                 max_ply_list_count, what);
+    if (n > 256 && end_offset) {
+      const auto pos = in.tellg();
+      const std::uint64_t left =
+          pos >= 0 ? *end_offset - static_cast<std::uint64_t>(pos) : 0;
+      if (static_cast<std::uint64_t>(n) * min_bytes(prop.kind) > left) {
+        throw std::runtime_error{
+            std::string{who} + ": " + what + " " + std::to_string(n) +
+            " exceeds the remaining " + std::to_string(left) +
+            " bytes of input" + position_marker(in)};
+      }
+    }
+    return n;
+  };
+
+  std::vector<std::array<T, 3>> verts;
+  std::vector<std::array<std::size_t, 3>> tri_idx;
+  std::vector<std::size_t> indices;
+
+  for (auto const& e : elems) {
+    if (&e == vertex) {
+      verts.reserve(reserve_hint(vertex->count));
+      for (std::size_t v = 0; v < vertex->count; ++v) {
+        std::array<T, 3> p{};
+        for (std::size_t i = 0; i < vtyped.size(); ++i) {
+          auto const& prop = vtyped[i];
+          if (prop.is_list) {
+            // Vertex-level list property — rare. Skip its values.
+            const auto n = read_list_count(prop, "vertex list count");
+            for (std::size_t k = 0; k < n; ++k) (void)read_scalar(prop.kind);
+            continue;
+          }
+          const auto val = read_scalar(prop.kind);
+          if      (i == xyz[0]) p[0] = static_cast<T>(val);
+          else if (i == xyz[1]) p[1] = static_cast<T>(val);
+          else if (i == xyz[2]) p[2] = static_cast<T>(val);
+          // else: silently drop the per-vertex extra property.
+        }
+        verts.push_back(p);
+      }
+    } else {
+      // Faces: indices are validated against the header's vertex
+      // count, which is exact whether or not the vertex table has
+      // been read yet. Extra face properties are read and discarded.
+      tri_idx.reserve(reserve_hint(face->count));
+      for (std::size_t f = 0; f < face->count; ++f) {
+        indices.clear();
+        for (std::size_t i = 0; i < ftyped.size(); ++i) {
+          auto const& prop = ftyped[i];
+          if (i == face_list_prop) {
+            const auto n = read_list_count(prop, "face index count");
+            for (std::size_t k = 0; k < n; ++k) {
+              indices.push_back(checked_vertex_index(
+                  read_scalar(prop.kind), vertex->count, f, who));
+            }
+          } else if (prop.is_list) {
+            const auto n = read_list_count(prop, "face list count");
+            for (std::size_t k = 0; k < n; ++k) (void)read_scalar(prop.kind);
+          } else {
+            (void)read_scalar(prop.kind);
+          }
+        }
+        if (indices.size() < 3) {
+          throw std::runtime_error{
+              std::string{who} + ": face " + std::to_string(f) +
+              " has fewer than 3 vertices"};
+        }
+        // Fan-triangulate around indices[0].
+        for (std::size_t k = 1; k + 1 < indices.size(); ++k) {
+          tri_idx.push_back({indices[0], indices[k], indices[k + 1]});
+        }
+      }
+    }
+  }
+
+  std::vector<gte::Triangle3<T>> triangles;
+  triangles.reserve(tri_idx.size());
+  for (auto const& t : tri_idx) {
+    gte::Triangle3<T> tri;
+    for (int c = 0; c < 3; ++c) {
+      auto const& p = verts[t[c]];
+      tri.v[c] = {p[0], p[1], p[2]};
+    }
+    triangles.push_back(tri);
+  }
+  return triangles;
+}
+
 } // namespace detail
 
 // ASCII PLY reader. Throws std::runtime_error on any parse mismatch,
@@ -354,97 +590,10 @@ template <typename T = double>
         "read_ply_binary (or the auto-detect read_ply / read_ply_file "
         "entry points) for binary PLY input."};
   }
-
-  // Locate the vertex and face elements. Allow the file to declare
-  // them in either order, though the spec recommends vertex first.
-  detail::ply_element const* vertex = nullptr;
-  detail::ply_element const* face   = nullptr;
-  for (auto const& e : elems) {
-    if (e.name == "vertex") vertex = &e;
-    else if (e.name == "face") face = &e;
-    else throw std::runtime_error{
-        "read_ply_ascii: unsupported element '" + e.name + "'"};
-  }
-  if (!vertex) throw std::runtime_error{
-      "read_ply_ascii: no 'vertex' element declared"};
-  if (!face)   throw std::runtime_error{
-      "read_ply_ascii: no 'face' element declared"};
-
-  const auto xyz = detail::vertex_xyz_offsets(*vertex);
-  const auto face_list_prop = detail::face_list_property_index(*face);
-
-  // Read the vertex table, one row per vertex. Each row may carry
-  // extra properties (normals, colours, etc.) — we read them as
-  // doubles and discard.
-  std::vector<std::array<T, 3>> verts;
-  verts.reserve(vertex->count);
-  for (std::size_t v = 0; v < vertex->count; ++v) {
-    std::array<T, 3> p{};
-    for (std::size_t i = 0; i < vertex->props.size(); ++i) {
-      auto const& prop = vertex->props[i];
-      if (prop.is_list) {
-        // Read count, then skip that many scalars.
-        const auto n = static_cast<std::size_t>(detail::read_ascii_scalar(in));
-        for (std::size_t k = 0; k < n; ++k) (void)detail::read_ascii_scalar(in);
-        continue;
-      }
-      const auto val = detail::read_ascii_scalar(in);
-      if      (i == xyz[0]) p[0] = static_cast<T>(val);
-      else if (i == xyz[1]) p[1] = static_cast<T>(val);
-      else if (i == xyz[2]) p[2] = static_cast<T>(val);
-      // else: silently drop the per-vertex extra property.
-    }
-    verts.push_back(p);
-  }
-
-  // Read the face table. Each face is a list of vertex indices, of
-  // length given by the leading count scalar (so a triangle face line
-  // looks like `3 0 1 2`). Fan-triangulate any face with >3 indices.
-  // Faces in the file may also declare non-list properties after the
-  // list (rare in practice but legal); we read and discard those.
-  std::vector<gte::Triangle3<T>> triangles;
-  triangles.reserve(face->count);
-  for (std::size_t f = 0; f < face->count; ++f) {
-    std::vector<std::size_t> indices;
-    for (std::size_t i = 0; i < face->props.size(); ++i) {
-      auto const& prop = face->props[i];
-      if (i == face_list_prop) {
-        const auto n = static_cast<std::size_t>(detail::read_ascii_scalar(in));
-        indices.resize(n);
-        for (std::size_t k = 0; k < n; ++k) {
-          indices[k] = static_cast<std::size_t>(detail::read_ascii_scalar(in));
-        }
-      } else if (prop.is_list) {
-        // Non-vertex-index list — skip it generically.
-        const auto n = static_cast<std::size_t>(detail::read_ascii_scalar(in));
-        for (std::size_t k = 0; k < n; ++k) (void)detail::read_ascii_scalar(in);
-      } else {
-        (void)detail::read_ascii_scalar(in);
-      }
-    }
-    if (indices.size() < 3) {
-      throw std::runtime_error{
-          "read_ply_ascii: face with fewer than 3 vertices"};
-    }
-    for (auto i : indices) {
-      if (i >= verts.size()) {
-        throw std::runtime_error{
-            "read_ply_ascii: face references out-of-range vertex index"};
-      }
-    }
-    // Fan-triangulate around indices[0].
-    for (std::size_t k = 1; k + 1 < indices.size(); ++k) {
-      gte::Triangle3<T> tri;
-      auto const& a = verts[indices[0]];
-      auto const& b = verts[indices[k]];
-      auto const& c = verts[indices[k + 1]];
-      tri.v[0] = {a[0], a[1], a[2]};
-      tri.v[1] = {b[0], b[1], b[2]};
-      tri.v[2] = {c[0], c[1], c[2]};
-      triangles.push_back(tri);
-    }
-  }
-  return triangles;
+  return detail::read_ply_payload<T>(
+      in, elems, "read_ply_ascii",
+      [&](detail::scalar_kind) { return detail::read_ascii_scalar(in); },
+      [](detail::scalar_kind) -> std::uint64_t { return 1; });
 }
 
 template <typename T = double>
@@ -457,8 +606,9 @@ template <typename T = double>
   return read_ply_ascii<T>(in);
 }
 
-// Binary PLY reader, little- or big-endian. The header parser is
-// shared with the ASCII path — only the payload decoding differs.
+// Binary PLY reader, little- or big-endian. The header parser and
+// payload walker are shared with the ASCII path — only the scalar
+// decoding differs.
 //
 // Stream MUST be opened in binary mode (`std::ios::binary`) when the
 // source is a file; otherwise text-mode line-ending translation can
@@ -472,102 +622,15 @@ template <typename T = double>
         "read_ply_binary: file declares ASCII format. Use read_ply_ascii "
         "or the auto-detect read_ply entry point."};
   }
-
-  detail::ply_element const* vertex = nullptr;
-  detail::ply_element const* face   = nullptr;
-  for (auto const& e : elems) {
-    if (e.name == "vertex") vertex = &e;
-    else if (e.name == "face") face = &e;
-    else throw std::runtime_error{
-        "read_ply_binary: unsupported element '" + e.name + "'"};
-  }
-  if (!vertex) throw std::runtime_error{
-      "read_ply_binary: no 'vertex' element declared"};
-  if (!face)   throw std::runtime_error{
-      "read_ply_binary: no 'face' element declared"};
-
-  const auto xyz = detail::vertex_xyz_offsets(*vertex);
-  const auto face_list_prop = detail::face_list_property_index(*face);
-
-  // Pre-resolve each property's scalar kind into a small enum. The
-  // inner read loops now branch on these, never on a `to_lower`-ed
-  // string — important for million-vertex meshes where the old code
-  // would have made millions of std::string allocations.
-  const auto vtyped = detail::make_typed_props(*vertex);
-  const auto ftyped = detail::make_typed_props(*face);
-
-  std::vector<std::array<T, 3>> verts;
-  verts.reserve(vertex->count);
-  for (std::size_t v = 0; v < vertex->count; ++v) {
-    std::array<T, 3> p{};
-    for (std::size_t i = 0; i < vtyped.size(); ++i) {
-      auto const& prop = vtyped[i];
-      if (prop.is_list) {
-        // Vertex-level list property — rare. Read count via the
-        // declared count type, then skip that many values of the
-        // declared scalar type.
-        const auto n = static_cast<std::size_t>(
-            detail::read_binary_scalar(in, format, prop.list_count_kind));
-        for (std::size_t k = 0; k < n; ++k) {
-          (void)detail::read_binary_scalar(in, format, prop.kind);
-        }
-        continue;
-      }
-      const auto val = detail::read_binary_scalar(in, format, prop.kind);
-      if      (i == xyz[0]) p[0] = static_cast<T>(val);
-      else if (i == xyz[1]) p[1] = static_cast<T>(val);
-      else if (i == xyz[2]) p[2] = static_cast<T>(val);
-      // else: silently drop the per-vertex extra property.
-    }
-    verts.push_back(p);
-  }
-
-  std::vector<gte::Triangle3<T>> triangles;
-  triangles.reserve(face->count);
-  for (std::size_t f = 0; f < face->count; ++f) {
-    std::vector<std::size_t> indices;
-    for (std::size_t i = 0; i < ftyped.size(); ++i) {
-      auto const& prop = ftyped[i];
-      if (i == face_list_prop) {
-        const auto n = static_cast<std::size_t>(
-            detail::read_binary_scalar(in, format, prop.list_count_kind));
-        indices.resize(n);
-        for (std::size_t k = 0; k < n; ++k) {
-          indices[k] = static_cast<std::size_t>(
-              detail::read_binary_scalar(in, format, prop.kind));
-        }
-      } else if (prop.is_list) {
-        const auto n = static_cast<std::size_t>(
-            detail::read_binary_scalar(in, format, prop.list_count_kind));
-        for (std::size_t k = 0; k < n; ++k) {
-          (void)detail::read_binary_scalar(in, format, prop.kind);
-        }
-      } else {
-        (void)detail::read_binary_scalar(in, format, prop.kind);
-      }
-    }
-    if (indices.size() < 3) {
-      throw std::runtime_error{
-          "read_ply_binary: face with fewer than 3 vertices"};
-    }
-    for (auto i : indices) {
-      if (i >= verts.size()) {
-        throw std::runtime_error{
-            "read_ply_binary: face references out-of-range vertex index"};
-      }
-    }
-    for (std::size_t k = 1; k + 1 < indices.size(); ++k) {
-      gte::Triangle3<T> tri;
-      auto const& a = verts[indices[0]];
-      auto const& b = verts[indices[k]];
-      auto const& c = verts[indices[k + 1]];
-      tri.v[0] = {a[0], a[1], a[2]};
-      tri.v[1] = {b[0], b[1], b[2]};
-      tri.v[2] = {c[0], c[1], c[2]};
-      triangles.push_back(tri);
-    }
-  }
-  return triangles;
+  const auto fmt = format;
+  return detail::read_ply_payload<T>(
+      in, elems, "read_ply_binary",
+      [&](detail::scalar_kind k) {
+        return detail::read_binary_scalar(in, fmt, k);
+      },
+      [](detail::scalar_kind k) -> std::uint64_t {
+        return detail::scalar_kind_size(k);
+      });
 }
 
 template <typename T = double>

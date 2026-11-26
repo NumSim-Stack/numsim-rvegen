@@ -16,12 +16,17 @@
 //     point against base triangles is equivalent to testing the
 //     original point against translated triangles.
 //   * `volume()` — translate-invariant; computed once over the base
-//     mesh via the divergence theorem.
-//   * `make_bounding_box()`, `get_middle_point()`,
-//     `set_middle_point()` (translate via offset; O(1)), `clone()`,
-//     `shape_id()`.
+//     mesh via the divergence theorem and cached.
+//   * `make_bounding_box()`, `max_expansion()`, `get_middle_point()`,
+//     `set_middle_point()` (translate via offset; O(1) — the base
+//     AABB is cached), `clone()`, `shape_id()`.
 //   * Direct C++ ctor from a vector of triangles (wraps in shared_ptr)
-//     OR from an existing shared_ptr (zero-copy).
+//     OR from an existing shared_ptr (zero-copy unless re-orienting).
+//   * Construction validates the mesh: finite vertices, closed and
+//     manifold (each welded edge shared by exactly two triangles),
+//     orientable. Inconsistently wound triangles are re-oriented so
+//     `volume()` is correct for CAD output with mixed winding; an
+//     open / non-manifold / non-finite mesh throws std::runtime_error.
 //
 // Why offset + shared base, not per-shape vector copy:
 //   The previous design copied the triangle vector into every shape.
@@ -44,7 +49,11 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <map>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -61,6 +70,218 @@
 
 namespace rvegen {
 
+namespace detail {
+
+// Validate a triangle soup as a closed, orientable surface and compute
+// the per-triangle flips (swap v[1] <-> v[2]) that give it consistent
+// OUTWARD winding. Throws std::runtime_error when:
+//   * any vertex coordinate is NaN / inf;
+//   * the mesh is open or non-manifold — after welding bit-identical
+//     vertices, some undirected edge is not shared by exactly two
+//     (non-degenerate) triangles;
+//   * the surface is non-orientable (no consistent winding exists).
+//
+// Algorithm: weld vertices, collect the three undirected edges of each
+// non-degenerate triangle, sort, require groups of exactly two, then
+// BFS over the resulting face adjacency so that every shared edge is
+// traversed in opposite directions by its two faces. Each connected
+// component is then flipped as a whole so its signed volume is
+// positive — or negative if it is nested inside an odd number of other
+// components (a cavity), matching the parity semantics of `is_inside`.
+// Degenerate triangles (two welded corners coincide) carry no area and
+// are left out of the topology check and never flipped.
+//
+// Returns an empty vector for an empty mesh.
+template <typename T>
+[[nodiscard]] std::vector<char> mesh_inclusion_orientation_flips(
+    std::vector<gte::Triangle3<T>> const& tris) {
+  const std::size_t m = tris.size();
+  if (m == 0) return {};
+
+  for (std::size_t f = 0; f < m; ++f) {
+    for (int c = 0; c < 3; ++c) {
+      for (int k = 0; k < 3; ++k) {
+        if (!std::isfinite(tris[f].v[c][k])) {
+          throw std::runtime_error{
+              "mesh_inclusion: triangle " + std::to_string(f) +
+              " has a non-finite (NaN/inf) vertex coordinate"};
+        }
+      }
+    }
+  }
+
+  // Weld bit-identical vertices into ids.
+  std::map<std::array<T, 3>, std::size_t> ids;
+  std::vector<gte::Vector3<T>> pos;
+  std::vector<std::array<std::size_t, 3>> fv(m);
+  for (std::size_t f = 0; f < m; ++f) {
+    for (int c = 0; c < 3; ++c) {
+      auto const& v = tris[f].v[c];
+      auto [it, inserted] = ids.try_emplace({v[0], v[1], v[2]}, pos.size());
+      if (inserted) pos.push_back(v);
+      fv[f][c] = it->second;
+    }
+  }
+
+  struct half_edge {
+    std::size_t lo, hi, face;
+    bool forward;   // face traverses lo -> hi
+  };
+  std::vector<half_edge> halves;
+  halves.reserve(3 * m);
+  std::vector<char> degenerate(m, 0);
+  for (std::size_t f = 0; f < m; ++f) {
+    auto const& t = fv[f];
+    if (t[0] == t[1] || t[1] == t[2] || t[0] == t[2]) {
+      degenerate[f] = 1;
+      continue;
+    }
+    for (int k = 0; k < 3; ++k) {
+      const auto u = t[k];
+      const auto w = t[(k + 1) % 3];
+      halves.push_back({std::min(u, w), std::max(u, w), f, u < w});
+    }
+  }
+  std::sort(halves.begin(), halves.end(),
+            [](half_edge const& a, half_edge const& b) {
+              return a.lo != b.lo ? a.lo < b.lo : a.hi < b.hi;
+            });
+
+  auto fmt_point = [&](std::size_t id) {
+    return "(" + std::to_string(pos[id][0]) + ", " +
+           std::to_string(pos[id][1]) + ", " +
+           std::to_string(pos[id][2]) + ")";
+  };
+
+  // Every non-degenerate face has exactly three neighbours (one per
+  // edge) once each edge is known to be shared by exactly two faces.
+  // `same` = both faces traverse the edge in the same direction, i.e.
+  // exactly one of them must be flipped.
+  struct neighbour { std::size_t face; bool same; };
+  std::vector<std::array<neighbour, 3>> adj(m);
+  std::vector<unsigned char> n_adj(m, 0);
+  for (std::size_t i = 0; i < halves.size();) {
+    std::size_t j = i + 1;
+    while (j < halves.size() && halves[j].lo == halves[i].lo &&
+           halves[j].hi == halves[i].hi) {
+      ++j;
+    }
+    if (j - i != 2) {
+      throw std::runtime_error{
+          "mesh_inclusion: mesh is not closed (or not manifold): edge " +
+          fmt_point(halves[i].lo) + " - " + fmt_point(halves[i].hi) +
+          " is shared by " + std::to_string(j - i) +
+          " triangle(s), expected exactly 2"};
+    }
+    auto const& a = halves[i];
+    auto const& b = halves[i + 1];
+    const bool same = a.forward == b.forward;
+    adj[a.face][n_adj[a.face]++] = {b.face, same};
+    adj[b.face][n_adj[b.face]++] = {a.face, same};
+    i = j;
+  }
+
+  // BFS: propagate a consistent winding through each component.
+  constexpr std::size_t unvisited = std::numeric_limits<std::size_t>::max();
+  std::vector<std::size_t> comp(m, unvisited);
+  std::vector<char> flip(m, 0);
+  std::vector<std::size_t> seeds;
+  std::vector<std::size_t> queue;
+  for (std::size_t s = 0; s < m; ++s) {
+    if (degenerate[s] || comp[s] != unvisited) continue;
+    const std::size_t c = seeds.size();
+    seeds.push_back(s);
+    comp[s] = c;
+    queue.assign(1, s);
+    while (!queue.empty()) {
+      const auto f = queue.back();
+      queue.pop_back();
+      for (auto const& nb : adj[f]) {
+        const char want = static_cast<char>(flip[f] ^ (nb.same ? 1 : 0));
+        if (comp[nb.face] == unvisited) {
+          comp[nb.face] = c;
+          flip[nb.face] = want;
+          queue.push_back(nb.face);
+        } else if (flip[nb.face] != want) {
+          throw std::runtime_error{
+              "mesh_inclusion: mesh is not orientable (no consistent "
+              "triangle winding exists)"};
+        }
+      }
+    }
+  }
+  const std::size_t n_comp = seeds.size();
+
+  // Per-component signed volume and AABB under the current flips.
+  std::vector<T> comp_vol(n_comp, T{0});
+  std::vector<std::array<T, 3>> bb_min(n_comp), bb_max(n_comp);
+  for (std::size_t c = 0; c < n_comp; ++c) {
+    for (int k = 0; k < 3; ++k) {
+      bb_min[c][k] = std::numeric_limits<T>::max();
+      bb_max[c][k] = std::numeric_limits<T>::lowest();
+    }
+  }
+  for (std::size_t f = 0; f < m; ++f) {
+    if (degenerate[f]) continue;
+    const auto c = comp[f];
+    auto const& t = tris[f];
+    const T dv = gte::DotCross(t.v[0], t.v[1], t.v[2]);
+    comp_vol[c] += flip[f] ? -dv : dv;
+    for (int i = 0; i < 3; ++i) {
+      for (int k = 0; k < 3; ++k) {
+        bb_min[c][k] = std::min(bb_min[c][k], t.v[i][k]);
+        bb_max[c][k] = std::max(bb_max[c][k], t.v[i][k]);
+      }
+    }
+  }
+
+  // Desired sign per component: + for a solid, - for a cavity (nested
+  // inside an odd number of other components). Nesting depth is found
+  // by casting the same ray `is_inside` uses from one of the
+  // component's vertices against the other components' triangles,
+  // pre-filtered by AABB.
+  std::vector<char> cavity(n_comp, 0);
+  if (n_comp > 1) {
+    gte::TIQuery<T, gte::Ray3<T>, gte::Triangle3<T>> query;
+    for (std::size_t c = 0; c < n_comp; ++c) {
+      const auto& p = tris[seeds[c]].v[0];
+      gte::Ray3<T> ray;
+      ray.origin = p;
+      ray.direction[0] = T{1};
+      ray.direction[1] = T{0.000721};
+      ray.direction[2] = T{0.000349};
+      std::vector<char> candidate(n_comp, 0);
+      bool any = false;
+      for (std::size_t o = 0; o < n_comp; ++o) {
+        if (o == c) continue;
+        bool in_box = true;
+        for (int k = 0; k < 3; ++k) {
+          in_box = in_box && p[k] >= bb_min[o][k] && p[k] <= bb_max[o][k];
+        }
+        candidate[o] = in_box ? 1 : 0;
+        any = any || in_box;
+      }
+      if (!any) continue;
+      int hits = 0;
+      for (std::size_t f = 0; f < m; ++f) {
+        if (degenerate[f] || !candidate[comp[f]]) continue;
+        if (query(ray, tris[f]).intersect) ++hits;
+      }
+      cavity[c] = static_cast<char>(hits % 2);
+    }
+  }
+
+  for (std::size_t f = 0; f < m; ++f) {
+    if (degenerate[f]) continue;
+    const auto c = comp[f];
+    const bool positive = comp_vol[c] >= T{0};
+    if (positive == static_cast<bool>(cavity[c])) flip[f] ^= 1;
+  }
+  return flip;
+}
+
+} // namespace detail
+
 template <typename T = double>
 class mesh_inclusion
     : public numsim_core::static_indexing<mesh_inclusion<T>, shape_base<T>> {
@@ -73,46 +294,48 @@ public:
   mesh_inclusion() = default;
 
   // Wraps a freshly-loaded triangle list in a shared_ptr. Used by
-  // STL/PLY readers and by tests.
-  explicit mesh_inclusion(triangle_list triangles)
-      : _base{std::make_shared<triangle_list>(std::move(triangles))},
-        _base_centre{compute_base_centre(*_base)} {}
+  // STL/PLY readers and by tests. The mesh is validated (finite,
+  // closed, manifold, orientable — see
+  // `detail::mesh_inclusion_orientation_flips`) and inconsistently
+  // wound triangles are re-oriented in place before sharing. Throws
+  // std::runtime_error on an invalid mesh.
+  explicit mesh_inclusion(triangle_list triangles) {
+    apply_flips(triangles, detail::mesh_inclusion_orientation_flips(triangles));
+    _base = std::make_shared<triangle_list const>(std::move(triangles));
+    init_cache();
+  }
 
-  // Zero-copy ctor for the load-once-place-many case (mesh_inclusion_input).
-  // The shared_ptr is captured by value; subsequent mutations to the
-  // underlying vector via other shared owners would race, but the
-  // input model treats the base as immutable after first load.
-  explicit mesh_inclusion(shared_triangles base)
-      : _base{std::move(base)},
-        _base_centre{_base ? compute_base_centre(*_base)
-                           : std::array<T, 3>{}} {}
+  // Shares an existing triangle list. The list is validated like the
+  // by-value ctor; if any triangle needs re-orienting, a corrected
+  // private copy is made (the shared list itself is never mutated).
+  // This ctor costs O(M log M) — for the load-once-place-many case,
+  // build ONE mesh_inclusion and copy / clone() it per placement
+  // (refcount bump + cached AABB/volume; no validation), as
+  // `mesh_inclusion_input` does.
+  explicit mesh_inclusion(shared_triangles base) : _base{std::move(base)} {
+    if (_base && !_base->empty()) {
+      const auto flips = detail::mesh_inclusion_orientation_flips(*_base);
+      if (std::find(flips.begin(), flips.end(), char{1}) != flips.end()) {
+        triangle_list fixed = *_base;
+        apply_flips(fixed, flips);
+        _base = std::make_shared<triangle_list const>(std::move(fixed));
+      }
+    }
+    init_cache();
+  }
 
   // ---- shape_base contract ----------------------------------------------
   [[nodiscard]] T area() const override { return T{0}; }   // 3D shape
 
-  // Volume is translate-invariant — computed once over the base
-  // triangle list via the divergence theorem. With consistent face
-  // winding the sum is signed; abs at the end makes the result
-  // direction-agnostic.
-  [[nodiscard]] T volume() const override {
-    if (!_base || _base->empty()) return T{0};
-    T sum = T{0};
-    for (auto const& t : *_base) {
-      const auto& v0 = t.v[0];
-      const auto& v1 = t.v[1];
-      const auto& v2 = t.v[2];
-      sum += (v0[0] * (v1[1] * v2[2] - v1[2] * v2[1]) +
-              v0[1] * (v1[2] * v2[0] - v1[0] * v2[2]) +
-              v0[2] * (v1[0] * v2[1] - v1[1] * v2[0]));
-    }
-    return std::abs(sum) / T{6};
-  }
+  // Volume is translate-invariant — computed once at construction via
+  // the divergence theorem over the validated, consistently
+  // outward-wound base mesh (cavities contribute negatively).
+  [[nodiscard]] T volume() const override { return _volume; }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {
-    auto bb = compute_translated_bb();
-    return {(bb[1][0] - bb[0][0]) * T{0.5},
-            (bb[1][1] - bb[0][1]) * T{0.5},
-            (bb[1][2] - bb[0][2]) * T{0.5}};
+    return {(_base_max[0] - _base_min[0]) * T{0.5},
+            (_base_max[1] - _base_min[1]) * T{0.5},
+            (_base_max[2] - _base_min[2]) * T{0.5}};
   }
 
   [[nodiscard]] std::array<T, 3> get_middle_point() const override {
@@ -154,10 +377,11 @@ public:
   }
 
   void make_bounding_box() override {
-    auto bb = compute_translated_bb();
     auto box = std::make_unique<box_bounding<T>>();
-    box->top_point()    = bb[1];
-    box->bottom_point() = bb[0];
+    for (int k = 0; k < 3; ++k) {
+      box->top_point()[k]    = _base_max[k] + _offset[k];
+      box->bottom_point()[k] = _base_min[k] + _offset[k];
+    }
     this->_bounding_box = std::move(box);
   }
 
@@ -185,49 +409,46 @@ public:
   }
 
 private:
-  // AABB-centre of the untranslated base mesh — cached at ctor time.
-  // Used as the reference point for the offset (so set_middle_point
-  // and get_middle_point have stable semantics regardless of how
-  // the mesh was originally positioned in the STL file).
-  static std::array<T, 3> compute_base_centre(triangle_list const& tris) {
-    if (tris.empty()) return {T{0}, T{0}, T{0}};
-    std::array<T, 3> mn{tris[0].v[0][0], tris[0].v[0][1], tris[0].v[0][2]};
-    std::array<T, 3> mx = mn;
-    for (auto const& tri : tris) {
-      for (int i = 0; i < 3; ++i) {
-        for (int k = 0; k < 3; ++k) {
-          mn[k] = std::min(mn[k], tri.v[i][k]);
-          mx[k] = std::max(mx[k], tri.v[i][k]);
-        }
-      }
+  static void apply_flips(triangle_list& tris, std::vector<char> const& flips) {
+    for (std::size_t f = 0; f < flips.size(); ++f) {
+      if (flips[f]) std::swap(tris[f].v[1], tris[f].v[2]);
     }
-    return {(mn[0] + mx[0]) * T{0.5},
-            (mn[1] + mx[1]) * T{0.5},
-            (mn[2] + mx[2]) * T{0.5}};
   }
 
-  [[nodiscard]] std::array<std::array<T, 3>, 2> compute_translated_bb() const {
-    if (!_base || _base->empty()) {
-      return {{{T{0}, T{0}, T{0}}, {T{0}, T{0}, T{0}}}};
-    }
+  // Cache the untranslated base AABB, its centre and the volume. The
+  // base is shared and immutable, so these never change; copies /
+  // clones carry them along, making max_expansion(),
+  // make_bounding_box() and volume() O(1). The AABB centre is the
+  // reference point for the offset (so set_middle_point and
+  // get_middle_point have stable semantics regardless of how the mesh
+  // was originally positioned in the source file).
+  void init_cache() {
+    if (!_base || _base->empty()) return;
     auto const& tris = *_base;
-    std::array<T, 3> mn{tris[0].v[0][0], tris[0].v[0][1], tris[0].v[0][2]};
-    std::array<T, 3> mx = mn;
+    _base_min = {tris[0].v[0][0], tris[0].v[0][1], tris[0].v[0][2]};
+    _base_max = _base_min;
+    T sum = T{0};
     for (auto const& tri : tris) {
       for (int i = 0; i < 3; ++i) {
         for (int k = 0; k < 3; ++k) {
-          mn[k] = std::min(mn[k], tri.v[i][k]);
-          mx[k] = std::max(mx[k], tri.v[i][k]);
+          _base_min[k] = std::min(_base_min[k], tri.v[i][k]);
+          _base_max[k] = std::max(_base_max[k], tri.v[i][k]);
         }
       }
+      sum += gte::DotCross(tri.v[0], tri.v[1], tri.v[2]);
     }
-    for (int k = 0; k < 3; ++k) { mn[k] += _offset[k]; mx[k] += _offset[k]; }
-    return {{mn, mx}};
+    for (int k = 0; k < 3; ++k) {
+      _base_centre[k] = (_base_min[k] + _base_max[k]) * T{0.5};
+    }
+    _volume = sum / T{6};
   }
 
   shared_triangles _base;
+  std::array<T, 3> _base_min{};
+  std::array<T, 3> _base_max{};
   std::array<T, 3> _base_centre{};
   std::array<T, 3> _offset{};
+  T _volume{0};
 };
 
 } // namespace rvegen
