@@ -508,6 +508,62 @@ void test_json_integral_strictness() {
           5.0);
 }
 
+// ---- 5. `metadata` field (#72) -----------------------------------------
+
+// Builds a circle_input through the registry with the given `metadata`
+// value (or none when `metadata` is nullptr) and returns the produced
+// shape's info blob.
+nlohmann::json circle_info_with_metadata(char const* metadata) {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  std::mt19937 engine{72};
+  rvegen::distribution_map_t<double> dists;
+  for (char const* name : {"x", "y", "r"}) {
+    nlohmann::json spec{{"type", "constant"}, {"value", 0.25}};
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  nlohmann::json input_spec{{"type", "circle_input"},
+                            {"pos_x_dist", "x"},
+                            {"pos_y_dist", "y"},
+                            {"radius_dist", "r"},
+                            {"phase_name", "fibre"}};
+  if (metadata != nullptr) input_spec["metadata"] = metadata;
+  auto input = rvegen::build_from_json(rvegen::input_registry_t<>::instance(),
+                                       input_spec, dists);
+  auto shape = input->new_shape();
+  return shape->info().json();
+}
+
+void test_metadata_field() {
+  const auto baseline = circle_info_with_metadata(nullptr);
+  REQUIRE(baseline.value("phase_name", std::string{}) == "fibre");
+
+  // Empty / whitespace-only is the same as absent.
+  for (char const* blank : {"", " ", "  \t\n\r  "}) {
+    bool ok = false;
+    try {
+      ok = circle_info_with_metadata(blank) == baseline;
+    } catch (std::exception const& e) {
+      std::cerr << "  metadata '" << blank << "' threw: " << e.what() << "\n";
+    }
+    REQUIRE(ok);
+  }
+
+  // A valid object still merges.
+  const auto merged = circle_info_with_metadata(R"( {"source": "a.stl"} )");
+  REQUIRE(merged.value("source", std::string{}) == "a.stl");
+  REQUIRE(merged.value("phase_name", std::string{}) == "fibre");
+
+  // Malformed or non-object JSON throws and names the key.
+  for (char const* bad : {"{", "not json", "{\"a\": }", "[1, 2]", "5", "\"x\""}) {
+    REQUIRE(throws_runtime_error_containing(
+        [&] { (void)circle_info_with_metadata(bad); }, "'metadata'"));
+  }
+}
+
 // ---- 4. Distribution parameters -----------------------------------------
 
 void test_distribution_parameters() {
@@ -554,6 +610,7 @@ int main() {
   test_cluster_seeds_validation();
   test_json_integral_strictness();
   test_distribution_parameters();
+  test_metadata_field();
 
   if (failures != 0) {
     std::cerr << failures << " failure(s)\n";

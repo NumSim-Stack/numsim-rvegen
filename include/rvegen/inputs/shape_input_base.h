@@ -120,13 +120,33 @@ protected:
   // by the explicit `phase_name` field. Useful for opt-out cases;
   // surprising if the caller expects "set to null" semantics — pass
   // an empty string instead if that's what you want.
+  //
+  // An empty or whitespace-only `metadata` string is treated as absent
+  // (a form left blank means "no metadata"). Any other value must parse
+  // as a JSON object; malformed JSON or a non-object (which merge_patch
+  // would otherwise use to replace the whole info blob) throws
+  // std::runtime_error naming the `metadata` key.
   void read_metadata(parameter_handler_t const& handler) {
     if (handler.contains("phase_name")) {
       _info.set_phase_name(handler.template get<std::string>("phase_name"));
     }
     if (handler.contains("metadata")) {
       auto const& blob = handler.template get<std::string>("metadata");
-      _info.json().merge_patch(nlohmann::json::parse(blob));
+      if (blob.find_first_not_of(" \t\n\r\f\v") == std::string::npos) return;
+      nlohmann::json patch;
+      try {
+        patch = nlohmann::json::parse(blob);
+      } catch (nlohmann::json::parse_error const& e) {
+        throw std::runtime_error{
+            std::string{"shape input: 'metadata' is not valid JSON: "} +
+            e.what()};
+      }
+      if (!patch.is_object()) {
+        throw std::runtime_error{
+            "shape input: 'metadata' must be a JSON object, got " +
+            patch.dump()};
+      }
+      _info.json().merge_patch(patch);
     }
   }
 
