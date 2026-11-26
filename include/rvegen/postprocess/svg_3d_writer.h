@@ -3,7 +3,9 @@
 // Static 3D RVE picture. Orthographic axonometric projection (camera at
 // (1, 1, 1) direction normalized). Spheres render as circles (parallel
 // projection of a sphere is a circle of the same world radius). Boxes
-// render as 6 quad faces with painters' algorithm depth sort. Domain
+// render as 6 quad faces with painters' algorithm depth sort; mesh
+// inclusions (STL / PLY) as their camera-facing placed triangles in the
+// same depth sort. Domain
 // box drawn as a wireframe — the "transparent matrix" effect without
 // alpha-blending headaches.
 //
@@ -27,8 +29,10 @@
 
 #include "post_process_base.h"
 #include "../shapes/box.h"
+#include "../shapes/mesh_inclusion.h"
 #include "../shapes/sphere.h"
 #include "../types.h"
+#include "../visualization/mesh_inclusion_mesh.h"
 
 namespace rvegen {
 
@@ -206,6 +210,39 @@ public:
                           "\" fill-opacity=\"0.85\" "
                           "stroke=\"#222\" stroke-width=\"" +
                           fmt(stroke_w) + "\"/>";
+          add_item(cd, std::move(x));
+        }
+      } else if (auto const* mi =
+                     dynamic_cast<mesh_inclusion<value_type> const*>(raw); mi) {
+        // STL / PLY inclusion: one polygon per camera-facing triangle of
+        // the placed mesh (back faces culled — the mesh is closed and
+        // outward-wound), depth-sorted with everything else. Lambert-ish
+        // opacity gives a cue of the surface orientation.
+        const auto m = to_mesh(*mi);
+        for (auto const& t : m.tris) {
+          auto const& a = m.verts[t[0]];
+          auto const& b = m.verts[t[1]];
+          auto const& c = m.verts[t[2]];
+          const gte::Vector3<value_type> ab{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+          const gte::Vector3<value_type> ac{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+          auto n = gte::Cross(ab, ac);
+          if (!(gte::Normalize(n) > value_type{0})) continue;
+          const gte::Vector3<value_type> view{inv_s3, inv_s3, inv_s3};
+          const auto facing = gte::Dot(n, view);
+          if (facing <= value_type{0}) continue;
+          std::string pts;
+          for (auto const* v : {&a, &b, &c}) {
+            auto [px, py] = project((*v)[0], (*v)[1], (*v)[2]);
+            pts += fmt(px) + "," + fmt(py) + " ";
+          }
+          const auto cd = depth((a[0] + b[0] + c[0]) / value_type{3},
+                                (a[1] + b[1] + c[1]) / value_type{3},
+                                (a[2] + b[2] + c[2]) / value_type{3});
+          std::string x = "<polygon points=\"" + pts + "\" fill=\"" + color +
+                          "\" fill-opacity=\"" +
+                          fmt(0.45 + 0.5 * static_cast<double>(facing)) +
+                          "\" stroke=\"" + color + "\" stroke-width=\"" +
+                          fmt(stroke_w * value_type{0.3}) + "\"/>";
           add_item(cd, std::move(x));
         }
       }

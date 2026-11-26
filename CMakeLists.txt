@@ -194,6 +194,10 @@ add_executable(rvegen_mesh_io_test tests/mesh_io_test.cpp)
 target_link_libraries(rvegen_mesh_io_test PRIVATE rvegen_lib)
 add_test(NAME mesh_io_test COMMAND rvegen_mesh_io_test)
 
+add_executable(rvegen_mesh_transform_test tests/mesh_transform_test.cpp)
+target_link_libraries(rvegen_mesh_transform_test PRIVATE rvegen_lib)
+add_test(NAME mesh_transform_test COMMAND rvegen_mesh_transform_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console
