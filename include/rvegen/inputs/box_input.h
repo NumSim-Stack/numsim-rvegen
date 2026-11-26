@@ -25,9 +25,13 @@ public:
             distribution_base<value_type>& pos_z,
             distribution_base<value_type>& width,
             distribution_base<value_type>& height,
-            distribution_base<value_type>& depth) noexcept
+            distribution_base<value_type>& depth)
       : _pos_x{pos_x}, _pos_y{pos_y}, _pos_z{pos_z},
-        _width{width}, _height{height}, _depth{depth} {}
+        _width{width}, _height{height}, _depth{depth} {
+    this->require_positive_support(_width, "box_input", "width");
+    this->require_positive_support(_height, "box_input", "height");
+    this->require_positive_support(_depth, "box_input", "depth");
+  }
 
   box_input(parameter_handler_t const& handler,
             distribution_map_t<value_type> const& distributions)
@@ -68,10 +72,10 @@ public:
     return s;
   }
 
-  // Draw order: x, y, z, width, height, depth. The extent distributions
-  // are truncated to (0, inf) — non-positive draws are resampled, and
-  // after `max_size_draws` rejections std::runtime_error is thrown (see
-  // shape_input_base).
+  // Draw order: x, y, z, width, height, depth.
+  // The extent distributions are truncated to (0, inf): non-positive draws
+  // are resampled. See shape_input_base for the constructor check
+  // and the redraw backstop.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type x = _pos_x();
     const value_type y = _pos_y();

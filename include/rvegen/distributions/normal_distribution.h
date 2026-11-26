@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <numbers>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -43,6 +45,12 @@ public:
   }
 
   [[nodiscard]] value_type operator()() override { return _dist(_engine); }
+
+  // P(X > 0) = 0.5 * erfc(-mean / (stddev * sqrt(2))).
+  [[nodiscard]] std::optional<value_type> positive_probability() const override {
+    return value_type{0.5} *
+           std::erfc(-_dist.mean() / (_dist.stddev() * std::numbers::sqrt2_v<value_type>));
+  }
 
 private:
   using param_type = typename std::normal_distribution<value_type>::param_type;

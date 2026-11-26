@@ -52,9 +52,12 @@ public:
                                distribution_base<value_type>& pz,
                                direction_distribution_base<value_type>& dir,
                                distribution_base<value_type>& length,
-                               distribution_base<value_type>& radius) noexcept
+                               distribution_base<value_type>& radius)
       : _px{px}, _py{py}, _pz{pz},
-        _dir{dir}, _length{length}, _radius{radius} {}
+        _dir{dir}, _length{length}, _radius{radius} {
+    this->require_positive_support(_length, "polyline_tube_oriented_input", "length");
+    this->require_positive_support(_radius, "polyline_tube_oriented_input", "radius");
+  }
 
   // `_dir()` already returns a unit vector by contract (see
   // `direction_distribution_base`), so no renormalisation is needed
@@ -62,16 +65,18 @@ public:
   // centerline points are placed symmetrically around the sampled
   // centre at ±half_length·direction.
   //
-  // Draw order: position x, y, z, direction, length, radius. The radius
-  // distribution is truncated to (0, inf) — non-positive draws are
-  // resampled, and after `max_size_draws` rejections std::runtime_error
-  // is thrown (see shape_input_base).
+  // Draw order: position x, y, z, direction, length, radius. The length
+  // and radius distributions are truncated to (0, inf) — non-positive
+  // draws are resampled (see shape_input_base for the constructor check
+  // and the redraw backstop).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type cx = _px();
     const value_type cy = _py();
     const value_type cz = _pz();
     const auto d = _dir();
-    const value_type half = _length() * value_type{0.5};
+    const value_type half =
+        this->draw_positive(_length, "polyline_tube_oriented_input", "length") *
+        value_type{0.5};
     const value_type r =
         this->draw_positive(_radius, "polyline_tube_oriented_input", "radius");
     std::vector<std::array<value_type, 3>> centerline{

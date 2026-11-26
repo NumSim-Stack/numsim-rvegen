@@ -51,9 +51,11 @@ public:
                       distribution_base<value_type>& ex,
                       distribution_base<value_type>& ey,
                       distribution_base<value_type>& ez,
-                      distribution_base<value_type>& radius) noexcept
+                      distribution_base<value_type>& radius)
       : _sx{sx}, _sy{sy}, _sz{sz}, _ex{ex}, _ey{ey}, _ez{ez},
-        _radius{radius} {}
+        _radius{radius} {
+    this->require_positive_support(_radius, "polyline_tube_input", "radius");
+  }
 
   // Schema-driven ctor.
   polyline_tube_input(parameter_handler_t const& handler,
@@ -99,10 +101,10 @@ public:
     return s;
   }
 
-  // Draw order: start x, y, z, end x, y, z, radius. The radius
-  // distribution is truncated to (0, inf) — non-positive draws are
-  // resampled, and after `max_size_draws` rejections std::runtime_error
-  // is thrown (see shape_input_base).
+  // Draw order: start x, y, z, end x, y, z, radius.
+  // The radius distribution is truncated to (0, inf): non-positive draws
+  // are resampled. See shape_input_base for the constructor check
+  // and the redraw backstop.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type sx = _sx();
     const value_type sy = _sy();

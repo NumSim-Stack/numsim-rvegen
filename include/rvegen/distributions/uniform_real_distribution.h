@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -47,6 +48,16 @@ public:
   }
 
   [[nodiscard]] value_type operator()() override { return _dist(_engine); }
+
+  // Fraction of [a, b) above zero; for a == b, 1 if a > 0 else 0.
+  [[nodiscard]] std::optional<value_type> positive_probability() const override {
+    const value_type a = _dist.a();
+    const value_type b = _dist.b();
+    if (!(a < b)) return a > value_type{0} ? value_type{1} : value_type{0};
+    if (a >= value_type{0}) return value_type{1};
+    if (b <= value_type{0}) return value_type{0};
+    return b / (b - a);
+  }
 
   void set_parameter(value_type a, value_type b) {
     _dist.param(checked_param(a, b));

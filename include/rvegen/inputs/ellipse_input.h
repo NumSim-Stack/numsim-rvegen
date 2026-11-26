@@ -24,10 +24,13 @@ public:
                 distribution_base<value_type>& pos_y,
                 distribution_base<value_type>& radius_a,
                 distribution_base<value_type>& radius_b,
-                distribution_base<value_type>& rotation) noexcept
+                distribution_base<value_type>& rotation)
       : _pos_x{pos_x}, _pos_y{pos_y},
         _radius_a{radius_a}, _radius_b{radius_b},
-        _rotation{rotation} {}
+        _rotation{rotation} {
+    this->require_positive_support(_radius_a, "ellipse_input", "radius_a");
+    this->require_positive_support(_radius_b, "ellipse_input", "radius_b");
+  }
 
   ellipse_input(parameter_handler_t const& handler,
                 distribution_map_t<value_type> const& distributions)
@@ -64,10 +67,10 @@ public:
     return s;
   }
 
-  // Draw order: x, y, radius_a, radius_b, rotation. The semi-axis
-  // distributions are truncated to (0, inf) — non-positive draws are
-  // resampled, and after `max_size_draws` rejections std::runtime_error
-  // is thrown (see shape_input_base).
+  // Draw order: x, y, radius_a, radius_b, rotation.
+  // The semi-axis distributions are truncated to (0, inf): non-positive draws
+  // are resampled. See shape_input_base for the constructor check
+  // and the redraw backstop.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type x = _pos_x();
     const value_type y = _pos_y();

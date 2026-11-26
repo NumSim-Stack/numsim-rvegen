@@ -39,12 +39,24 @@ namespace rvegen {
 //   different compilers.
 //
 // Size truncation:
-//   Size parameters (radii, extents, semi-axes) are drawn through
-//   `draw_positive()`, which truncates the size distribution to (0, inf):
-//   a non-positive or non-finite draw is discarded and the same
+//   Size parameters (radii, extents, semi-axes, tube lengths) are drawn
+//   through `draw_positive()`, which truncates the size distribution to
+//   (0, inf): a non-positive or non-finite draw is discarded and the same
 //   distribution is sampled again, before the next parameter is drawn.
-//   After `max_size_draws` consecutive rejections it throws
-//   std::runtime_error naming the input and the parameter.
+//
+//   Hopeless distributions are rejected up front: each input's
+//   constructor calls `require_positive_support()` on every size
+//   distribution, which throws std::invalid_argument when
+//   `distribution_base::positive_probability()` reports
+//   P(X > 0) < `min_positive_probability` (constant <= 0, uniform with
+//   b <= 0, a normal whose mass is almost all <= 0, ...).
+//
+//   Distributions that cannot report P(X > 0) skip that check. For them
+//   (and as a backstop for everything else) `draw_positive()` throws
+//   std::runtime_error naming the input and the parameter after
+//   `max_size_draws` consecutive rejections. The cap is large enough that
+//   a distribution passing the constructor check (P >= 1e-3) exhausts it
+//   with probability <= (1 - 1e-3)^100000 ~ e^-100.
 template <typename T>
 class shape_input_base {
 public:
@@ -56,6 +68,13 @@ public:
   shape_input_base& operator=(shape_input_base const&) = default;
   shape_input_base& operator=(shape_input_base&&) noexcept = default;
   virtual ~shape_input_base() = default;
+
+  // Smallest P(X > 0) a size distribution may have; see "Size
+  // truncation" above.
+  static constexpr double min_positive_probability = 1e-3;
+
+  // Backstop cap on consecutive rejected draws in `draw_positive()`.
+  static constexpr std::size_t max_size_draws = 100000;
 
   // Sample a new candidate shape from this input's distributions. The shape
   // is returned without a bounding box computed; the caller is responsible
@@ -117,8 +136,20 @@ protected:
     shape.set_info(_info);
   }
 
-  // Cap on consecutive rejected draws in `draw_positive()`.
-  static constexpr std::size_t max_size_draws = 1000;
+  // Constructor-time check for a size distribution; see "Size
+  // truncation" above.
+  static void require_positive_support(distribution_base<T> const& dist,
+                                       char const* input_name,
+                                       char const* param_name) {
+    const auto p = dist.positive_probability();
+    if (p && !(static_cast<double>(*p) >= min_positive_probability)) {
+      throw std::invalid_argument{
+          std::string{input_name} + ": distribution for '" + param_name +
+          "' has P(x > 0) = " + std::to_string(static_cast<double>(*p)) +
+          " < " + std::to_string(min_positive_probability) +
+          "; a size distribution must put its mass on (0, inf)."};
+    }
+  }
 
   // Draw a size parameter from `dist`, truncated to (0, inf). See the
   // "Size truncation" note above.
