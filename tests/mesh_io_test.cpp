@@ -458,9 +458,244 @@ void test_mesh_inclusion_cached_bbox_tracks_offset() {
   REQUIRE(copy->volume() == mesh.volume());
 }
 
+// ---------------------------------------------------------------------------
+// Review follow-ups
+// ---------------------------------------------------------------------------
+
+tri_list make_tet(double x, double y, double z, double s) {
+  const std::array<std::array<double, 3>, 4> p{{
+      {x, y, z}, {x + s, y, z}, {x, y + s, z}, {x, y, z + s}}};
+  constexpr std::array<std::array<int, 3>, 4> f{{
+      {0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}}};
+  tri_list out;
+  for (auto const& t : f) {
+    gte::Triangle3<double> tri;
+    for (int c = 0; c < 3; ++c) {
+      for (int k = 0; k < 3; ++k) tri.v[c][k] = p[t[c]][k];
+    }
+    out.push_back(tri);
+  }
+  return out;
+}
+
+// UV sphere of radius r: 2n(n-1) triangles, closed, outward wound.
+tri_list make_sphere(int n, double r) {
+  auto P = [&](int i, int j) {
+    const double th = M_PI * i / n, ph = 2 * M_PI * (j % (2 * n)) / (2 * n);
+    if (i == 0) return gte::Vector3<double>{0, 0, r};
+    if (i == n) return gte::Vector3<double>{0, 0, -r};
+    return gte::Vector3<double>{r * std::sin(th) * std::cos(ph),
+                                r * std::sin(th) * std::sin(ph),
+                                r * std::cos(th)};
+  };
+  tri_list out;
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < 2 * n; ++j) {
+      const auto a = P(i, j), b = P(i + 1, j), c = P(i + 1, j + 1), d = P(i, j + 1);
+      if (i != 0) out.push_back({a, b, d});
+      if (i != n - 1) out.push_back({b, c, d});
+    }
+  }
+  return out;
+}
+
+double signed_volume(tri_list const& tris) {
+  double v = 0;
+  for (auto const& t : tris) v += gte::DotCross(t.v[0], t.v[1], t.v[2]);
+  return v / 6;
+}
+
+void test_mesh_inclusion_corner_touching_cubes() {
+  // Two unit cubes sharing only the corner (1,1,1). The old nesting
+  // probe started ON that vertex and flipped the second cube (vol 0).
+  for (bool flip_second : {false, true}) {
+    auto tris = make_cube();
+    auto other = make_cube(1.0, 1.0);
+    if (flip_second) for (auto& t : other) flip(t);
+    tris.insert(tris.end(), other.begin(), other.end());
+    rvegen::mesh_inclusion<double> mesh{tris};
+    REQUIRE(std::abs(mesh.volume() - 2.0) < 1e-12);
+  }
+}
+
+void test_mesh_inclusion_many_cavities_and_parts() {
+  // A finely tessellated sphere (exercises the binned ray path) with
+  // small tetrahedral cavities inside, plus disjoint parts outside.
+  auto tris = make_sphere(40, 1.0);
+  const double sphere_vol = signed_volume(tris);
+  const double s = 0.05;
+  int n_cav = 0;
+  for (double x = -0.4; x <= 0.41; x += 0.2) {
+    for (double y = -0.4; y <= 0.41; y += 0.4) {
+      auto t = make_tet(x, y, 0.1 * x, s);
+      for (auto& tri : t) flip(tri);   // wrong winding on purpose
+      tris.insert(tris.end(), t.begin(), t.end());
+      ++n_cav;
+    }
+  }
+  for (int k = 0; k < 20; ++k) {
+    auto t = make_tet(3.0 + 2.0 * k, 0.0, 0.0, 1.0);
+    tris.insert(tris.end(), t.begin(), t.end());
+  }
+  rvegen::mesh_inclusion<double> mesh{tris};
+  const double tet_vol = s * s * s / 6;
+  const double expected = sphere_vol - n_cav * tet_vol + 20.0 / 6.0;
+  REQUIRE(std::abs(mesh.volume() - expected) < 1e-9);
+
+  // Many disjoint parts in a row: near-linear nesting test.
+  tri_list row;
+  for (int k = 0; k < 20000; ++k) {
+    auto t = make_tet(2.0 * k, 0.0, 0.0, 1.0);
+    row.insert(row.end(), t.begin(), t.end());
+  }
+  rvegen::mesh_inclusion<double> row_mesh{row};
+  REQUIRE(std::abs(row_mesh.volume() - 20000.0 / 6.0) < 1e-6);
+}
+
+void test_mesh_inclusion_zero_volume_throws() {
+  // A triangle and its reverse: closed, manifold, encloses nothing.
+  std::stringstream ss{R"(solid x
+facet normal 0 0 0
+outer loop
+vertex 0 0 0
+vertex 1 0 0
+vertex 0 1 0
+endloop
+endfacet
+facet normal 0 0 0
+outer loop
+vertex 0 0 0
+vertex 0 1 0
+vertex 1 0 0
+endloop
+endfacet
+endsolid x
+)"};
+  auto tris = rvegen::read_stl_ascii<double>(ss);
+  REQUIRE(tris.size() == 2);
+  REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{tris}, "zero volume");
+}
+
+void test_ply_fan_triangle_limit() {
+  // 4 faces, each a 200-gon over 200 uchar-indexed vertices: 792 fan
+  // triangles. A lowered limit must throw; the default must not.
+  std::ostringstream out;
+  out << "ply\nformat binary_little_endian 1.0\n"
+         "element vertex 200\nproperty uchar x\nproperty uchar y\n"
+         "property uchar z\n"
+         "element face 4\nproperty list uchar uchar vertex_indices\n"
+         "end_header\n";
+  for (int v = 0; v < 200; ++v) {
+    out.put(static_cast<char>(v)); out.put(0); out.put(0);
+  }
+  for (int f = 0; f < 4; ++f) {
+    out.put(static_cast<char>(200));
+    for (int k = 0; k < 200; ++k) out.put(static_cast<char>(k));
+  }
+  const auto blob = out.str();
+  {
+    std::stringstream ss{blob};
+    REQUIRE(rvegen::read_ply<double>(ss).size() == 4 * 198);
+  }
+  {
+    std::stringstream ss{blob};
+    REQUIRE_THROWS_WITH(
+        rvegen::read_ply<double>(ss, rvegen::ply_read_limits{500}),
+        "triangles");
+  }
+}
+
+void test_ply_face_first_large_fan() {
+  // Face-before-vertex path buffers uint32 triples; check a big fan.
+  std::ostringstream out;
+  out << "ply\nformat ascii 1.0\nelement face 1\n"
+         "property list ushort int vertex_indices\n"
+         "element vertex 1000\nproperty float x\nproperty float y\n"
+         "property float z\nend_header\n1000";
+  for (int k = 0; k < 1000; ++k) out << ' ' << k;
+  out << '\n';
+  for (int k = 0; k < 1000; ++k) out << k << " 0 0\n";
+  std::stringstream ss{out.str()};
+  auto tris = rvegen::read_ply_ascii<double>(ss);
+  REQUIRE(tris.size() == 998);
+  REQUIRE(tris[997].v[2][0] == 999.0);
+}
+
+void test_stl_printable_binary_header_detected_by_size() {
+  // Binary STL with a "solid" header and every payload byte printable
+  // (floats with bit pattern 0x41414141 = "AAAA"): only the exact
+  // 84 + 50·n size rule identifies it as binary.
+  std::string blob = "solid x";
+  blob.resize(80, ' ');
+  blob += std::string{"\x01\x00\x00\x00", 4};
+  blob += std::string(50, 'A');
+  REQUIRE(blob.size() == 134);
+  {
+    std::stringstream ss{blob};
+    auto tris = rvegen::read_stl<double>(ss);
+    REQUIRE(tris.size() == 1);
+  }
+  {
+    std::stringstream ss{blob};
+    REQUIRE_THROWS_WITH(rvegen::read_stl_ascii<double>(ss), "binary");
+  }
+}
+
+void test_stl_ascii_without_facet_or_endsolid_throws() {
+  // A binary-looking header whose count does not match the size falls
+  // to the ASCII path; "solid" swallows the line and nothing follows.
+  std::string blob = "solid x";
+  blob.resize(80, ' ');
+  blob += std::string{"\xff\xff\xff\x00", 4};
+  std::stringstream ss{blob};
+  REQUIRE_THROWS_WITH(rvegen::read_stl<double>(ss), "without any 'facet'");
+
+  // An empty-but-terminated solid is still fine.
+  std::stringstream ok{"solid empty\nendsolid empty\n"};
+  REQUIRE(rvegen::read_stl_ascii<double>(ok).empty());
+}
+
+void test_parse_nits() {
+  // Double sign.
+  std::stringstream pm{std::string{
+      "ply\nformat ascii 1.0\n"
+      "element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+      "element face 1\nproperty list uchar int vertex_indices\nend_header\n"
+      "+0 +0 +0\n1 0 0\n0 1 +-1\n3 0 1 2\n"}};
+  REQUIRE_THROWS_WITH(rvegen::read_ply_ascii<double>(pm), "malformed number");
+
+  // UTF-8 BOM, STL and PLY (direct and auto-detect).
+  {
+    std::stringstream ss{"\xEF\xBB\xBF" + std::string{one_facet} + "endsolid t\n"};
+    REQUIRE(rvegen::read_stl<double>(ss).size() == 1);
+  }
+  for (int autodetect = 0; autodetect < 2; ++autodetect) {
+    std::stringstream ss{"\xEF\xBB\xBF" + std::string{ply_tri_header_ascii} +
+                         "3 0 1 2\n"};
+    auto tris = autodetect ? rvegen::read_ply<double>(ss)
+                           : rvegen::read_ply_ascii<double>(ss);
+    REQUIRE(tris.size() == 1);
+  }
+
+  // ASCII-only case fold: a non-ASCII byte never matches a keyword.
+  // (Long solid name keeps the 2 non-ASCII bytes under the 5 % sniff.)
+  std::stringstream bad{"solid " + std::string(100, 't') +
+                        "\nfacet normal 0 0 1\n\xC3\x9Cuter loop\n"};
+  REQUIRE_THROWS_WITH(rvegen::read_stl_ascii<double>(bad), "expected 'outer'");
+}
+
 } // namespace
 
 int main() {
+  test_mesh_inclusion_corner_touching_cubes();
+  test_mesh_inclusion_many_cavities_and_parts();
+  test_mesh_inclusion_zero_volume_throws();
+  test_ply_fan_triangle_limit();
+  test_ply_face_first_large_fan();
+  test_stl_printable_binary_header_detected_by_size();
+  test_stl_ascii_without_facet_or_endsolid_throws();
+  test_parse_nits();
+
   test_stl_valid_single_facet_parses();
   test_stl_malformed_number_throws();
   test_stl_truncated_mid_vertex_throws();

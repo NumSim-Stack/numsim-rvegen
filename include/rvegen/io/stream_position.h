@@ -40,6 +40,34 @@
 
 namespace rvegen::detail {
 
+// Locale-independent ASCII helpers. File formats are ASCII by spec;
+// std::tolower / std::isprint depend on the global C locale and on
+// the sign of `char`, so the readers use these instead.
+constexpr char ascii_lower(char c) noexcept {
+  return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+constexpr bool ascii_is_text(unsigned char c) noexcept {
+  return (c >= 0x20 && c <= 0x7e) || c == '\t' || c == '\n' ||
+         c == '\r' || c == '\v' || c == '\f';
+}
+
+inline std::string ascii_to_lower(std::string s) {
+  for (auto& c : s) c = ascii_lower(c);
+  return s;
+}
+
+// Consume a leading UTF-8 byte-order mark (EF BB BF) if present.
+// Works on non-seekable streams via peek(); a stream that starts with
+// a partial BOM is not valid ASCII anyway and fails in the parser.
+inline void skip_utf8_bom(std::istream& in) {
+  constexpr unsigned char bom[3] = {0xEF, 0xBB, 0xBF};
+  for (unsigned char b : bom) {
+    if (in.peek() != static_cast<int>(b)) return;
+    in.get();
+  }
+}
+
 inline std::string position_marker(std::istream& in) {
   in.clear();
   if (auto pos = in.tellg(); pos >= 0) {
@@ -64,7 +92,13 @@ inline std::optional<std::uint64_t> remaining_bytes(std::istream& in) {
 }
 
 inline bool parse_real(std::string_view token, double& out) {
-  if (!token.empty() && token.front() == '+') token.remove_prefix(1);
+  if (!token.empty() && token.front() == '+') {
+    token.remove_prefix(1);
+    // "+-1" / "++1": from_chars would accept the '-' after our strip.
+    if (!token.empty() && (token.front() == '-' || token.front() == '+')) {
+      return false;
+    }
+  }
   if (token.empty()) return false;
   const char* first = token.data();
   const char* last = token.data() + token.size();

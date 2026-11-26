@@ -27,7 +27,9 @@
 //   We sniff the first ~256 bytes: if more than a small fraction look
 //   like non-printable / non-whitespace characters, we refuse with a
 //   clear error rather than producing nonsense. This is heuristic but
-//   is the standard convention.
+//   is the standard convention. A stream whose size is exactly
+//   84 + 50·n (n = the count at bytes 80..83) is also treated as
+//   binary, which catches fully printable "solid ..." binary headers.
 //
 //   Caveat: detection requires a SEEKABLE stream (we read the head
 //   then `seekg(0)` back to the start). For non-seekable inputs
@@ -38,8 +40,9 @@
 //   seekable; `std::ifstream` of a real file is also seekable.
 //
 // Tolerances:
-//   The reader is forgiving — extra whitespace, mixed case keywords,
-//   and missing trailing newlines all work. It does NOT validate
+//   The reader is forgiving — extra whitespace, mixed case keywords
+//   (ASCII-only, locale-independent fold), a leading UTF-8 BOM and
+//   missing trailing newlines all work. It does NOT validate
 //   normals against the right-hand-rule of the vertex order; that's
 //   the producer's responsibility.
 
@@ -66,57 +69,6 @@ namespace rvegen {
 
 namespace detail {
 
-// Heuristic binary-STL refusal. Reads the first up-to-256 bytes,
-// rewinds, and if a substantial fraction looks non-printable assume
-// binary and throw. The threshold is intentionally generous — only
-// pathological binary files (printable headers + zero offset) escape
-// the check, and those are best caught by the parse-error path that
-// follows.
-inline void reject_binary_stl(std::istream& in) {
-  if (!in.seekg(0, std::ios::beg)) return;   // non-seekable stream — skip
-  std::string head;
-  head.resize(256);
-  in.read(head.data(), static_cast<std::streamsize>(head.size()));
-  const auto bytes_read = in.gcount();
-  in.clear();
-  in.seekg(0, std::ios::beg);
-  if (bytes_read <= 0) return;
-  std::size_t non_printable = 0;
-  for (std::streamsize i = 0; i < bytes_read; ++i) {
-    const unsigned char c = static_cast<unsigned char>(head[i]);
-    if (!std::isprint(c) && !std::isspace(c)) ++non_printable;
-  }
-  // > 5 % non-printable in the first 256 bytes is strongly indicative
-  // of binary content. Real ASCII STL is text-only with newlines.
-  if (non_printable * 20 > static_cast<std::size_t>(bytes_read)) {
-    throw std::runtime_error{
-        "read_stl_ascii: input appears to be a binary STL "
-        "(non-printable bytes in header). Use read_stl_binary() or "
-        "read_stl() (auto-detect) instead."};
-  }
-}
-
-// Returns true if the first ~256 bytes look like binary STL: ≥ 5 %
-// non-printable / non-whitespace bytes. Used by `read_stl` to dispatch
-// between ASCII and binary readers. Same heuristic as
-// reject_binary_stl, just returning a bool rather than throwing.
-inline bool looks_like_binary_stl(std::istream& in) {
-  if (!in.seekg(0, std::ios::beg)) return false;
-  std::string head;
-  head.resize(256);
-  in.read(head.data(), static_cast<std::streamsize>(head.size()));
-  const auto bytes_read = in.gcount();
-  in.clear();
-  in.seekg(0, std::ios::beg);
-  if (bytes_read <= 0) return false;
-  std::size_t non_printable = 0;
-  for (std::streamsize i = 0; i < bytes_read; ++i) {
-    const unsigned char c = static_cast<unsigned char>(head[i]);
-    if (!std::isprint(c) && !std::isspace(c)) ++non_printable;
-  }
-  return non_printable * 20 > static_cast<std::size_t>(bytes_read);
-}
-
 // Decode 4 little-endian bytes as a float32 / uint32. STL is defined
 // as little-endian regardless of host byte order; on a big-endian host
 // we'd need byte swapping. Today's targets (x86_64, ARM64 in
@@ -139,6 +91,52 @@ inline float le_f32(unsigned char const* p) {
   return out;
 }
 
+// Binary-STL sniff on a seekable stream (non-seekable streams return
+// false — callers must then pick the explicit reader). Binary when
+// either:
+//   * the stream size is exactly 84 + 50·n for the header's count n —
+//     this catches binary files whose 80-byte header begins with
+//     "solid" and is otherwise printable; or
+//   * more than 5 % of the first 256 bytes are non-text (outside
+//     printable ASCII + whitespace). Real ASCII STL is text-only.
+// The checks are ASCII-only and do not depend on the C locale.
+inline bool looks_like_binary_stl(std::istream& in) {
+  if (!in.seekg(0, std::ios::beg)) {
+    in.clear();
+    return false;
+  }
+  std::array<unsigned char, 256> head{};
+  in.read(reinterpret_cast<char*>(head.data()),
+          static_cast<std::streamsize>(head.size()));
+  const auto bytes_read = in.gcount();
+  in.clear();
+  in.seekg(0, std::ios::end);
+  const auto size = in.tellg();
+  in.clear();
+  in.seekg(0, std::ios::beg);
+  if (bytes_read <= 0) return false;
+  if (bytes_read >= 84 && size >= 84) {
+    const std::uint64_t n = le_u32(head.data() + 80);
+    if (84 + 50 * n == static_cast<std::uint64_t>(size)) return true;
+  }
+  std::size_t non_text = 0;
+  for (std::streamsize i = 0; i < bytes_read; ++i) {
+    if (!ascii_is_text(head[static_cast<std::size_t>(i)])) ++non_text;
+  }
+  return non_text * 20 > static_cast<std::size_t>(bytes_read);
+}
+
+// Explicit-ASCII guard: refuse input the sniff classifies as binary
+// rather than parsing garbage.
+inline void reject_binary_stl(std::istream& in) {
+  if (looks_like_binary_stl(in)) {
+    throw std::runtime_error{
+        "read_stl_ascii: input appears to be a binary STL "
+        "(non-text bytes in header, or size matches the binary layout). "
+        "Use read_stl_binary() or read_stl() (auto-detect) instead."};
+  }
+}
+
 } // namespace detail
 
 namespace detail {
@@ -147,8 +145,7 @@ inline bool iequals(std::string const& a, char const* b) {
   const std::size_t n = std::strlen(b);
   if (a.size() != n) return false;
   for (std::size_t i = 0; i < n; ++i) {
-    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-        std::tolower(static_cast<unsigned char>(b[i]))) {
+    if (ascii_lower(a[i]) != ascii_lower(b[i])) {
       return false;
     }
   }
@@ -209,14 +206,20 @@ inline double stl_read_number(std::istream& in, char const* what,
 // Every keyword and number is checked; a truncated file, a malformed
 // number, a missing/misspelt keyword or a stray top-level token throws
 // std::runtime_error naming the (0-based) facet index and byte offset.
+// A leading UTF-8 BOM is skipped. Input with neither a facet nor an
+// `endsolid` throws.
 template <typename T = double>
 [[nodiscard]] std::vector<gte::Triangle3<T>> read_stl_ascii(std::istream& in) {
   detail::reject_binary_stl(in);
+  detail::skip_utf8_bom(in);
   std::vector<gte::Triangle3<T>> triangles;
   std::string token;
+  bool saw_endsolid = false;
   while (in >> token) {
-    if (detail::iequals(token, "solid") || detail::iequals(token, "endsolid")) {
+    const bool is_end = detail::iequals(token, "endsolid");
+    if (is_end || detail::iequals(token, "solid")) {
       // Skip the optional name on the same line.
+      saw_endsolid = saw_endsolid || is_end;
       std::string rest;
       std::getline(in, rest);
       continue;
@@ -245,6 +248,14 @@ template <typename T = double>
     detail::stl_expect_keyword(in, "endloop", facet);
     detail::stl_expect_keyword(in, "endfacet", facet);
     triangles.push_back(tri);
+  }
+  // Input that ends without a single facet AND without `endsolid` is
+  // not an STL — typically a binary file whose header starts with
+  // "solid" and swallowed everything as the solid's name.
+  if (triangles.empty() && !saw_endsolid) {
+    throw std::runtime_error{
+        "read_stl_ascii: input ended without any 'facet' or 'endsolid' — "
+        "truncated file, or a binary STL whose header starts with 'solid'"};
   }
   return triangles;
 }

@@ -42,12 +42,8 @@ namespace rvegen {
 namespace detail {
 
 inline std::string lowercased_extension(std::string const& path) {
-  const auto ext = std::filesystem::path{path}.extension().string();
-  std::string lower;
-  lower.reserve(ext.size());
-  for (char c : ext) lower.push_back(static_cast<char>(std::tolower(
-      static_cast<unsigned char>(c))));
-  return lower;
+  // ASCII-only fold: locale-independent, unlike std::tolower.
+  return ascii_to_lower(std::filesystem::path{path}.extension().string());
 }
 
 inline std::string trim_path(std::string const& path) {

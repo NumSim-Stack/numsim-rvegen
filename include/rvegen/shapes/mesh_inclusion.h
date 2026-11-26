@@ -72,6 +72,235 @@ namespace rvegen {
 
 namespace detail {
 
+// Uniform-grid cell index of coordinate `x` along an axis spanning
+// [lo, hi] split into `n` cells. Monotone in `x` and clamped, so a
+// point inside an AABB always lands in one of the AABB's cells.
+template <typename T>
+[[nodiscard]] std::size_t mesh_grid_cell(T x, T lo, T hi, std::size_t n) {
+  const T ext = hi - lo;
+  if (!(ext > T{0})) return 0;
+  const T r = (x - lo) / ext * static_cast<T>(n);
+  if (!(r > T{0})) return 0;
+  return std::min(static_cast<std::size_t>(r), n - 1);
+}
+
+// For each connected component c of a closed mesh, decide whether its
+// probe point `probes[c]` (a point on c's own surface, away from its
+// edges) lies inside an odd number of OTHER components — i.e. whether
+// c bounds a cavity. Returns one parity flag per component.
+//
+// Cost is kept near-linear for meshes with many components:
+//   * Candidate containers are found by point-stabbing a uniform 3D
+//     grid of component AABBs (components covering many cells go to a
+//     short "large" list checked for every probe).
+//   * Probes are grouped per candidate container. Each probe is tested
+//     with three generic ray directions and a majority vote, so a ray
+//     that grazes an edge or vertex (miscounting the parity) is
+//     outvoted. For a container with many triangles and many probes,
+//     its triangles are binned in a 2D grid in the plane perpendicular
+//     to each ray direction, and a probe only tests its own bin.
+template <typename T>
+[[nodiscard]] std::vector<char> mesh_inclusion_nesting_parity(
+    std::vector<gte::Triangle3<T>> const& tris,
+    std::vector<std::size_t> const& comp,
+    std::vector<char> const& degenerate, std::size_t n_comp,
+    std::vector<std::array<T, 3>> const& bb_min,
+    std::vector<std::array<T, 3>> const& bb_max,
+    std::vector<gte::Vector3<T>> const& probes) {
+  const std::size_t m = tris.size();
+
+  // Faces of each component, CSR layout.
+  std::vector<std::size_t> start(n_comp + 1, 0);
+  for (std::size_t f = 0; f < m; ++f) {
+    if (!degenerate[f]) ++start[comp[f] + 1];
+  }
+  for (std::size_t c = 0; c < n_comp; ++c) start[c + 1] += start[c];
+  std::vector<std::size_t> faces(start[n_comp]);
+  {
+    std::vector<std::size_t> cursor(start.begin(), start.end() - 1);
+    for (std::size_t f = 0; f < m; ++f) {
+      if (!degenerate[f]) faces[cursor[comp[f]]++] = f;
+    }
+  }
+
+  auto box_contains = [&](std::size_t o, gte::Vector3<T> const& p) {
+    for (int k = 0; k < 3; ++k) {
+      if (p[k] < bb_min[o][k] || p[k] > bb_max[o][k]) return false;
+    }
+    return true;
+  };
+
+  // ---- Step A: (container, probe) candidate pairs via an AABB grid.
+  std::array<T, 3> gmin = bb_min[0], gmax = bb_max[0];
+  for (std::size_t c = 1; c < n_comp; ++c) {
+    for (int k = 0; k < 3; ++k) {
+      gmin[k] = std::min(gmin[k], bb_min[c][k]);
+      gmax[k] = std::max(gmax[k], bb_max[c][k]);
+    }
+  }
+  // Cell size per axis ~ the median component extent along that axis,
+  // so a typical component covers a handful of cells whatever the
+  // layout (a long row of parts, a slab, a cloud). The total cell
+  // count is then scaled down to at most ~4 cells per component.
+  std::array<std::size_t, 3> res{1, 1, 1};
+  {
+    std::vector<T> ext(n_comp);
+    std::array<double, 3> r{};
+    for (int k = 0; k < 3; ++k) {
+      for (std::size_t c = 0; c < n_comp; ++c) ext[c] = bb_max[c][k] - bb_min[c][k];
+      std::nth_element(ext.begin(), ext.begin() + n_comp / 2, ext.end());
+      const double med = static_cast<double>(ext[n_comp / 2]);
+      const double span = static_cast<double>(gmax[k] - gmin[k]);
+      r[k] = (med > 0.0 && span > 0.0) ? std::ceil(span / med) : 1.0;
+      r[k] = std::clamp(r[k], 1.0, static_cast<double>(4 * n_comp + 64));
+    }
+    const double budget = static_cast<double>(4 * n_comp + 64);
+    for (int iter = 0; iter < 8 && r[0] * r[1] * r[2] > budget; ++iter) {
+      const double f = std::cbrt(budget / (r[0] * r[1] * r[2]));
+      for (auto& rk : r) rk = std::max(1.0, std::floor(rk * f));
+    }
+    for (int k = 0; k < 3; ++k) res[k] = static_cast<std::size_t>(r[k]);
+    // If clamping to 1 left the product over budget, cap the largest axis.
+    while (res[0] * res[1] * res[2] > static_cast<std::size_t>(budget)) {
+      auto& big = *std::max_element(res.begin(), res.end());
+      big = std::max<std::size_t>(1, big / 2);
+    }
+  }
+  auto cell3 = [&](std::array<std::size_t, 3> const& i) {
+    return (i[0] * res[1] + i[1]) * res[2] + i[2];
+  };
+  std::vector<std::vector<std::size_t>> cells(res[0] * res[1] * res[2]);
+  std::vector<std::size_t> large;
+  constexpr std::size_t large_cells = 512;
+  for (std::size_t o = 0; o < n_comp; ++o) {
+    std::array<std::size_t, 3> lo{}, hi{};
+    std::size_t count = 1;
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = mesh_grid_cell(bb_min[o][k], gmin[k], gmax[k], res[k]);
+      hi[k] = mesh_grid_cell(bb_max[o][k], gmin[k], gmax[k], res[k]);
+      count *= hi[k] - lo[k] + 1;
+    }
+    if (count > large_cells) { large.push_back(o); continue; }
+    for (auto x = lo[0]; x <= hi[0]; ++x)
+      for (auto y = lo[1]; y <= hi[1]; ++y)
+        for (auto z = lo[2]; z <= hi[2]; ++z) cells[cell3({x, y, z})].push_back(o);
+  }
+  std::vector<std::pair<std::size_t, std::size_t>> pairs;   // (container, probe)
+  for (std::size_t c = 0; c < n_comp; ++c) {
+    auto const& p = probes[c];
+    std::array<std::size_t, 3> i{};
+    for (int k = 0; k < 3; ++k) i[k] = mesh_grid_cell(p[k], gmin[k], gmax[k], res[k]);
+    for (auto const* list : {&cells[cell3(i)], &large}) {
+      for (auto o : *list) {
+        if (o != c && box_contains(o, p)) pairs.emplace_back(o, c);
+      }
+    }
+  }
+  std::sort(pairs.begin(), pairs.end());
+
+  // ---- Step B: parity of each probe against each candidate container.
+  std::array<gte::Vector3<T>, 3> dirs{{
+      {T{0.5773}, T{0.4987}, T{0.6467}},
+      {T{-0.6321}, T{0.7071}, T{-0.3175}},
+      {T{0.2113}, T{-0.8660}, T{0.4532}}}};
+  for (auto& d : dirs) gte::Normalize(d);
+
+  gte::TIQuery<T, gte::Ray3<T>, gte::Triangle3<T>> query;
+  std::vector<char> parity(n_comp, 0);
+  std::vector<int> votes;
+  std::vector<std::size_t> bin_start, bin_faces;
+  std::vector<std::array<T, 4>> proj_box;   // per face: umin, umax, wmin, wmax
+  for (std::size_t g = 0; g < pairs.size();) {
+    const std::size_t o = pairs[g].first;
+    std::size_t g_end = g;
+    while (g_end < pairs.size() && pairs[g_end].first == o) ++g_end;
+    const std::size_t nq = g_end - g;
+    const std::size_t f0 = start[o], nf = start[o + 1] - start[o];
+    votes.assign(nq, 0);
+
+    for (auto const& d : dirs) {
+      gte::Ray3<T> ray;
+      ray.direction = d;
+      auto hits_in = [&](std::size_t const* first, std::size_t const* last) {
+        int hits = 0;
+        for (auto it = first; it != last; ++it) {
+          if (query(ray, tris[*it]).intersect) ++hits;
+        }
+        return hits;
+      };
+      if (nf * nq <= 4096) {
+        for (std::size_t q = 0; q < nq; ++q) {
+          ray.origin = probes[pairs[g + q].second];
+          votes[q] += hits_in(faces.data() + f0, faces.data() + f0 + nf) % 2;
+        }
+        continue;
+      }
+      // Bin the container's triangles in the plane perpendicular to d.
+      gte::Vector3<T> a{T{1}, T{0}, T{0}};
+      if (std::abs(d[0]) > T{0.9}) a = {T{0}, T{1}, T{0}};
+      auto u = gte::Cross(d, a);
+      gte::Normalize(u);
+      const auto w = gte::Cross(d, u);
+      proj_box.resize(nf);
+      T umin = std::numeric_limits<T>::max(), umax = std::numeric_limits<T>::lowest();
+      T wmin = umin, wmax = umax;
+      for (std::size_t i = 0; i < nf; ++i) {
+        auto const& t = tris[faces[f0 + i]];
+        std::array<T, 4> b{std::numeric_limits<T>::max(), std::numeric_limits<T>::lowest(),
+                           std::numeric_limits<T>::max(), std::numeric_limits<T>::lowest()};
+        for (int k = 0; k < 3; ++k) {
+          const T pu = gte::Dot(t.v[k], u), pw = gte::Dot(t.v[k], w);
+          b[0] = std::min(b[0], pu); b[1] = std::max(b[1], pu);
+          b[2] = std::min(b[2], pw); b[3] = std::max(b[3], pw);
+        }
+        proj_box[i] = b;
+        umin = std::min(umin, b[0]); umax = std::max(umax, b[1]);
+        wmin = std::min(wmin, b[2]); wmax = std::max(wmax, b[3]);
+      }
+      const std::size_t r2 = std::clamp<std::size_t>(
+          static_cast<std::size_t>(std::ceil(std::sqrt(static_cast<double>(nf)))),
+          1, 1024);
+      bin_start.assign(r2 * r2 + 1, 0);
+      auto for_each_bin = [&](std::array<T, 4> const& b, auto&& fn) {
+        const auto u0 = mesh_grid_cell(b[0], umin, umax, r2);
+        const auto u1 = mesh_grid_cell(b[1], umin, umax, r2);
+        const auto w0 = mesh_grid_cell(b[2], wmin, wmax, r2);
+        const auto w1 = mesh_grid_cell(b[3], wmin, wmax, r2);
+        for (auto x = u0; x <= u1; ++x)
+          for (auto y = w0; y <= w1; ++y) fn(x * r2 + y);
+      };
+      for (std::size_t i = 0; i < nf; ++i) {
+        for_each_bin(proj_box[i], [&](std::size_t b) { ++bin_start[b + 1]; });
+      }
+      for (std::size_t b = 0; b < r2 * r2; ++b) bin_start[b + 1] += bin_start[b];
+      bin_faces.resize(bin_start[r2 * r2]);
+      {
+        std::vector<std::size_t> cursor(bin_start.begin(), bin_start.end() - 1);
+        for (std::size_t i = 0; i < nf; ++i) {
+          for_each_bin(proj_box[i], [&](std::size_t b) {
+            bin_faces[cursor[b]++] = faces[f0 + i];
+          });
+        }
+      }
+      for (std::size_t q = 0; q < nq; ++q) {
+        auto const& p = probes[pairs[g + q].second];
+        const T pu = gte::Dot(p, u), pw = gte::Dot(p, w);
+        if (pu < umin || pu > umax || pw < wmin || pw > wmax) continue;
+        const auto b = mesh_grid_cell(pu, umin, umax, r2) * r2 +
+                       mesh_grid_cell(pw, wmin, wmax, r2);
+        ray.origin = p;
+        votes[q] += hits_in(bin_faces.data() + bin_start[b],
+                            bin_faces.data() + bin_start[b + 1]) % 2;
+      }
+    }
+    for (std::size_t q = 0; q < nq; ++q) {
+      if (votes[q] >= 2) parity[pairs[g + q].second] ^= 1;
+    }
+    g = g_end;
+  }
+  return parity;
+}
+
 // Validate a triangle soup as a closed, orientable surface and compute
 // the per-triangle flips (swap v[1] <-> v[2]) that give it consistent
 // OUTWARD winding. Throws std::runtime_error when:
@@ -212,9 +441,14 @@ template <typename T>
   }
   const std::size_t n_comp = seeds.size();
 
-  // Per-component signed volume and AABB under the current flips.
+  // Per-component signed volume, AABB and probe face (the largest-area
+  // triangle; its centroid is a point strictly inside the component's
+  // surface patch, never on another component's corner) under the
+  // current flips.
   std::vector<T> comp_vol(n_comp, T{0});
   std::vector<std::array<T, 3>> bb_min(n_comp), bb_max(n_comp);
+  std::vector<T> probe_area(n_comp, T{-1});
+  std::vector<std::size_t> probe_face(seeds);
   for (std::size_t c = 0; c < n_comp; ++c) {
     for (int k = 0; k < 3; ++k) {
       bb_min[c][k] = std::numeric_limits<T>::max();
@@ -227,6 +461,9 @@ template <typename T>
     auto const& t = tris[f];
     const T dv = gte::DotCross(t.v[0], t.v[1], t.v[2]);
     comp_vol[c] += flip[f] ? -dv : dv;
+    const auto n = gte::Cross(t.v[1] - t.v[0], t.v[2] - t.v[0]);
+    const T area2 = gte::Dot(n, n);
+    if (area2 > probe_area[c]) { probe_area[c] = area2; probe_face[c] = f; }
     for (int i = 0; i < 3; ++i) {
       for (int k = 0; k < 3; ++k) {
         bb_min[c][k] = std::min(bb_min[c][k], t.v[i][k]);
@@ -236,39 +473,19 @@ template <typename T>
   }
 
   // Desired sign per component: + for a solid, - for a cavity (nested
-  // inside an odd number of other components). Nesting depth is found
-  // by casting the same ray `is_inside` uses from one of the
-  // component's vertices against the other components' triangles,
-  // pre-filtered by AABB.
-  std::vector<char> cavity(n_comp, 0);
+  // inside an odd number of other components). See
+  // `mesh_inclusion_nesting_parity` for how nesting is detected.
+  std::vector<char> cavity;
   if (n_comp > 1) {
-    gte::TIQuery<T, gte::Ray3<T>, gte::Triangle3<T>> query;
+    std::vector<gte::Vector3<T>> probes(n_comp);
     for (std::size_t c = 0; c < n_comp; ++c) {
-      const auto& p = tris[seeds[c]].v[0];
-      gte::Ray3<T> ray;
-      ray.origin = p;
-      ray.direction[0] = T{1};
-      ray.direction[1] = T{0.000721};
-      ray.direction[2] = T{0.000349};
-      std::vector<char> candidate(n_comp, 0);
-      bool any = false;
-      for (std::size_t o = 0; o < n_comp; ++o) {
-        if (o == c) continue;
-        bool in_box = true;
-        for (int k = 0; k < 3; ++k) {
-          in_box = in_box && p[k] >= bb_min[o][k] && p[k] <= bb_max[o][k];
-        }
-        candidate[o] = in_box ? 1 : 0;
-        any = any || in_box;
-      }
-      if (!any) continue;
-      int hits = 0;
-      for (std::size_t f = 0; f < m; ++f) {
-        if (degenerate[f] || !candidate[comp[f]]) continue;
-        if (query(ray, tris[f]).intersect) ++hits;
-      }
-      cavity[c] = static_cast<char>(hits % 2);
+      auto const& t = tris[probe_face[c]];
+      probes[c] = (t.v[0] + t.v[1] + t.v[2]) / T{3};
     }
+    cavity = mesh_inclusion_nesting_parity(tris, comp, degenerate, n_comp,
+                                           bb_min, bb_max, probes);
+  } else {
+    cavity.assign(n_comp, 0);
   }
 
   for (std::size_t f = 0; f < m; ++f) {
@@ -441,6 +658,20 @@ private:
       _base_centre[k] = (_base_min[k] + _base_max[k]) * T{0.5};
     }
     _volume = sum / T{6};
+    // A closed surface that encloses no volume (e.g. a triangle and
+    // its reverse) passes the topology check but is useless as an
+    // inclusion: reject |V| <= 1000·eps·L³, L = largest AABB extent.
+    const T extent = std::max({_base_max[0] - _base_min[0],
+                               _base_max[1] - _base_min[1],
+                               _base_max[2] - _base_min[2]});
+    const T tol = T{1000} * std::numeric_limits<T>::epsilon() *
+                  extent * extent * extent;
+    if (!(std::abs(_volume) > tol)) {
+      throw std::runtime_error{
+          "mesh_inclusion: closed mesh encloses (near-)zero volume (" +
+          std::to_string(_volume) + ", bounding-box extent " +
+          std::to_string(extent) + ") — degenerate or doubled-up surface"};
+    }
   }
 
   shared_triangles _base;

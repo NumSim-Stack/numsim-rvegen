@@ -50,6 +50,13 @@
 //     than `max_ply_list_count`; long lists are also checked against
 //     the remaining payload. Index storage grows only as data is
 //     actually read, never from a declared count.
+//   * The fan-triangulated output is capped at
+//     `ply_read_limits::max_triangles` (default 10M; every stream entry
+//     point takes an optional `ply_read_limits`) and, on seekable
+//     streams, at one triangle per remaining index
+//     scalar's worth of bytes. Triangles are emitted directly when the
+//     vertex table precedes the faces; otherwise they are buffered as
+//     uint32 index triples until the vertices have been read.
 //   * Vertex indices must be finite, non-negative, integral and less
 //     than the vertex count. No unchecked double → size_t casts.
 //   * ASCII scalars must parse as a whole token ("1,5" is an error).
@@ -60,7 +67,8 @@
 //
 // Tolerances:
 //   Header keywords are lowercase by spec but the reader matches
-//   case-insensitively. Extra whitespace, missing trailing newlines,
+//   case-insensitively (ASCII-only fold, locale-independent). A
+//   leading UTF-8 BOM, extra whitespace, missing trailing newlines,
 //   and comment lines anywhere in the header are accepted.
 
 #include <algorithm>
@@ -78,6 +86,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Mathematics/Triangle.h>
@@ -87,6 +96,16 @@
 
 namespace rvegen {
 
+// Caller-tunable output limits for the PLY readers.
+struct ply_read_limits {
+  // Cap on the fan-triangulated output (default ~720 MB as
+  // Triangle3<double>). Lower than the 1e8 element cap because fan
+  // triangulation of long polygon lists amplifies a small file into
+  // many triangles, and a mesh_inclusion's is_inside is O(triangles)
+  // per query anyway. Raise it for genuinely huge meshes.
+  std::uint64_t max_triangles = 10'000'000;
+};
+
 namespace detail {
 
 // Absolute sanity caps, independent of the stream size. 100M rows
@@ -94,14 +113,13 @@ namespace detail {
 // corners is certainly malformed.
 inline constexpr std::uint64_t max_ply_element_count = 100'000'000;
 inline constexpr std::uint64_t max_ply_list_count = 1u << 20;
+inline constexpr std::uint64_t max_ply_triangle_count =
+    ply_read_limits{}.max_triangles;
 // Upper bound on an up-front reserve() when the stream size is unknown.
 inline constexpr std::size_t non_seekable_reserve_cap = 1u << 20;
 
-inline std::string to_lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
-  return s;
-}
+// ASCII-only, locale-independent fold (see stream_position.h).
+inline std::string to_lower(std::string s) { return ascii_to_lower(std::move(s)); }
 
 // Read a single non-blank, non-comment header line, trimmed.
 inline bool next_header_line(std::istream& in, std::string& out) {
@@ -172,6 +190,7 @@ inline std::size_t checked_count(double v, std::uint64_t cap,
 // element table.
 inline std::pair<ply_format, std::vector<ply_element>>
 read_ply_header(std::istream& in) {
+  skip_utf8_bom(in);
   std::string first;
   if (!next_header_line(in, first) || to_lower(first) != "ply") {
     throw std::runtime_error{
@@ -425,7 +444,8 @@ inline std::size_t checked_vertex_index(double v, std::size_t n_verts,
 template <typename T, typename ReadScalar, typename MinBytes>
 std::vector<gte::Triangle3<T>> read_ply_payload(
     std::istream& in, std::vector<ply_element> const& elems,
-    char const* who, ReadScalar&& read_scalar, MinBytes&& min_bytes) {
+    char const* who, ReadScalar&& read_scalar, MinBytes&& min_bytes,
+    ply_read_limits const& limits) {
   ply_element const* vertex = nullptr;
   ply_element const* face   = nullptr;
   for (auto const& e : elems) {
@@ -500,11 +520,38 @@ std::vector<gte::Triangle3<T>> read_ply_payload(
   };
 
   std::vector<std::array<T, 3>> verts;
-  std::vector<std::array<std::size_t, 3>> tri_idx;
-  std::vector<std::size_t> indices;
+  std::vector<gte::Triangle3<T>> triangles;
+  // Only used when `face` precedes `vertex`: fan triangles are held as
+  // compact uint32 index triples (vertex count <= max_ply_element_count
+  // < 2^32) until the vertex table has been read.
+  std::vector<std::array<std::uint32_t, 3>> tri_idx;
+  std::vector<std::uint32_t> indices;
+  bool verts_read = false;
+
+  auto emit = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c) {
+    gte::Triangle3<T> tri;
+    std::uint32_t const idx[3] = {a, b, c};
+    for (int k = 0; k < 3; ++k) {
+      auto const& p = verts[idx[k]];
+      tri.v[k] = {p[0], p[1], p[2]};
+    }
+    triangles.push_back(tri);
+  };
+
+  // Grow `vec` geometrically but never beyond `limit` elements, so a
+  // hostile file that trips the triangle limit cannot first force a
+  // doubling past it.
+  auto grow_for = [](auto& vec, std::uint64_t extra, std::uint64_t limit) {
+    const std::uint64_t want = vec.size() + extra;
+    if (want <= vec.capacity()) return;
+    const std::uint64_t doubled = std::max<std::uint64_t>(
+        {want, 2 * static_cast<std::uint64_t>(vec.capacity()), 1024});
+    vec.reserve(static_cast<std::size_t>(std::min(doubled, limit)));
+  };
 
   for (auto const& e : elems) {
     if (&e == vertex) {
+      verts_read = true;
       verts.reserve(reserve_hint(vertex->count));
       for (std::size_t v = 0; v < vertex->count; ++v) {
         std::array<T, 3> p{};
@@ -528,7 +575,26 @@ std::vector<gte::Triangle3<T>> read_ply_payload(
       // Faces: indices are validated against the header's vertex
       // count, which is exact whether or not the vertex table has
       // been read yet. Extra face properties are read and discarded.
-      tri_idx.reserve(reserve_hint(face->count));
+      //
+      // Fan triangulation amplifies memory (a 255-gon of 1-byte
+      // indices becomes 253 triangles of 72 bytes each), so the total
+      // triangle count is bounded by `max_ply_triangle_count` and, on
+      // seekable streams, by the payload left: every fan triangle
+      // consumes at least one index scalar.
+      std::uint64_t max_tris = limits.max_triangles;
+      if (end_offset) {
+        const auto pos = in.tellg();
+        const std::uint64_t left =
+            pos >= 0 ? *end_offset - static_cast<std::uint64_t>(pos) : 0;
+        max_tris = std::min<std::uint64_t>(
+            max_tris, left / min_bytes(ftyped[face_list_prop].kind));
+      }
+      const auto initial = static_cast<std::size_t>(
+          std::min<std::uint64_t>(reserve_hint(face->count), max_tris));
+      if (verts_read) triangles.reserve(initial);
+      else            tri_idx.reserve(initial);
+      std::uint64_t n_tris = 0;
+
       for (std::size_t f = 0; f < face->count; ++f) {
         indices.clear();
         for (std::size_t i = 0; i < ftyped.size(); ++i) {
@@ -536,8 +602,9 @@ std::vector<gte::Triangle3<T>> read_ply_payload(
           if (i == face_list_prop) {
             const auto n = read_list_count(prop, "face index count");
             for (std::size_t k = 0; k < n; ++k) {
-              indices.push_back(checked_vertex_index(
-                  read_scalar(prop.kind), vertex->count, f, who));
+              indices.push_back(static_cast<std::uint32_t>(
+                  checked_vertex_index(read_scalar(prop.kind),
+                                       vertex->count, f, who)));
             }
           } else if (prop.is_list) {
             const auto n = read_list_count(prop, "face list count");
@@ -551,23 +618,39 @@ std::vector<gte::Triangle3<T>> read_ply_payload(
               std::string{who} + ": face " + std::to_string(f) +
               " has fewer than 3 vertices"};
         }
-        // Fan-triangulate around indices[0].
-        for (std::size_t k = 1; k + 1 < indices.size(); ++k) {
-          tri_idx.push_back({indices[0], indices[k], indices[k + 1]});
+        const std::uint64_t add = indices.size() - 2;
+        if (n_tris + add > max_tris) {
+          throw std::runtime_error{
+              std::string{who} + ": face " + std::to_string(f) +
+              " pushes the fan-triangulated mesh past " +
+              std::to_string(max_tris) + " triangles (limit " +
+              std::to_string(limits.max_triangles) +
+              ", or fewer when bounded by the remaining payload) — "
+              "probably a malformed file"};
+        }
+        n_tris += add;
+        // Fan-triangulate around indices[0]. Emit directly when the
+        // vertex table is already known (the usual vertex-first order).
+        if (verts_read) {
+          grow_for(triangles, add, max_tris);
+          for (std::size_t k = 1; k + 1 < indices.size(); ++k) {
+            emit(indices[0], indices[k], indices[k + 1]);
+          }
+        } else {
+          grow_for(tri_idx, add, max_tris);
+          for (std::size_t k = 1; k + 1 < indices.size(); ++k) {
+            tri_idx.push_back({indices[0], indices[k], indices[k + 1]});
+          }
         }
       }
     }
   }
 
-  std::vector<gte::Triangle3<T>> triangles;
-  triangles.reserve(tri_idx.size());
-  for (auto const& t : tri_idx) {
-    gte::Triangle3<T> tri;
-    for (int c = 0; c < 3; ++c) {
-      auto const& p = verts[t[c]];
-      tri.v[c] = {p[0], p[1], p[2]};
-    }
-    triangles.push_back(tri);
+  // Face-before-vertex files: resolve the buffered index triples now.
+  if (!tri_idx.empty()) {
+    triangles.reserve(tri_idx.size());
+    for (auto const& t : tri_idx) emit(t[0], t[1], t[2]);
+    std::vector<std::array<std::uint32_t, 3>>{}.swap(tri_idx);
   }
   return triangles;
 }
@@ -582,7 +665,8 @@ std::vector<gte::Triangle3<T>> read_ply_payload(
 // only sensible default for a polygon-soup consumer like
 // `mesh_inclusion`.
 template <typename T = double>
-[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply_ascii(std::istream& in) {
+[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply_ascii(
+    std::istream& in, ply_read_limits const& limits = {}) {
   auto [format, elems] = detail::read_ply_header(in);
   if (format != detail::ply_format::ascii) {
     throw std::runtime_error{
@@ -593,7 +677,7 @@ template <typename T = double>
   return detail::read_ply_payload<T>(
       in, elems, "read_ply_ascii",
       [&](detail::scalar_kind) { return detail::read_ascii_scalar(in); },
-      [](detail::scalar_kind) -> std::uint64_t { return 1; });
+      [](detail::scalar_kind) -> std::uint64_t { return 1; }, limits);
 }
 
 template <typename T = double>
@@ -615,7 +699,8 @@ template <typename T = double>
 // corrupt the payload mid-element. `read_ply_binary_file` does this
 // already; in-memory `stringstream` is fine either way.
 template <typename T = double>
-[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply_binary(std::istream& in) {
+[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply_binary(
+    std::istream& in, ply_read_limits const& limits = {}) {
   auto [format, elems] = detail::read_ply_header(in);
   if (format == detail::ply_format::ascii) {
     throw std::runtime_error{
@@ -630,7 +715,8 @@ template <typename T = double>
       },
       [](detail::scalar_kind k) -> std::uint64_t {
         return detail::scalar_kind_size(k);
-      });
+      },
+      limits);
 }
 
 template <typename T = double>
@@ -649,16 +735,18 @@ template <typename T = double>
 // seekable stream — `std::stringstream` and `std::ifstream` both
 // qualify; pipes do not.
 template <typename T = double>
-[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply(std::istream& in) {
+[[nodiscard]] std::vector<gte::Triangle3<T>> read_ply(
+    std::istream& in, ply_read_limits const& limits = {}) {
   const auto start = in.tellg();
   if (start < 0) {
     // Non-seekable — fall back to ASCII, which will throw with a
     // clear error if the file turns out to be binary.
-    return read_ply_ascii<T>(in);
+    return read_ply_ascii<T>(in, limits);
   }
   // Read just enough of the header to find the format line. We
   // can't reuse `read_ply_header` here because it consumes element
   // declarations too; we need to rewind before that point.
+  detail::skip_utf8_bom(in);
   std::string line;
   detail::ply_format format = detail::ply_format::ascii;
   bool format_found = false;
@@ -686,10 +774,10 @@ template <typename T = double>
   if (!format_found) {
     // Let read_ply_ascii's own header parser surface the precise
     // "missing magic" / "missing format" error.
-    return read_ply_ascii<T>(in);
+    return read_ply_ascii<T>(in, limits);
   }
-  if (format == detail::ply_format::ascii) return read_ply_ascii<T>(in);
-  return read_ply_binary<T>(in);
+  if (format == detail::ply_format::ascii) return read_ply_ascii<T>(in, limits);
+  return read_ply_binary<T>(in, limits);
 }
 
 template <typename T = double>
