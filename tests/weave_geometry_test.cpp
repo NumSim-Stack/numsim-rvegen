@@ -1,12 +1,17 @@
-// Weave geometry regression test (#78).
+// Weave geometry regression test (#78, #3).
 //
-// 1. Plain weave: at every (warp i, weft j) crossing the two
-//    centrelines are ≥ 2·yarn_radius apart in z, with the over/under
-//    sign (−1)^(i+j) alternating in both i and j; the full warp–weft
-//    centreline clearance (GTE segment–segment distance, including
-//    periodic images) is ≥ 2·yarn_radius; the yarns are periodic.
-// 2. Validation: odd counts, amplitude < yarn_radius, yarns leaving
-//    [0, Lz], too-steep crimp all throw.
+// 1. Plain / twill 2/2 / satin 5: at every (warp i, weft j) crossing
+//    the two centrelines are 2·amplitude ≥ 2·yarn_radius apart in z,
+//    with the over/under sign matching the pattern's interlacing
+//    matrix (hard-coded here, independent of the generator); the full
+//    warp–weft clearance of the emitted polylines (GTE segment–segment
+//    distance, including periodic images) is ≥ 2·yarn_radius; the
+//    yarns are periodic.
+// 2. Validation: counts not a multiple of the repeat, amplitude ≤
+//    yarn_radius, yarns leaving [0, Lz], too-steep crimp all throw.
+// 5. Acceptance (#3): a 4×4 plain weave at fibre volume fraction 0.30
+//    voxelizes to the analytic yarn volume within the voxel-size
+//    error bound.
 // 3. Tow: fibre centrelines in a bundle are ≥ 2·fibre_radius apart,
 //    stay inside the yarn envelope, a partial outer ring is spread
 //    evenly, and an infeasible fibre_radius_factor throws.
@@ -109,7 +114,25 @@ struct weave_cfg {
   std::size_t n_warp, n_weft;
   double r, A;
   std::size_t n_seg;
+  rvegen::weave_pattern pattern = rvegen::weave_pattern::plain;
 };
+
+// Reference interlacing matrices, one repeat each ('+' = warp over).
+// Row = warp i, column = weft j.
+int expected_interlacing(rvegen::weave_pattern p, std::size_t i,
+                         std::size_t j) {
+  static const char* const twill[4] = {"++--", "-++-", "--++", "+--+"};
+  static const char* const satin[5] = {"-++++", "++-++", "++++-", "+-+++",
+                                       "+++-+"};
+  switch (p) {
+    case rvegen::weave_pattern::twill_2_2:
+      return twill[i % 4][j % 4] == '+' ? +1 : -1;
+    case rvegen::weave_pattern::satin_5:
+      return satin[i % 5][j % 5] == '+' ? +1 : -1;
+    case rvegen::weave_pattern::plain: break;
+  }
+  return ((i + j) % 2 == 0) ? +1 : -1;
+}
 
 // ----------------------------------------------------------------------------
 // 1. Plain weave geometry.
@@ -117,7 +140,8 @@ struct weave_cfg {
 // Returns the measured minimum warp–weft polyline distance.
 double check_weave(weave_cfg const& c) {
   rvegen::weave_generator<double> gen{c.box, c.n_warp, c.n_weft, c.r, c.A,
-                                      c.n_seg};
+                                      c.n_seg, c.pattern};
+  REQUIRE(gen.pattern() == c.pattern);
   auto shapes = gen.build();
   REQUIRE(shapes.size() == c.n_warp + c.n_weft);
   // Emitted segment counts: reported correctly, ≥ the request, and a
@@ -147,14 +171,17 @@ double check_weave(weave_cfg const& c) {
       // The crossing is a control point: separation is exactly 2A.
       REQUIRE(std::abs(std::abs(dz) - 2.0 * c.A) < tol);
       sign[i][j] = dz > 0.0 ? +1 : -1;
-      REQUIRE(sign[i][j] == (((i + j) % 2 == 0) ? +1 : -1));
+      REQUIRE(sign[i][j] == expected_interlacing(c.pattern, i, j));
+      REQUIRE(gen.interlacing(i, j) == sign[i][j]);
     }
   }
-  // Alternation in i and j, including across the periodic seam.
-  for (std::size_t i = 0; i < c.n_warp; ++i) {
-    for (std::size_t j = 0; j < c.n_weft; ++j) {
-      REQUIRE(sign[i][j] == -sign[(i + 1) % c.n_warp][j]);
-      REQUIRE(sign[i][j] == -sign[i][(j + 1) % c.n_weft]);
+  // Plain weave: alternation in i and j, including across the seam.
+  if (c.pattern == rvegen::weave_pattern::plain) {
+    for (std::size_t i = 0; i < c.n_warp; ++i) {
+      for (std::size_t j = 0; j < c.n_weft; ++j) {
+        REQUIRE(sign[i][j] == -sign[(i + 1) % c.n_warp][j]);
+        REQUIRE(sign[i][j] == -sign[i][(j + 1) % c.n_weft]);
+      }
     }
   }
 
@@ -214,6 +241,33 @@ void test_weave_crossings_clear_and_alternate() {
   }
 }
 
+void test_weave_patterns_clear_and_match_matrix() {
+  using P = rvegen::weave_pattern;
+  // Twill 2/2: square, non-square with unequal spacings, coarse
+  // request with a thin margin (forces refinement).
+  check_weave({{1.0, 1.0, 0.3}, 4, 4, 0.04, 0.05, 32, P::twill_2_2});
+  check_weave({{2.0, 1.0, 0.3}, 8, 4, 0.02, 0.025, 8, P::twill_2_2});
+  check_weave({{1.0, 1.0, 1.0}, 4, 4, 0.056, 0.0562, 2, P::twill_2_2});
+  // Satin 5: odd repeat, long floats.
+  check_weave({{1.0, 1.0, 0.3}, 5, 5, 0.035, 0.04, 32, P::satin_5});
+  check_weave({{2.0, 1.0, 0.3}, 10, 5, 0.02, 0.026, 2, P::satin_5});
+  check_weave({{1.0, 1.0, 1.0}, 5, 5, 0.045, 0.0451, 2, P::satin_5});
+  // Plain via the explicit parameter matches the default.
+  rvegen::weave_generator<double> a{{1, 1, 0.3}, 4, 4, 0.04, 0.05, 16};
+  rvegen::weave_generator<double> b{{1, 1, 0.3}, 4, 4, 0.04, 0.05, 16,
+                                    P::plain};
+  auto sa = a.build();
+  auto sb = b.build();
+  for (std::size_t y = 0; y < sa.size(); ++y) {
+    auto const& ca = as_tube(sa[y]).centerline();
+    auto const& cb = as_tube(sb[y]).centerline();
+    REQUIRE(ca.size() == cb.size());
+    for (std::size_t k = 0; k < ca.size(); ++k) {
+      REQUIRE(gte::Length(ca[k] - cb[k]) == 0.0);
+    }
+  }
+}
+
 // ----------------------------------------------------------------------------
 // 2. Validation.
 // ----------------------------------------------------------------------------
@@ -242,6 +296,17 @@ void test_weave_validation() {
     G{{1, 1, 0.3}, 2, 2, 0.04, 0.05, std::numeric_limits<std::size_t>::max()};
   }));
   REQUIRE(!throws([] { G{{1, 1, 0.3}, 2, 2, 0.04, 0.05, G::max_segments_per_yarn}; }));
+  // Pattern repeats: twill 2/2 needs multiples of 4, satin 5 of 5.
+  using P = rvegen::weave_pattern;
+  REQUIRE(throws([] { G{{1, 1, 0.3}, 2, 4, 0.02, 0.03, 32, P::twill_2_2}; }));
+  REQUIRE(throws([] { G{{1, 1, 0.3}, 4, 6, 0.02, 0.03, 32, P::twill_2_2}; }));
+  REQUIRE(!throws([] { G{{1, 1, 0.3}, 8, 4, 0.02, 0.03, 32, P::twill_2_2}; }));
+  REQUIRE(throws([] { G{{1, 1, 0.3}, 4, 5, 0.02, 0.03, 32, P::satin_5}; }));
+  REQUIRE(throws([] { G{{1, 1, 0.3}, 5, 6, 0.02, 0.03, 32, P::satin_5}; }));
+  REQUIRE(!throws([] { G{{1, 1, 0.3}, 5, 10, 0.02, 0.03, 32, P::satin_5}; }));
+  // The clearance checks apply to every pattern.
+  REQUIRE(throws([] { G{{1, 1, 0.3}, 5, 5, 0.035, 0.035, 32, P::satin_5}; }));
+  REQUIRE(throws([] { G{{1, 1, 0.3}, 4, 4, 0.06, 0.07, 32, P::twill_2_2}; }));
   // z_centre ± (A + r) leaves [0, Lz].
   REQUIRE(throws([] { G{{1, 1, 0.2}, 2, 2, 0.05, 0.06}; }));
   // Yarn too thick for the spacing: r > s/(π√2) (s = 0.25 → 0.0563).
@@ -319,6 +384,72 @@ void test_tow_infeasible_factor_throws() {
 }
 
 // ----------------------------------------------------------------------------
+// 5. Acceptance (#3): 4×4 plain weave at fibre volume fraction 0.30.
+// ----------------------------------------------------------------------------
+// Voxel fraction of the yarns (plus their periodic wraps, so the cell
+// holds exactly one period of every yarn) on an n_xy × n_xy × n_z grid.
+double voxel_fraction(rvegen::weave_generator<double>::shape_vector const& yarns,
+                      std::array<double, 3> const& box, std::size_t n_xy,
+                      std::size_t n_z) {
+  rvegen::weave_generator<double>::shape_vector all;
+  for (auto const& y : yarns) {
+    y->make_bounding_box();
+    for (auto& w : rvegen::generate_periodic_wraps<double>(*y, box)) {
+      all.push_back(std::move(w));
+    }
+    all.push_back(y->clone());
+  }
+  auto grid = rvegen::sample_voxel_grid(all, box, n_xy, n_xy, n_z);
+  const auto filled = std::count_if(grid.begin(), grid.end(),
+                                    [](auto id) { return id != 0; });
+  return static_cast<double>(filled) / static_cast<double>(grid.size());
+}
+
+void test_plain_weave_voxel_fraction() {
+  using G = rvegen::weave_generator<double>;
+  const double r = 0.05, A = 0.055;
+  const double target = 0.30;
+  // Yarn lengths don't depend on Lz, so size the cell from a trial
+  // build: Lz = V_yarns / (target · Lx · Ly).
+  double V = 0.0;
+  for (auto const& s : G{{1, 1, 1}, 4, 4, r, A, 32}.build()) {
+    V += s->volume();   // π r² · polyline length
+  }
+  const double Lz = V / target;
+  const std::array<double, 3> box{1.0, 1.0, Lz};
+  G gen{box, 4, 4, r, A, 32};
+  auto yarns = gen.build();
+  double V_check = 0.0;
+  for (auto const& s : yarns) V_check += s->volume();
+  const double vf_analytic = V_check / Lz;
+  REQUIRE(std::abs(vf_analytic - target) < 1e-12);
+
+  // The yarns never overlap (clearance ≥ 2r), so the union's volume is
+  // the sum of the tube volumes; the polyline-joint correction is
+  // O(r³θ³) per node (θ ≈ 0.27 rad here), < 0.1 % in total.
+  //
+  // Tolerance from the voxel size. Near-cubic voxels of edge dx; a
+  // yarn cross-section is a disc of R = r/dx voxels whose boundary
+  // ring (~2πR voxels against πR² inside) gives at most ~2/R relative
+  // error per cross-section. The undulation moves the disc relative
+  // to the lattice from one cross-section to the next, so the
+  // N = n_yarns·L/dx cross-sections contribute errors of independent
+  // sign: σ ≈ (2/R)/√N. We allow 3σ. (Measured over n_xy = 32…192:
+  // |rel. error| 0.03 %…1.9 %, each ≤ 1.5σ. An interpenetrating weave
+  // would lose up to 16r³/3 per crossing (Steinmetz solid), ≈ 15 %
+  // here, far outside.)
+  const std::size_t n_xy = 128;
+  const auto n_z = static_cast<std::size_t>(std::lround(Lz * n_xy));
+  const double dx = 1.0 / static_cast<double>(n_xy);
+  const double R = r / dx;
+  const double N = static_cast<double>(yarns.size()) / dx;
+  const double tol = 3.0 * (2.0 / R) / std::sqrt(N);
+  const double vf = voxel_fraction(yarns, box, n_xy, n_z);
+  REQUIRE(std::abs(vf - vf_analytic) / vf_analytic <= tol);
+  REQUIRE(tol < 0.05);   // keeps the test meaningful if parameters change
+}
+
+// ----------------------------------------------------------------------------
 // 4. Periodic wraps.
 // ----------------------------------------------------------------------------
 std::size_t wrap_count(std::vector<std::array<double, 3>> const& cl, double r,
@@ -381,7 +512,9 @@ void test_periodic_wraps_single_side_counts_unchanged() {
 
 int main() {
   test_weave_crossings_clear_and_alternate();
+  test_weave_patterns_clear_and_match_matrix();
   test_weave_validation();
+  test_plain_weave_voxel_fraction();
   test_tow_fibres_do_not_overlap();
   test_tow_infeasible_factor_throws();
   test_periodic_wraps_both_faces();
