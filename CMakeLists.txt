@@ -119,6 +119,46 @@ target_link_libraries(rvegen_lib INTERFACE
 target_compile_features(rvegen_lib INTERFACE cxx_std_23)
 
 # ---------------------------------------------------------------------------
+# Optional Voro++ backend for voronoi_generator_3d (#70). OFF by default so
+# the library stays header-only with no extra dependency; the in-house
+# tessellator remains the default backend either way. When ON, Voro++
+# (BSD-3, pinned tag) is fetched, built as a small static library, and wired
+# in through the RVEGEN_WITH_VORO_PP compile definition. Voro++ v0.4.6 ships
+# no CMake build, hence the SOURCE_SUBDIR trick (populate only) plus our own
+# target. Only the in-tree build links it; the installed package stays
+# header-only (see docs in voronoi_backend_voropp.h).
+# ---------------------------------------------------------------------------
+option(RVEGEN_WITH_VORO_PP "Enable the Voro++ backend for voronoi_generator_3d" OFF)
+if(RVEGEN_WITH_VORO_PP)
+  FetchContent_Declare(
+    voropp
+    GIT_REPOSITORY https://github.com/chr1shr/voro.git
+    GIT_TAG v0.4.6   # 43d460b83d5f33392bb599a401f05c37af3d7441
+    SOURCE_SUBDIR no_cmake_here
+  )
+  FetchContent_MakeAvailable(voropp)
+  add_library(rvegen_voropp STATIC
+    ${voropp_SOURCE_DIR}/src/cell.cc
+    ${voropp_SOURCE_DIR}/src/common.cc
+    ${voropp_SOURCE_DIR}/src/container.cc
+    ${voropp_SOURCE_DIR}/src/unitcell.cc
+    ${voropp_SOURCE_DIR}/src/v_compute.cc
+    ${voropp_SOURCE_DIR}/src/c_loops.cc
+    ${voropp_SOURCE_DIR}/src/v_base.cc
+    ${voropp_SOURCE_DIR}/src/wall.cc
+    ${voropp_SOURCE_DIR}/src/pre_container.cc
+    ${voropp_SOURCE_DIR}/src/container_prd.cc
+  )
+  target_include_directories(rvegen_voropp SYSTEM PUBLIC
+    ${voropp_SOURCE_DIR}/src)
+  set_target_properties(rvegen_voropp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_options(rvegen_voropp PRIVATE -w)   # third-party code
+  target_link_libraries(rvegen_lib INTERFACE $<BUILD_INTERFACE:rvegen_voropp>)
+  target_compile_definitions(rvegen_lib INTERFACE
+    $<BUILD_INTERFACE:RVEGEN_WITH_VORO_PP=1>)
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests. Gated on BUILD_TESTING (CTest convention) so consumers that pull
 # rvegen via add_subdirectory (e.g. Tessera) can disable rvegen's tests
 # from registering into the parent CTest database with `set(BUILD_TESTING
@@ -189,6 +229,10 @@ add_test(NAME schema_audit_test COMMAND rvegen_schema_audit_test)
 add_executable(rvegen_voronoi_robustness_test tests/voronoi_robustness_test.cpp)
 target_link_libraries(rvegen_voronoi_robustness_test PRIVATE rvegen_lib)
 add_test(NAME voronoi_robustness_test COMMAND rvegen_voronoi_robustness_test)
+
+add_executable(rvegen_voronoi_backend_test tests/voronoi_backend_test.cpp)
+target_link_libraries(rvegen_voronoi_backend_test PRIVATE rvegen_lib)
+add_test(NAME voronoi_backend_test COMMAND rvegen_voronoi_backend_test)
 
 add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
