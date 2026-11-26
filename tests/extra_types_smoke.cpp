@@ -391,10 +391,13 @@ void test_vtk_legacy_writer_header_and_size() {
   const auto txt = out.str();
   REQUIRE(txt.find("# vtk DataFile Version 3.0")  != std::string::npos);
   REQUIRE(txt.find("DATASET STRUCTURED_POINTS")    != std::string::npos);
-  REQUIRE(txt.find("DIMENSIONS 16 16 1")           != std::string::npos);
-  // Title carries an `rvegen-vtk-format: v2` marker so downstream
-  // tools can detect the SCALARS field-name change unambiguously.
-  REQUIRE(txt.find("[rvegen-vtk-format: v2]")     != std::string::npos);
+  // v3 layout: voxels are cells, DIMENSIONS counts points (n + 1 in x/y,
+  // a single z point for a 2D RVE), scalars are CELL_DATA.
+  REQUIRE(txt.find("DIMENSIONS 17 17 1")           != std::string::npos);
+  REQUIRE(txt.find("CELL_DATA 256")                != std::string::npos);
+  // Title carries an `rvegen-vtk-format: v3` marker so downstream
+  // tools can detect the layout / field-name changes unambiguously.
+  REQUIRE(txt.find("[rvegen-vtk-format: v3]")     != std::string::npos);
   // Field name encodes id scheme — `shape_index` when no
   // phase_collection is attached, `phase_id` when it is.
   REQUIRE(txt.find("SCALARS shape_index int 1")    != std::string::npos);
@@ -3640,7 +3643,7 @@ void test_vtk_legacy_writer_emits_phase_ids_from_phase_collection() {
   // Format-version marker must be reachable in BOTH the phase-id and
   // shape-index branches — a refactor that suppressed it in either
   // would silently break downstream consumers' scheme detection.
-  REQUIRE(text.find("[rvegen-vtk-format: v2]") != std::string::npos);
+  REQUIRE(text.find("[rvegen-vtk-format: v3]") != std::string::npos);
   // Center voxel (8, 8) for a centered radius-0.2 circle in a 16x16 grid
   // is inside the fibre and must read as `fibre_id` (== 2).
   REQUIRE(text.find('\n' + std::to_string(fibre_id) + '\n') !=

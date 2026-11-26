@@ -3,6 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <fstream>
+#include <iomanip>
+#include <ios>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -22,6 +24,15 @@ namespace rvegen {
 // per voxel (0 = matrix; remaining values follow the active id scheme,
 // see below).
 //
+// Layout (rvegen-vtk-format v3): each voxel is one VTK *cell*.
+// DIMENSIONS are the point counts (nx+1, ny+1, nz+1), ORIGIN is 0 0 0,
+// SPACING is the voxel size (Lx/nx, Ly/ny, Lz/nz), and the scalars are
+// CELL_DATA with nx·ny·nz values. Cell (i, j, k) therefore spans
+// [i·dx, (i+1)·dx] × ... and its value is the sample taken at the cell
+// centre, so ParaView shows the field exactly over [0, L] with no
+// half-voxel shift. 2D RVEs keep a single z point (DIMENSIONS nx+1 ny+1 1),
+// which VTK treats as nx·ny pixel cells.
+//
 // This writer does NOT depend on the VTK library — it's pure text output,
 // the format is a few-line header plus the flat phase grid. The file
 // extension is conventionally ".vtk".
@@ -31,7 +42,7 @@ namespace rvegen {
 // Output is NOT bit-stable for a given shape list: the SCALARS field
 // name and the title-line suffix depend on whether `set_phases()` was
 // called and which collection is attached. The title line carries
-// `[rvegen-vtk-format: v2]` so downstream parsers can detect the
+// `[rvegen-vtk-format: v3]` so downstream parsers can detect the
 // scheme change; snapshot-diff tests should expect the title to vary
 // across writer-state changes.
 template <typename T = double>
@@ -127,9 +138,13 @@ public:
 
     const auto dx = domain_box[0] / static_cast<value_type>(_nx);
     const auto dy = domain_box[1] / static_cast<value_type>(_ny);
-    const auto dz = (nz_eff > 1)
+    const bool is_3d = domain_box[2] > value_type{0};
+    const auto dz = is_3d
         ? domain_box[2] / static_cast<value_type>(nz_eff)
         : value_type{1};
+    // Point dimensions: one more than the cell count along every sampled
+    // axis; a 2D RVE stays flat with a single z point.
+    const std::size_t pz = is_3d ? nz_eff + 1 : std::size_t{1};
 
     // Field name distinguishes id schemes so a ParaView user looking
     // at a .vtk file can tell whether the integers are real phase ids
@@ -143,19 +158,29 @@ public:
     // "phase_id" / "shape_index" depending on writer state. The token
     // "rvegen-vtk-format: v2" embedded in the title line lets a
     // downstream parser detect the schema change unambiguously.
+    //
+    // rvegen-vtk-format v3: voxels moved from POINT_DATA on an
+    // nx × ny × nz point lattice (which ParaView drew half a voxel off,
+    // with extent (n−1)·d) to CELL_DATA on an (nx+1) × (ny+1) × (nz+1)
+    // point lattice, so each voxel occupies its true box in [0, L].
     const char* const field_name  = _phases ? "phase_id" : "shape_index";
     const char* const title_suffix = _phases
         ? " (phase_id from phase_collection, 0 = matrix/untagged)"
         : " (1-based shape index, 0 = matrix)";
 
+    // SPACING is written with round-trip precision (17 significant
+    // digits) so L = n · spacing holds in the reader; the caller's stream
+    // precision is restored afterwards.
+    const auto old_precision = out.precision();
     out << "# vtk DataFile Version 3.0\n"
-        << "rvegen voxel grid [rvegen-vtk-format: v2]" << title_suffix << "\n"
+        << "rvegen voxel grid [rvegen-vtk-format: v3]" << title_suffix << "\n"
         << "ASCII\n"
         << "DATASET STRUCTURED_POINTS\n"
-        << "DIMENSIONS " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'
+        << "DIMENSIONS " << (_nx + 1) << ' ' << (_ny + 1) << ' ' << pz << '\n'
         << "ORIGIN 0 0 0\n"
-        << "SPACING " << dx << ' ' << dy << ' ' << dz << '\n'
-        << "POINT_DATA " << (_nx * _ny * nz_eff) << '\n'
+        << "SPACING " << std::setprecision(17) << dx << ' ' << dy << ' '
+        << dz << std::setprecision(old_precision) << '\n'
+        << "CELL_DATA " << (_nx * _ny * nz_eff) << '\n'
         << "SCALARS " << field_name << " int 1\n"
         << "LOOKUP_TABLE default\n";
 
