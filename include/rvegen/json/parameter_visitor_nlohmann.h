@@ -5,7 +5,9 @@
 #include <stdexcept>
 #include <string>
 #include <typeindex>
+#include <type_traits>
 #include <typeinfo>
+#include <utility>
 #include <vector>
 
 #include <numsim-core/input_parameter_controller.h>
@@ -31,6 +33,14 @@ namespace rvegen {
 //   std::string
 //   std::vector<double>, std::vector<int>, std::vector<std::string>
 //
+// Integral targets (including the elements of std::vector<int>) are
+// strict: the JSON value must be an integer number (`5.9`, `"5"` and
+// `true` are rejected), unsigned targets reject negative values, and
+// values outside the target type's range are rejected. Each failure
+// throws std::runtime_error naming the key and the offending value —
+// nlohmann's own get<> would silently static_cast instead (-1 → SIZE_MAX,
+// 5.9 → 5).
+//
 // Adding a new supported type: add an `if (tid == typeid(T))` branch to
 // `read()`. Unknown types throw std::runtime_error with the type name.
 class parameter_visitor_nlohmann
@@ -55,20 +65,29 @@ public:
     if (tid == typeid(bool))        return std::any{node.get<bool>()};
     if (tid == typeid(std::string)) return std::any{node.get<std::string>()};
 
-    if (tid == typeid(int))                return std::any{node.get<int>()};
-    if (tid == typeid(long))               return std::any{node.get<long>()};
-    if (tid == typeid(long long))          return std::any{node.get<long long>()};
-    if (tid == typeid(std::size_t))        return std::any{node.get<std::size_t>()};
-    if (tid == typeid(std::int32_t))       return std::any{node.get<std::int32_t>()};
-    if (tid == typeid(std::int64_t))       return std::any{node.get<std::int64_t>()};
-    if (tid == typeid(std::uint32_t))      return std::any{node.get<std::uint32_t>()};
-    if (tid == typeid(std::uint64_t))      return std::any{node.get<std::uint64_t>()};
+    if (tid == typeid(int))           return std::any{get_integral<int>(key, node)};
+    if (tid == typeid(long))          return std::any{get_integral<long>(key, node)};
+    if (tid == typeid(long long))     return std::any{get_integral<long long>(key, node)};
+    if (tid == typeid(std::size_t))   return std::any{get_integral<std::size_t>(key, node)};
+    if (tid == typeid(std::int32_t))  return std::any{get_integral<std::int32_t>(key, node)};
+    if (tid == typeid(std::int64_t))  return std::any{get_integral<std::int64_t>(key, node)};
+    if (tid == typeid(std::uint32_t)) return std::any{get_integral<std::uint32_t>(key, node)};
+    if (tid == typeid(std::uint64_t)) return std::any{get_integral<std::uint64_t>(key, node)};
 
     // Sequences.
     if (tid == typeid(std::vector<double>))
       return std::any{node.get<std::vector<double>>()};
-    if (tid == typeid(std::vector<int>))
-      return std::any{node.get<std::vector<int>>()};
+    if (tid == typeid(std::vector<int>)) {
+      if (!node.is_array()) {
+        throw std::runtime_error(
+            std::string{"parameter_visitor_nlohmann: key '"} + key +
+            "' expects an array of integers, got " + node.dump());
+      }
+      std::vector<int> out;
+      out.reserve(node.size());
+      for (auto const& elem : node) out.push_back(get_integral<int>(key, elem));
+      return std::any{std::move(out)};
+    }
     if (tid == typeid(std::vector<std::string>))
       return std::any{node.get<std::vector<std::string>>()};
 
@@ -78,6 +97,30 @@ public:
   }
 
 private:
+  // Strict JSON → integral conversion; see the class comment.
+  template <typename I>
+  [[nodiscard]] static I get_integral(key_type const& key,
+                                      nlohmann::json const& node) {
+    static_assert(std::is_integral_v<I>);
+    auto fail = [&](char const* why) -> I {
+      throw std::runtime_error(
+          std::string{"parameter_visitor_nlohmann: key '"} + key +
+          "' expects " + why + ", got " + node.dump());
+    };
+    const char* expected = std::is_unsigned_v<I> ? "a non-negative integer"
+                                                 : "an integer";
+    if (!node.is_number_integer()) return fail(expected);
+    if (node.is_number_unsigned()) {
+      const auto v = node.get<std::uint64_t>();
+      if (!std::in_range<I>(v)) return fail("an integer within the target type's range");
+      return static_cast<I>(v);
+    }
+    const auto v = node.get<std::int64_t>();
+    if (std::is_unsigned_v<I> && v < 0) return fail(expected);
+    if (!std::in_range<I>(v)) return fail("an integer within the target type's range");
+    return static_cast<I>(v);
+  }
+
   nlohmann::json const& _j;
 };
 

@@ -63,8 +63,15 @@ public:
     return s;
   }
 
+  // Draw order: x, y, radius. The radius distribution is truncated to
+  // (0, inf) — non-positive draws are resampled, and after
+  // `max_size_draws` rejections std::runtime_error is thrown (see
+  // shape_input_base).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto shape = std::make_unique<circle<value_type>>(_pos_x(), _pos_y(), _radius());
+    const value_type x = _pos_x();
+    const value_type y = _pos_y();
+    const value_type r = this->draw_positive(_radius, "circle_input", "radius");
+    auto shape = std::make_unique<circle<value_type>>(x, y, r);
     this->tag(*shape);
     return shape;
   }

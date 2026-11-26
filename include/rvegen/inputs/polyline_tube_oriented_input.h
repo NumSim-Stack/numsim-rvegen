@@ -61,15 +61,23 @@ public:
   // and the joint distribution structure is preserved. Two
   // centerline points are placed symmetrically around the sampled
   // centre at ±half_length·direction.
+  //
+  // Draw order: position x, y, z, direction, length, radius. The radius
+  // distribution is truncated to (0, inf) — non-positive draws are
+  // resampled, and after `max_size_draws` rejections std::runtime_error
+  // is thrown (see shape_input_base).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    const value_type cx = _px(), cy = _py(), cz = _pz();
+    const value_type cx = _px();
+    const value_type cy = _py();
+    const value_type cz = _pz();
     const auto d = _dir();
     const value_type half = _length() * value_type{0.5};
+    const value_type r =
+        this->draw_positive(_radius, "polyline_tube_oriented_input", "radius");
     std::vector<std::array<value_type, 3>> centerline{
         {{cx - half * d[0], cy - half * d[1], cz - half * d[2]}},
         {{cx + half * d[0], cy + half * d[1], cz + half * d[2]}}};
-    auto shape =
-        std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+    auto shape = std::make_unique<polyline_tube<value_type>>(centerline, r);
     this->tag(*shape);
     return shape;
   }

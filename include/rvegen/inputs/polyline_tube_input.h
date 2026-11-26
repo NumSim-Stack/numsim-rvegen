@@ -99,11 +99,22 @@ public:
     return s;
   }
 
+  // Draw order: start x, y, z, end x, y, z, radius. The radius
+  // distribution is truncated to (0, inf) — non-positive draws are
+  // resampled, and after `max_size_draws` rejections std::runtime_error
+  // is thrown (see shape_input_base).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
+    const value_type sx = _sx();
+    const value_type sy = _sy();
+    const value_type sz = _sz();
+    const value_type ex = _ex();
+    const value_type ey = _ey();
+    const value_type ez = _ez();
+    const value_type r =
+        this->draw_positive(_radius, "polyline_tube_input", "radius");
     std::vector<std::array<value_type, 3>> centerline{
-        {{_sx(), _sy(), _sz()}}, {{_ex(), _ey(), _ez()}}};
-    auto shape =
-        std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+        {{sx, sy, sz}}, {{ex, ey, ez}}};
+    auto shape = std::make_unique<polyline_tube<value_type>>(centerline, r);
     this->tag(*shape);
     return shape;
   }

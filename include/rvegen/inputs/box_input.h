@@ -68,10 +68,18 @@ public:
     return s;
   }
 
+  // Draw order: x, y, z, width, height, depth. The extent distributions
+  // are truncated to (0, inf) — non-positive draws are resampled, and
+  // after `max_size_draws` rejections std::runtime_error is thrown (see
+  // shape_input_base).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto shape = std::make_unique<box<value_type>>(
-        _pos_x(), _pos_y(), _pos_z(),
-        _width(), _height(), _depth());
+    const value_type x = _pos_x();
+    const value_type y = _pos_y();
+    const value_type z = _pos_z();
+    const value_type w = this->draw_positive(_width, "box_input", "width");
+    const value_type h = this->draw_positive(_height, "box_input", "height");
+    const value_type d = this->draw_positive(_depth, "box_input", "depth");
+    auto shape = std::make_unique<box<value_type>>(x, y, z, w, h, d);
     this->tag(*shape);
     return shape;
   }

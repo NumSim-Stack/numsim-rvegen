@@ -121,17 +121,27 @@ public:
   // `is_inside` then degenerates to a point-radius test (effectively
   // a sphere of \c radius centred at \c position). Callers should
   // pick direction distributions whose support excludes the origin.
+  //
+  // Draw order: position x, y, z, direction x, y, z, length, radius.
+  // The radius distribution is truncated to (0, inf) — non-positive
+  // draws are resampled, and after `max_size_draws` rejections
+  // std::runtime_error is thrown (see shape_input_base).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    const value_type cx = _px(), cy = _py(), cz = _pz();
-    value_type dx = _dx(), dy = _dy(), dz = _dz();
+    const value_type cx = _px();
+    const value_type cy = _py();
+    const value_type cz = _pz();
+    value_type dx = _dx();
+    value_type dy = _dy();
+    value_type dz = _dz();
     const value_type mag = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (mag > value_type{0}) { dx /= mag; dy /= mag; dz /= mag; }
     const value_type half = _length() * value_type{0.5};
+    const value_type r =
+        this->draw_positive(_radius, "polyline_tube_directional_input", "radius");
     std::vector<std::array<value_type, 3>> centerline{
         {{cx - half * dx, cy - half * dy, cz - half * dz}},
         {{cx + half * dx, cy + half * dy, cz + half * dz}}};
-    auto shape =
-        std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+    auto shape = std::make_unique<polyline_tube<value_type>>(centerline, r);
     this->tag(*shape);
     return shape;
   }

@@ -64,9 +64,17 @@ public:
     return s;
   }
 
+  // Draw order: x, y, radius_a, radius_b, rotation. The semi-axis
+  // distributions are truncated to (0, inf) — non-positive draws are
+  // resampled, and after `max_size_draws` rejections std::runtime_error
+  // is thrown (see shape_input_base).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto shape = std::make_unique<ellipse<value_type>>(
-        _pos_x(), _pos_y(), _radius_a(), _radius_b(), _rotation());
+    const value_type x = _pos_x();
+    const value_type y = _pos_y();
+    const value_type a = this->draw_positive(_radius_a, "ellipse_input", "radius_a");
+    const value_type b = this->draw_positive(_radius_b, "ellipse_input", "radius_b");
+    const value_type rot = _rotation();
+    auto shape = std::make_unique<ellipse<value_type>>(x, y, a, b, rot);
     this->tag(*shape);
     return shape;
   }

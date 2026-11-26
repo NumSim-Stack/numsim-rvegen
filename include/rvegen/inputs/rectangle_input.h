@@ -57,9 +57,16 @@ public:
     return s;
   }
 
+  // Draw order: x, y, width, height. Width and height distributions are
+  // truncated to (0, inf) — non-positive draws are resampled, and after
+  // `max_size_draws` rejections std::runtime_error is thrown (see
+  // shape_input_base).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto shape = std::make_unique<rectangle<value_type>>(
-        _pos_x(), _pos_y(), _width(), _height());
+    const value_type x = _pos_x();
+    const value_type y = _pos_y();
+    const value_type w = this->draw_positive(_width, "rectangle_input", "width");
+    const value_type h = this->draw_positive(_height, "rectangle_input", "height");
+    auto shape = std::make_unique<rectangle<value_type>>(x, y, w, h);
     this->tag(*shape);
     return shape;
   }

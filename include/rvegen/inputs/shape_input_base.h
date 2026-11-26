@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cmath>
+#include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
+#include "../distributions/distribution_base.h"
 #include "../metadata/info.h"
 #include "../shapes/shape_base.h"
 #include "../types.h"
@@ -25,6 +29,22 @@ namespace rvegen {
 //   implementations. The shape carries the metadata through clone /
 //   translate operations; output writers consume it (per-phase gmsh
 //   Physical groups, voxel grid ids, DAMASK material.config).
+//
+// Draw order (reproducibility):
+//   Concrete inputs draw every value into a named local, one statement
+//   per draw, in the order documented on their `new_shape()`: position
+//   (x, y[, z]) first, then sizes, then rotation. Never pass distribution
+//   calls as function arguments — argument evaluation order is
+//   unspecified, so the same seed would map draws to different fields on
+//   different compilers.
+//
+// Size truncation:
+//   Size parameters (radii, extents, semi-axes) are drawn through
+//   `draw_positive()`, which truncates the size distribution to (0, inf):
+//   a non-positive or non-finite draw is discarded and the same
+//   distribution is sampled again, before the next parameter is drawn.
+//   After `max_size_draws` consecutive rejections it throws
+//   std::runtime_error naming the input and the parameter.
 template <typename T>
 class shape_input_base {
 public:
@@ -95,6 +115,25 @@ protected:
   // metadata blob onto the shape before returning it.
   void tag(shape_base<T>& shape) const {
     shape.set_info(_info);
+  }
+
+  // Cap on consecutive rejected draws in `draw_positive()`.
+  static constexpr std::size_t max_size_draws = 1000;
+
+  // Draw a size parameter from `dist`, truncated to (0, inf). See the
+  // "Size truncation" note above.
+  [[nodiscard]] static T draw_positive(distribution_base<T>& dist,
+                                       char const* input_name,
+                                       char const* param_name) {
+    for (std::size_t i = 0; i < max_size_draws; ++i) {
+      const T v = dist();
+      if (v > T{0} && std::isfinite(v)) return v;
+    }
+    throw std::runtime_error{
+        std::string{input_name} + ": distribution for '" + param_name +
+        "' produced no positive finite value in " +
+        std::to_string(max_size_draws) +
+        " consecutive draws; its support must include (0, inf)."};
   }
 
   rvegen::info _info;
