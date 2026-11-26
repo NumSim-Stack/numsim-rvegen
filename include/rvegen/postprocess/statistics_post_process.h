@@ -9,7 +9,7 @@
 //   { "type": "statistics",
 //     "output_path": "stats.csv",
 //     "nx": 128, "ny": 128,
-//     "nz": 128,            // optional, 3D only; defaults to nx
+//     "nz": 128,            // required for 3D domains, ignored in 2D
 //     "nbins": 32 }
 //
 // Dispatches on the domain: a 2D domain (domain_box[2] == 0) uses
@@ -17,8 +17,10 @@
 // two_point_correlation_3d (S2 over an nx × ny × nz grid) and
 // radial_distribution_3d (spherical shells, density N/V). `nz` is ignored
 // in 2D. The 3D S2 voxelization costs O(nx·ny·nz · shapes) is_inside
-// calls — the default nz = nx turns a 128 × 128 config into 128³ ≈ 2.1 M
-// voxels, so lower nx/ny/nz if that is too slow for the shape count.
+// calls (128³ ≈ 2.1 M voxels), so `nz` has no default: a 3D domain
+// without it throws from run(), making the user pick the z resolution and
+// therefore the cost. Any implicit default would either hide that cost
+// (nz = nx) or silently give anisotropic voxels (a voxel budget).
 
 #include <array>
 #include <cstddef>
@@ -49,7 +51,7 @@ public:
         _ny{handler.template get<std::size_t>("ny")},
         _nz{handler.contains("nz")
                 ? handler.template get<std::size_t>("nz")
-                : _nx},
+                : std::size_t{0}},
         _nbins{handler.template get<std::size_t>("nbins")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
@@ -67,11 +69,12 @@ public:
         .template add<min_only<std::size_t{1}>>()
         .template add<numsim_core::unit_label<"cells">>()
         .template add<numsim_core::description_label<"voxel-grid resolution along y for S2 sampling">>();
-    // Optional — existing 2D configs without `nz` stay valid.
+    // Not schema-required so existing 2D configs stay valid; run() throws
+    // for a 3D domain when it is missing.
     s.template insert<std::size_t>("nz")
         .template add<min_only<std::size_t{1}>>()
         .template add<numsim_core::unit_label<"cells">>()
-        .template add<numsim_core::description_label<"voxel-grid resolution along z for 3D S2 sampling (default nx; ignored for 2D RVEs). 3D cost scales with nx*ny*nz">>();
+        .template add<numsim_core::description_label<"voxel-grid resolution along z for 3D S2 sampling (required for 3D RVEs, ignored for 2D). 3D cost scales with nx*ny*nz">>();
     s.template insert<std::size_t>("nbins")
         .template add<numsim_core::is_required>()
         .template add<min_only<std::size_t{1}>>()
@@ -85,6 +88,13 @@ public:
       throw std::runtime_error{
           "statistics_post_process: output_path not set"};
     }
+    const bool is_3d = domain_box[2] > value_type{0};
+    if (is_3d && _nz == 0) {
+      throw std::runtime_error{
+          "statistics_post_process: 3D domain needs \"nz\" (voxel-grid "
+          "resolution along z for S2). Set it explicitly; 3D S2 cost scales "
+          "with nx*ny*nz."};
+    }
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{
@@ -92,7 +102,6 @@ public:
     }
 
     const double phi = volume_fraction_in_domain(shapes, domain_box);
-    const bool is_3d = domain_box[2] > value_type{0};
     auto s2 = is_3d
         ? two_point_correlation_3d(shapes, domain_box, _nx, _ny, _nz, _nbins)
         : two_point_correlation_2d(shapes, domain_box, _nx, _ny, _nbins);
@@ -116,7 +125,7 @@ private:
   std::string _output_path;
   std::size_t _nx{128};
   std::size_t _ny{128};
-  std::size_t _nz{128};
+  std::size_t _nz{0};  // 0 = not set; required for 3D domains
   std::size_t _nbins{32};
 };
 

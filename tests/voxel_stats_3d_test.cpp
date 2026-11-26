@@ -21,6 +21,7 @@
 #include <memory>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -172,6 +173,29 @@ void test_rdf_3d_poisson() {
   REQUIRE(std::abs(g.front().g - 1.0) < 0.15);
 }
 
+// Same check in 2D, which shares the N(N−1)/V pair normalisation.
+void test_rdf_2d_poisson() {
+  std::mt19937_64 engine{13};
+  std::uniform_real_distribution<double> u{0.0, 1.0};
+  shape_vector shapes;
+  for (std::size_t i = 0; i < 1500; ++i) {
+    shapes.emplace_back(
+        std::make_unique<rvegen::circle<double>>(u(engine), u(engine), 1e-3));
+  }
+  const auto g = rvegen::radial_distribution_2d(shapes, {1.0, 1.0, 0.0}, 10);
+  REQUIRE(g.size() == 10);
+  double mid = 0.0;
+  std::size_t count = 0;
+  for (auto const& s : g) {
+    if (s.r > 0.1 && s.r < 0.4) {
+      REQUIRE(std::abs(s.g - 1.0) < 0.05);
+      mid += s.g;
+      ++count;
+    }
+  }
+  REQUIRE(std::abs(mid / double(count) - 1.0) < 0.02);
+}
+
 std::vector<int> vtk_body(std::string const& text) {
   std::vector<int> values;
   const std::string marker = "LOOKUP_TABLE default\n";
@@ -195,7 +219,7 @@ void test_vtk_cell_data_layout() {
   REQUIRE(text.find("DATASET STRUCTURED_POINTS\n") != std::string::npos);
   REQUIRE(text.find("DIMENSIONS 5 3 4\n") != std::string::npos);
   REQUIRE(text.find("ORIGIN 0 0 0\n") != std::string::npos);
-  REQUIRE(text.find("SPACING 0.5 0.5 0.333333\n") != std::string::npos);
+  REQUIRE(text.find("SPACING 0.5 0.5 0.33333333333333331\n") != std::string::npos);
   REQUIRE(text.find("CELL_DATA 24\n") != std::string::npos);
   REQUIRE(text.find("POINT_DATA") == std::string::npos);
   const auto body = vtk_body(text);
@@ -226,6 +250,29 @@ void test_vtk_cell_data_layout() {
   REQUIRE(text2d.find("SPACING 0.125 0.125 1\n") != std::string::npos);
   REQUIRE(text2d.find("CELL_DATA 64\n") != std::string::npos);
   REQUIRE(vtk_body(text2d).size() == 64);
+}
+
+// SPACING round-trips at full precision: Lx = 1, nx = 3 must read back as
+// exactly 1.0 / 3.0, not the 6-digit 0.333333.
+void test_vtk_spacing_round_trips() {
+  shape_vector shapes;
+  rvegen::vtk_legacy_writer<double> w{3, 3, 3};
+  std::stringstream out;
+  w.write(out, shapes, {1.0, 1.0, 1.0});
+  const auto text = out.str();
+  const std::string key = "SPACING ";
+  const auto pos = text.find(key);
+  REQUIRE(pos != std::string::npos);
+  if (pos == std::string::npos) return;
+  std::istringstream line{text.substr(pos + key.size())};
+  double sx = 0, sy = 0, sz = 0;
+  line >> sx >> sy >> sz;
+  REQUIRE(sx == 1.0 / 3.0);
+  REQUIRE(sy == 1.0 / 3.0);
+  REQUIRE(sz == 1.0 / 3.0);
+  REQUIRE(3.0 * sx == 1.0);
+  // The caller's stream precision is restored after the header.
+  REQUIRE(out.precision() == std::stringstream{}.precision());
 }
 
 // Build "statistics" from JSON; 3D domain dispatches to the 3D estimators
@@ -269,6 +316,25 @@ void test_statistics_post_process_3d() {
     "nx": 16, "ny": 16, "nbins": 8 })",
                                      circles, {1.0, 1.0, 0.0}, path2);
   REQUIRE(text2d.find("# dimension = 2D\n") != std::string::npos);
+
+  // 3D domain without "nz" must throw with a clear message, not pick a
+  // potentially expensive default.
+  rvegen::register_all_post_processes<>();
+  auto& registry = rvegen::post_process_registry_t<>::instance();
+  auto pp = rvegen::build_from_json(registry, nlohmann::json::parse(R"({
+    "type": "statistics", "output_path": "voxel_stats_3d_test_nonz.csv",
+    "nx": 8, "ny": 8, "nbins": 4 })"));
+  REQUIRE(pp != nullptr);
+  bool threw = false;
+  if (pp) {
+    try {
+      pp->run(shapes, {1.0, 1.0, 1.0});
+    } catch (std::runtime_error const& e) {
+      threw = std::string{e.what()}.find("\"nz\"") != std::string::npos;
+    }
+  }
+  REQUIRE(threw);
+  std::remove("voxel_stats_3d_test_nonz.csv");
 }
 
 } // namespace
@@ -277,7 +343,9 @@ int main() {
   test_nz1_samples_mid_plane();
   test_s2_3d_limits();
   test_rdf_3d_poisson();
+  test_rdf_2d_poisson();
   test_vtk_cell_data_layout();
+  test_vtk_spacing_round_trips();
   test_statistics_post_process_3d();
 
   if (failures > 0) {

@@ -264,6 +264,8 @@ radial_distribution_2d(
   std::vector<rdf_sample> out;
   out.reserve(nbins);
   if (N < 2) return out;
+  // Expected ordered-pair count in a shell is N(N−1)/A · shell, so an
+  // uncorrelated set gives g = 1 without a (N−1)/N bias.
   const double rho = double(N) / area;
   for (std::size_t b = 0; b < nbins; ++b) {
     const double r_inner = double(b) * dr;
@@ -271,7 +273,7 @@ radial_distribution_2d(
     const double r_centre = (r_inner + r_outer) * 0.5;
     const double shell_area = 3.14159265358979323846 *
                               (r_outer * r_outer - r_inner * r_inner);
-    const double expected = rho * shell_area * double(N);
+    const double expected = rho * shell_area * double(N - 1);
     out.push_back({r_centre, expected > 0 ? double(hist[b]) / expected : 0.0});
   }
   return out;
@@ -334,6 +336,8 @@ radial_distribution_3d(
   std::vector<rdf_sample> out;
   out.reserve(nbins);
   if (N < 2) return out;
+  // Expected ordered-pair count in a shell is N(N−1)/V · shell, so an
+  // uncorrelated set gives g = 1 without a (N−1)/N bias.
   const double rho = double(N) / volume;
   for (std::size_t b = 0; b < nbins; ++b) {
     const double r_inner = double(b) * dr;
@@ -341,7 +345,7 @@ radial_distribution_3d(
     const double r_centre = (r_inner + r_outer) * 0.5;
     const double shell_volume = 4.0 / 3.0 * std::numbers::pi *
         (r_outer * r_outer * r_outer - r_inner * r_inner * r_inner);
-    const double expected = rho * shell_volume * double(N);
+    const double expected = rho * shell_volume * double(N - 1);
     out.push_back({r_centre, expected > 0 ? double(hist[b]) / expected : 0.0});
   }
   return out;

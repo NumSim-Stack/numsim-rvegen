@@ -3,6 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <fstream>
+#include <iomanip>
+#include <ios>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -166,13 +168,18 @@ public:
         ? " (phase_id from phase_collection, 0 = matrix/untagged)"
         : " (1-based shape index, 0 = matrix)";
 
+    // SPACING is written with round-trip precision (17 significant
+    // digits) so L = n · spacing holds in the reader; the caller's stream
+    // precision is restored afterwards.
+    const auto old_precision = out.precision();
     out << "# vtk DataFile Version 3.0\n"
         << "rvegen voxel grid [rvegen-vtk-format: v3]" << title_suffix << "\n"
         << "ASCII\n"
         << "DATASET STRUCTURED_POINTS\n"
         << "DIMENSIONS " << (_nx + 1) << ' ' << (_ny + 1) << ' ' << pz << '\n'
         << "ORIGIN 0 0 0\n"
-        << "SPACING " << dx << ' ' << dy << ' ' << dz << '\n'
+        << "SPACING " << std::setprecision(17) << dx << ' ' << dy << ' '
+        << dz << std::setprecision(old_precision) << '\n'
         << "CELL_DATA " << (_nx * _ny * nz_eff) << '\n'
         << "SCALARS " << field_name << " int 1\n"
         << "LOOKUP_TABLE default\n";
