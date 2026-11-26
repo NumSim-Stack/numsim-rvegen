@@ -150,7 +150,8 @@ public:
         out << "# phase " << p->id << " = " << p->name << '\n';
       }
     } else {
-      out << "# id scheme: 1-based shape index (0 = matrix)\n";
+      out << "# id scheme: 1-based inclusion index, periodic wraps share "
+             "their primary's id (0 = matrix)\n";
     }
 
     for (std::size_t k = 0; k < nz_eff; ++k) {

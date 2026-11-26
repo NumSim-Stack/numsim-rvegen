@@ -17,15 +17,40 @@
 // Used by periodic_generator to populate the accepted vector with the
 // full equivalence class so subsequent collision checks can use the
 // non-periodic (faster) dispatch.
+//
+// Wraps are clones, so they copy the primary's `info`. periodic_generator
+// stamps the primary with an inclusion id (set_inclusion_id) before
+// generating its wraps, which gives every member of the equivalence
+// class the same id. Shape-index voxel output uses that id to number one
+// physical inclusion once, however many periodic pieces it has.
 
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "shape_base.h"
 
 namespace rvegen {
+
+// `info` key linking a primary and its periodic wraps. Namespaced with the
+// `rvegen_` prefix so it cannot collide with user metadata keys.
+inline constexpr char const* inclusion_id_key = "rvegen_inclusion_id";
+
+template <typename T>
+void set_inclusion_id(shape_base<T>& shape, std::size_t id) {
+  shape.info().set(inclusion_id_key, id);
+}
+
+// Inclusion id shared by a primary and its wraps, or nullopt for shapes
+// that were not produced by a periodic placement.
+template <typename T>
+[[nodiscard]] std::optional<std::size_t>
+inclusion_id(shape_base<T> const& shape) {
+  if (!shape.info().contains(inclusion_id_key)) return std::nullopt;
+  return shape.info().template get<std::size_t>(inclusion_id_key);
+}
 
 template <typename T>
 [[nodiscard]] std::vector<std::unique_ptr<shape_base<T>>>

@@ -11,6 +11,8 @@
 //    ORIGIN 0 0 0 and SPACING L/n, values in (k, j, i) order.
 // 5. statistics_post_process (built from JSON) picks the 3D estimators
 //    for a 3D domain and still accepts a 2D config without "nz".
+// 6. Shape-index mode: a periodic primary and all its wraps share one id,
+//    and the number of distinct ids equals the number of primaries.
 
 #include <array>
 #include <cmath>
@@ -20,6 +22,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -293,6 +296,118 @@ std::string run_statistics(std::string const& json, shape_vector const& shapes,
   return buf.str();
 }
 
+// Issue #81 item 3: in shape-index mode a periodic primary and its wraps
+// form one inclusion and must share one id. Place a shape across the
+// corner plus random shapes with periodic_generator, then check that
+// every corner voxel carries the same id and that the number of distinct
+// ids equals the number of primaries (centre inside the box).
+std::set<rvegen::phase_id> nonzero_ids(std::vector<rvegen::phase_id> const& g) {
+  std::set<rvegen::phase_id> ids;
+  for (auto v : g) if (v != 0) ids.insert(v);
+  return ids;
+}
+
+std::size_t count_primaries(shape_vector const& shapes,
+                            std::array<double, 3> const& box) {
+  std::size_t n = 0;
+  for (auto const& s : shapes) {
+    if (rvegen::is_centre_in_domain(s->get_middle_point(), box)) ++n;
+  }
+  return n;
+}
+
+void test_shape_index_wraps_share_primary_id_2d() {
+  std::mt19937 engine{5};
+  rvegen::constant_distribution<double> corner{0.95};
+  rvegen::constant_distribution<double> r_corner{0.1};
+  rvegen::uniform_real_distribution<double> pos{0.0, 1.0, engine};
+  rvegen::constant_distribution<double> r_small{0.04};
+  rvegen::periodic_generator<double>::input_vector inputs;
+  inputs.push_back(
+      std::make_unique<rvegen::circle_input<double>>(corner, corner, r_corner));
+  inputs.push_back(
+      std::make_unique<rvegen::circle_input<double>>(pos, pos, r_small));
+
+  const std::array<double, 3> box{1.0, 1.0, 0.0};
+  rvegen::periodic_generator<double> generator{2000};
+  rvegen::number_of_inclusions<double> termination{40};  // entries, incl. wraps
+  const auto shapes = generator.compute(inputs, termination, box);
+  const std::size_t primaries = count_primaries(shapes, box);
+  REQUIRE(shapes.size() > primaries + 3);  // corner circle alone adds 3 wraps
+
+  constexpr std::size_t n = 64;
+  const auto grid = rvegen::sample_voxel_grid(shapes, box, n, n, 1);
+  const auto corner_id = grid[0];
+  REQUIRE(corner_id != 0);
+  REQUIRE(grid[n - 1] == corner_id);
+  REQUIRE(grid[(n - 1) * n] == corner_id);
+  REQUIRE(grid[(n - 1) * n + n - 1] == corner_id);
+  // The corner circle is the first primary placed, so it is inclusion 1.
+  REQUIRE(corner_id == 1);
+
+  const auto ids = nonzero_ids(grid);
+  REQUIRE(ids.size() == primaries);
+  REQUIRE(*ids.rbegin() == primaries);  // ids are compact: 1..primaries
+
+  // The writers emit the same ids.
+  rvegen::vtk_legacy_writer<double> vtk{n, n, 1};
+  std::stringstream out;
+  vtk.write(out, shapes, box);
+  const auto body = vtk_body(out.str());
+  REQUIRE(body.size() == n * n);
+  REQUIRE(body.front() == int(corner_id) && body.back() == int(corner_id));
+  std::set<int> vtk_ids;
+  for (int v : body) if (v != 0) vtk_ids.insert(v);
+  REQUIRE(vtk_ids.size() == primaries);
+  rvegen::voxel_writer<double> vox{n, n, 1};
+  REQUIRE(vox.sample(shapes, box) == grid);
+}
+
+void test_shape_index_wraps_share_primary_id_3d() {
+  std::mt19937 engine{9};
+  rvegen::constant_distribution<double> corner{0.95};
+  rvegen::constant_distribution<double> r_corner{0.12};
+  rvegen::uniform_real_distribution<double> pos{0.0, 1.0, engine};
+  rvegen::constant_distribution<double> r_small{0.08};
+  rvegen::periodic_generator<double>::input_vector inputs;
+  inputs.push_back(std::make_unique<rvegen::sphere_input<double>>(
+      corner, corner, corner, r_corner));
+  inputs.push_back(std::make_unique<rvegen::sphere_input<double>>(
+      pos, pos, pos, r_small));
+
+  const std::array<double, 3> box{1.0, 1.0, 1.0};
+  rvegen::periodic_generator<double> generator{2000};
+  rvegen::number_of_inclusions<double> termination{40};
+  const auto shapes = generator.compute(inputs, termination, box);
+  const std::size_t primaries = count_primaries(shapes, box);
+  REQUIRE(shapes.size() > primaries + 7);  // corner sphere alone adds 7 wraps
+
+  constexpr std::size_t n = 32;
+  const auto grid = rvegen::sample_voxel_grid(shapes, box, n, n, n);
+  auto at = [&](std::size_t i, std::size_t j, std::size_t k) {
+    return grid[(k * n + j) * n + i];
+  };
+  const auto corner_id = at(0, 0, 0);
+  REQUIRE(corner_id == 1);
+  for (std::size_t c = 0; c < 8; ++c) {
+    REQUIRE(at((c & 1) ? n - 1 : 0, (c & 2) ? n - 1 : 0,
+               (c & 4) ? n - 1 : 0) == corner_id);
+  }
+  const auto ids = nonzero_ids(grid);
+  REQUIRE(ids.size() == primaries);
+  REQUIRE(*ids.rbegin() == primaries);
+}
+
+// Shapes without a periodic link keep the plain 1-based shape index.
+void test_shape_index_without_wraps_unchanged() {
+  shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.25, 0.5, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.75, 0.5, 0.1));
+  const auto grid = rvegen::sample_voxel_grid(shapes, {1.0, 1.0, 0.0}, 8, 8, 1);
+  REQUIRE(grid[3 * 8 + 1] == 1);  // centre (0.1875, 0.4375)
+  REQUIRE(grid[3 * 8 + 5] == 2);  // centre (0.6875, 0.4375)
+}
+
 void test_statistics_post_process_3d() {
   const auto shapes = random_periodic_spheres(30, 0.08, 3);
   const std::string path3 = "voxel_stats_3d_test_stats3d.csv";
@@ -346,6 +461,9 @@ int main() {
   test_rdf_2d_poisson();
   test_vtk_cell_data_layout();
   test_vtk_spacing_round_trips();
+  test_shape_index_wraps_share_primary_id_2d();
+  test_shape_index_wraps_share_primary_id_3d();
+  test_shape_index_without_wraps_unchanged();
   test_statistics_post_process_3d();
 
   if (failures > 0) {
