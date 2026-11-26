@@ -58,8 +58,12 @@ struct mesh {
 
 double tri_area(std::array<double, 3> const& a, std::array<double, 3> const& b,
                 std::array<double, 3> const& c) {
-  return 0.5 * std::abs((b[0] - a[0]) * (c[1] - a[1]) -
-                        (c[0] - a[0]) * (b[1] - a[1]));
+  const double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+  const double v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+  const double x = u[1] * v[2] - u[2] * v[1];
+  const double y = u[2] * v[0] - u[0] * v[2];
+  const double z = u[0] * v[1] - u[1] * v[0];
+  return 0.5 * std::sqrt(x * x + y * y + z * z);
 }
 
 double tet_volume(std::array<double, 3> const& a, std::array<double, 3> const& b,
@@ -527,6 +531,111 @@ void test_writer_rejects_bad_input() {
   if (threw) std::remove(path.c_str());
 }
 
+// ---- tessellations (#8) ---------------------------------------------------
+
+// Seeds with a minimum pairwise distance (keeps the tessellation clear of
+// the precision problems of near-degenerate cells).
+template <std::size_t D>
+std::vector<std::array<double, D>> separated_seeds(std::size_t n, box_t const& box,
+                                                   double min_dist, unsigned rng) {
+  std::mt19937 eng{rng};
+  std::vector<std::array<double, D>> out;
+  while (out.size() < n) {
+    std::array<double, D> p{};
+    for (std::size_t k = 0; k < D; ++k) {
+      p[k] = std::uniform_real_distribution<double>{0.05 * box[k], 0.95 * box[k]}(eng);
+    }
+    bool ok = true;
+    for (auto const& q : out) {
+      double d2 = 0.0;
+      for (std::size_t k = 0; k < D; ++k) d2 += (p[k] - q[k]) * (p[k] - q[k]);
+      if (d2 < min_dist * min_dist) { ok = false; break; }
+    }
+    if (ok) out.push_back(p);
+  }
+  return out;
+}
+
+// No two nodes may coincide: duplicates would mean the shared faces were
+// meshed twice, i.e. the mesh is not conforming.
+void check_no_duplicate_nodes(mesh const& m) {
+  std::set<std::array<long long, 3>> seen;
+  std::size_t dup = 0;
+  for (std::size_t i = 1; i < m.nodes.size(); ++i) {
+    std::array<long long, 3> k{};
+    for (int a = 0; a < 3; ++a) k[a] = std::llround(m.nodes[i][a] * 1e8);
+    if (!seen.insert(k).second) ++dup;
+  }
+  if (dup != 0) std::cerr << dup << " duplicate nodes\n";
+  REQUIRE(dup == 0);
+}
+
+void check_tessellation(shape_vector const& shapes, box_t const& box,
+                        std::string const& stem, double h, double tol) {
+  const cleanup_on_success cleanup{stem};
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_tessellation(true);
+  writer.set_characteristic_length_max(h);
+  const auto m = write_and_mesh(writer, shapes, box, stem);
+  if (!m.ok) return;
+  check_inside_domain(m, box);
+  check_no_duplicate_nodes(m);
+  const bool is_3d = box[2] > 0.0;
+  const double domain = is_3d ? box[0] * box[1] * box[2] : box[0] * box[1];
+  double sum = 0.0;
+  for (std::size_t i = 0; i < shapes.size(); ++i) {
+    const double expect = is_3d ? shapes[i]->volume() : shapes[i]->area();
+    const double got = measure_of(m, "grain_" + std::to_string(i));
+    // Planar faces: the mesh reproduces the polyhedron exactly.
+    if (!(std::abs(got - expect) <= tol * domain)) {
+      std::cerr << stem << ": grain " << i << " measure " << got << " expected "
+                << expect << "\n";
+      ++failures;
+    }
+    sum += got;
+  }
+  REQUIRE(std::abs(sum - domain) < 1e-9 * domain);
+  std::cout << stem << ": " << shapes.size() << " grains, nodes " << m.nodes.size() - 1 << ", sum " << sum << " / " << domain << "\n";
+  if (is_3d) {
+    // Boundary physical surface = the box surface.
+    const double surf = 2.0 * (box[0] * box[1] + box[1] * box[2] + box[0] * box[2]);
+    const double got = measure_of(m, "boundary");
+    REQUIRE(std::abs(got - surf) < 1e-9 * surf);
+  }
+}
+
+void test_tessellation_3d() {
+  const box_t box{1.0, 1.2, 0.9};
+  rvegen::voronoi_generator_3d<double> gen{
+      box[0], box[1], box[2], separated_seeds<3>(20, box, 0.2, 3)};
+  auto shapes = gen.build();
+  REQUIRE(shapes.size() == 20);
+  check_tessellation(shapes, box, "gmsh_rt_tess_3d", 0.15, 1e-9);
+}
+
+void test_tessellation_2d() {
+  const box_t box{1.0, 0.8, 0.0};
+  rvegen::voronoi_generator_2d<double> gen{
+      box[0], box[1], separated_seeds<2>(30, box, 0.09, 4)};
+  auto shapes = rvegen::voronoi_to_shapes(gen);
+  REQUIRE(shapes.size() == 30);
+  check_tessellation(shapes, box, "gmsh_rt_tess_2d", 0.05, 1e-9);
+}
+
+void test_tessellation_rejects_mixing() {
+  const box_t box{1.0, 1.0, 1.0};
+  rvegen::voronoi_generator_3d<double> gen{
+      1.0, 1.0, 1.0, separated_seeds<3>(4, box, 0.2, 1)};
+  auto shapes = gen.build();
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::ostringstream buf;
+  bool threw = false;
+  try { writer.write(buf, shapes, box); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  REQUIRE(buf.str().empty());
+}
+
 } // namespace
 
 int main() {
@@ -538,6 +647,9 @@ int main() {
   test_first_wins_full_domain();
   test_periodic_unmatched_errors();
   test_writer_rejects_bad_input();
+  test_tessellation_3d();
+  test_tessellation_2d();
+  test_tessellation_rejects_mixing();
   if (failures == 0) {
     std::cout << "gmsh_geo_roundtrip_test: PASS\n";
     return 0;

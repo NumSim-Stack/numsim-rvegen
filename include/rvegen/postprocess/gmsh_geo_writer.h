@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <set>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -27,6 +28,7 @@
 #include "../shapes/ellipse.h"
 #include "../shapes/rectangle.h"
 #include "../shapes/sphere.h"
+#include "../shapes/voronoi_cell.h"
 #include "../types.h"
 
 namespace rvegen {
@@ -69,6 +71,17 @@ namespace rvegen {
 //
 // All numbers are written in their shortest round-trip decimal form, so
 // the geometry gmsh sees is exactly the geometry rvegen generated.
+//
+// Tessellation mode (polycrystals): when every shape is a 3D voronoi_cell
+// (automatic), or set_tessellation(true) is called with 2D convex_polygon
+// cells, the shapes are NOT inclusions in a matrix but a partition of the
+// domain. They are emitted with gmsh's built-in kernel as one conforming
+// topology: vertices are merged by coordinate, edges by vertex pair and
+// faces by vertex set, so neighbouring grains share points, curves and
+// surfaces exactly (no boolean operations, no tolerance games inside
+// gmsh). Physical groups: "grain_<i>" (tag i+1, i = index in the shape
+// list) per cell and "boundary" (tag N+1) for the outer faces / curves.
+// Mixing cells with other shapes, or combining with periodic, is rejected.
 //
 // Supported shapes: circle, rectangle, ellipse, convex_polygon (2D);
 // sphere, box (3D). Any other shape makes write() throw before anything
@@ -220,6 +233,12 @@ public:
   void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
   [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
 
+  // 2D only: treat convex_polygon shapes as a tessellation (partition of
+  // the domain) instead of inclusions. 3D voronoi_cell lists are always
+  // tessellations. See the file comment.
+  void set_tessellation(bool v) noexcept { _tessellation = v; }
+  [[nodiscard]] bool tessellation() const noexcept { return _tessellation; }
+
   void run(shape_vector const& shapes,
            std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
@@ -248,6 +267,27 @@ public:
     for (auto const v : box) require_finite(v, "domain size");
     for (auto const v : {_char_length_min, _char_length_max}) {
       require_finite(v, "mesh size");
+    }
+
+    // Tessellation (polycrystal) mode: cells partition the domain.
+    const bool any_cell3 = std::any_of(
+        shapes.begin(), shapes.end(), [](auto const& sh) {
+          return dynamic_cast<voronoi_cell<value_type> const*>(sh.get()) != nullptr;
+        });
+    if (any_cell3 && !is_3d) {
+      throw std::runtime_error{
+          "gmsh_geo_writer: voronoi_cell needs a 3D domain"};
+    }
+    if (any_cell3 || (_tessellation && !shapes.empty())) {
+      if (_periodic) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: periodic output is not supported for "
+            "tessellations (cells are not wrapped)"};
+      }
+      std::ostringstream buf;
+      write_tessellation(buf, shapes, box, is_3d);
+      out << buf.str();
+      return;
     }
 
     // Validate everything BEFORE writing anything, so a throw never
@@ -379,9 +419,206 @@ private:
     return e;
   }
 
-  void write_header(std::ostream& out) const {
-    out << "// rvegen — generated gmsh .geo script\n"
-        << "SetFactory(\"OpenCASCADE\");\n";
+  // ---- tessellation (conforming partition, built-in kernel) -------------
+  //
+  // Built-in kernel instead of OpenCASCADE + BooleanFragments: the cells
+  // of a Voronoi tessellation share their faces exactly, so the topology
+  // can be deduplicated here and emitted once. That gives a guaranteed
+  // conforming result independent of OCC's boolean tolerances, avoids the
+  // cost of fragmenting N polyhedra and keeps explicit, stable tags.
+  struct topology {
+    std::vector<std::array<value_type, 3>> points;
+    std::map<std::array<long long, 3>, std::size_t> grid;  // quantised point -> id
+    std::map<std::pair<std::size_t, std::size_t>, std::size_t> line_id;
+    std::map<std::pair<std::size_t, std::size_t>, int> line_uses;
+    value_type tol{0};
+
+    std::size_t point(std::array<value_type, 3> const& p) {
+      std::array<long long, 3> k{};
+      for (int a = 0; a < 3; ++a) k[a] = std::llround(p[a] / tol);
+      for (long long dx = -1; dx <= 1; ++dx)
+        for (long long dy = -1; dy <= 1; ++dy)
+          for (long long dz = -1; dz <= 1; ++dz) {
+            auto it = grid.find({k[0] + dx, k[1] + dy, k[2] + dz});
+            if (it == grid.end()) continue;
+            auto const& q = points[it->second - 1];
+            if (std::abs(q[0] - p[0]) <= tol && std::abs(q[1] - p[1]) <= tol &&
+                std::abs(q[2] - p[2]) <= tol) {
+              return it->second;
+            }
+          }
+      points.push_back(p);
+      grid[k] = points.size();
+      return points.size();
+    }
+    // Signed line id for traversal a -> b (negative when reversed).
+    long long line(std::size_t a, std::size_t b) {
+      const auto key = std::minmax(a, b);
+      auto it = line_id.try_emplace(key, line_id.size() + 1).first;
+      ++line_uses[key];
+      return a < b ? static_cast<long long>(it->second)
+                   : -static_cast<long long>(it->second);
+    }
+  };
+
+  // Drop repeated consecutive vertex ids of one face ring.
+  static std::vector<std::size_t> clean_ring(std::vector<std::size_t> r) {
+    r.erase(std::unique(r.begin(), r.end()), r.end());
+    while (r.size() > 1 && r.front() == r.back()) r.pop_back();
+    return r;
+  }
+
+  void write_tessellation(std::ostream& out, shape_vector const& shapes,
+                          std::array<value_type, 3> const& box,
+                          bool is_3d) const {
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      const bool ok =
+          is_3d ? dynamic_cast<voronoi_cell<value_type> const*>(shapes[i].get()) != nullptr
+                : dynamic_cast<convex_polygon<value_type> const*>(shapes[i].get()) != nullptr;
+      if (!ok) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: tessellation mode needs every shape to be a " +
+            std::string{is_3d ? "voronoi_cell" : "convex_polygon"} +
+            "; shape #" + std::to_string(i) +
+            " is not (mixing cells with inclusions is not supported)"};
+      }
+    }
+    topology topo;
+    topo.tol = value_type{1e-9} * std::max({box[0], box[1], box[2]});
+
+    // Per cell: list of faces as vertex-id rings (2D: one ring per cell).
+    std::vector<std::vector<std::vector<std::size_t>>> cells(shapes.size());
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      if (is_3d) {
+        auto const& c = static_cast<voronoi_cell<value_type> const&>(*shapes[i]);
+        std::vector<std::size_t> vid(c.vertices().size());
+        for (std::size_t k = 0; k < vid.size(); ++k) {
+          auto const& v = c.vertices()[k];
+          vid[k] = topo.point({v[0], v[1], v[2]});
+        }
+        for (auto const& f : c.faces()) {
+          std::vector<std::size_t> ring;
+          for (auto idx : f) ring.push_back(vid[idx]);
+          ring = clean_ring(std::move(ring));
+          if (ring.size() >= 3) cells[i].push_back(std::move(ring));
+        }
+      } else {
+        auto const& p = static_cast<convex_polygon<value_type> const&>(*shapes[i]);
+        std::vector<std::size_t> ring;
+        for (auto const& v : p.vertices()) {
+          ring.push_back(topo.point({v[0], v[1], value_type{0}}));
+        }
+        ring = clean_ring(std::move(ring));
+        if (ring.size() < 3) {
+          throw std::runtime_error{"gmsh_geo_writer: degenerate cell #" +
+                                   std::to_string(i)};
+        }
+        cells[i].push_back(std::move(ring));
+      }
+    }
+
+    // Unique surfaces (3D), keyed by sorted vertex set.
+    struct face_info {
+      std::size_t id{};
+      std::vector<long long> lines;
+      int uses{0};
+    };
+    std::map<std::vector<std::size_t>, face_info> faces;
+    std::vector<std::vector<std::size_t>> cell_faces(shapes.size());
+    std::vector<std::vector<long long>> cell_loops(shapes.size());
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      for (auto const& ring : cells[i]) {
+        if (!is_3d) {
+          for (std::size_t k = 0; k < ring.size(); ++k) {
+            cell_loops[i].push_back(topo.line(ring[k], ring[(k + 1) % ring.size()]));
+          }
+          continue;
+        }
+        auto key = ring;
+        std::sort(key.begin(), key.end());
+        auto it = faces.find(key);
+        if (it == faces.end()) {
+          face_info fi;
+          fi.id = faces.size() + 1;
+          for (std::size_t k = 0; k < ring.size(); ++k) {
+            fi.lines.push_back(topo.line(ring[k], ring[(k + 1) % ring.size()]));
+          }
+          it = faces.emplace(std::move(key), std::move(fi)).first;
+        }
+        ++it->second.uses;
+        if (it->second.uses > 2) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: a face is shared by more than two cells; "
+              "the cells do not form a valid tessellation"};
+        }
+        cell_faces[i].push_back(it->second.id);
+      }
+    }
+
+    write_header(out, false);
+    for (std::size_t k = 0; k < topo.points.size(); ++k) {
+      auto const& p = topo.points[k];
+      out << "Point(" << k + 1 << ") = {" << num(p[0]) << ", " << num(p[1])
+          << ", " << num(p[2]) << "};\n";
+    }
+    for (auto const& [key, id] : topo.line_id) {
+      out << "Line(" << id << ") = {" << key.first << ", " << key.second << "};\n";
+    }
+    auto write_ids = [&out](auto const& ids) {
+      for (std::size_t k = 0; k < ids.size(); ++k) {
+        if (k > 0) out << ", ";
+        out << ids[k];
+      }
+    };
+    std::vector<std::size_t> boundary;
+    if (is_3d) {
+      std::vector<face_info const*> by_id(faces.size());
+      for (auto const& [key, f] : faces) by_id[f.id - 1] = &f;
+      for (auto const* f : by_id) {
+        out << "Curve Loop(" << f->id << ") = {";
+        write_ids(f->lines);
+        out << "};\nPlane Surface(" << f->id << ") = {" << f->id << "};\n";
+        if (f->uses == 1) boundary.push_back(f->id);
+      }
+      for (std::size_t i = 0; i < shapes.size(); ++i) {
+        out << "Surface Loop(" << i + 1 << ") = {";
+        write_ids(cell_faces[i]);
+        out << "};\nVolume(" << i + 1 << ") = {" << i + 1 << "};\n";
+      }
+    } else {
+      for (std::size_t i = 0; i < shapes.size(); ++i) {
+        out << "Curve Loop(" << i + 1 << ") = {";
+        write_ids(cell_loops[i]);
+        out << "};\nPlane Surface(" << i + 1 << ") = {" << i + 1 << "};\n";
+      }
+      for (auto const& [key, id] : topo.line_id) {
+        const int uses = topo.line_uses.at(key);
+        if (uses > 2) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: an edge is shared by more than two cells; "
+              "the cells do not form a valid tessellation"};
+        }
+        if (uses == 1) boundary.push_back(id);
+      }
+    }
+    const char* kind = is_3d ? "Volume" : "Surface";
+    out << "\n// One physical group per grain (tag = index + 1) and one for the\n"
+           "// outer boundary.\n";
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      out << "Physical " << kind << "(\"grain_" << i << "\", " << i + 1
+          << ") = {" << i + 1 << "};\n";
+    }
+    if (!boundary.empty()) {
+      out << "Physical " << (is_3d ? "Surface" : "Curve") << "(\"boundary\", "
+          << shapes.size() + 1 << ") = {";
+      write_ids(boundary);
+      out << "};\n";
+    }
+  }
+
+  void write_header(std::ostream& out, bool occ = true) const {
+    out << "// rvegen — generated gmsh .geo script\n";
+    if (occ) out << "SetFactory(\"OpenCASCADE\");\n";
     // Emit active mesh-size directives (positive value → uncommented
     // directive; otherwise keep the placeholder so users still see
     // the syntax they need to enable manually).
@@ -715,6 +952,7 @@ private:
 
   std::string _output_path;
   bool _periodic{false};
+  bool _tessellation{false};
   phase_collection<value_type> const* _phases{nullptr};
   bool _phase_strict{false};
   value_type _char_length_min{0};
