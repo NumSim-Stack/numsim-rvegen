@@ -194,6 +194,10 @@ add_executable(rvegen_orientation_sampler_test tests/orientation_sampler_test.cp
 target_link_libraries(rvegen_orientation_sampler_test PRIVATE rvegen_lib)
 add_test(NAME orientation_sampler_test COMMAND rvegen_orientation_sampler_test)
 
+add_executable(rvegen_orientation_a2_test tests/orientation_a2_test.cpp)
+target_link_libraries(rvegen_orientation_a2_test PRIVATE rvegen_lib)
+add_test(NAME orientation_a2_test COMMAND rvegen_orientation_a2_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console

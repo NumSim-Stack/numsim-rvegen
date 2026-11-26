@@ -23,6 +23,7 @@
 #include "../distributions/distribution_base.h"
 #include "../distributions/normal_distribution.h"
 #include "../distributions/oriented_uniform_distribution.h"
+#include "../distributions/von_mises_a2_distribution.h"
 #include "../distributions/uniform_real_distribution.h"
 #include "../types.h"
 
@@ -56,11 +57,24 @@ inline void register_constant_distribution() {
       .template register_type<constant_distribution<T, Engine>>("constant");
 }
 
+// The von Mises sampler is registered twice: "von_mises" is the
+// descriptive name (it is not a uniform distribution); "oriented_uniform"
+// is kept so existing configs keep working.
 template <typename T = double, typename Engine = std::mt19937>
 inline void register_oriented_uniform_distribution() {
+  auto& reg = distribution_registry_t<T, Engine>::instance();
+  reg.template register_type<oriented_uniform_distribution<T, Engine>>(
+      "oriented_uniform");
+  reg.template register_type<oriented_uniform_distribution<T, Engine>>(
+      "von_mises");
+}
+
+// von Mises parameterised by the 2D orientation tensor A2 (#6).
+template <typename T = double, typename Engine = std::mt19937>
+inline void register_von_mises_a2_distribution() {
   distribution_registry_t<T, Engine>::instance()
-      .template register_type<oriented_uniform_distribution<T, Engine>>(
-          "oriented_uniform");
+      .template register_type<von_mises_a2_distribution<T, Engine>>(
+          "von_mises_a2");
 }
 
 // Convenience aggregator. Add new distribution registrations here as they
@@ -71,6 +85,7 @@ inline void register_all_distributions() {
   register_normal_distribution<T, Engine>();
   register_constant_distribution<T, Engine>();
   register_oriented_uniform_distribution<T, Engine>();
+  register_von_mises_a2_distribution<T, Engine>();
 }
 
 } // namespace rvegen
