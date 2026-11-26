@@ -190,6 +190,13 @@ add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
 add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
 
+add_executable(rvegen_deterministic_generators_test tests/deterministic_generators_test.cpp)
+target_link_libraries(rvegen_deterministic_generators_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME deterministic_generators_test COMMAND rvegen_deterministic_generators_test)
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console
@@ -330,6 +337,19 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# Deterministic generators (#73/#84) and Bingham-oriented tubes through
+# the CLI. Each example's output must be written, not just reported.
+foreach(_ex IN ITEMS voronoi_2d voronoi_3d plain_weave tow_weave bingham_fibres)
+  add_test(
+      NAME cli_${_ex}_example
+      COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/${_ex}.json
+  )
+  set_tests_properties(cli_${_ex}_example PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes.*post-process '[a-z_]+' done"
+  )
+endforeach()
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 

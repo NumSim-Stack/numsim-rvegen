@@ -1,0 +1,33 @@
+{
+  "_comment": "Fibres whose axes follow a Bingham distribution (prolate, mean axis +x) via polyline_tube_oriented_input; direction distributions live in their own section.",
+
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 11,
+
+  "distributions": {
+    "pos":    { "type": "uniform_real", "a": 0.2, "b": 0.8 },
+    "length": { "type": "uniform_real", "a": 0.15, "b": 0.25 },
+    "radius": { "type": "constant", "value": 0.02 }
+  },
+
+  "direction_distributions": {
+    "fibre_dir": { "type": "bingham",
+                   "mean_axis_x": 1.0, "mean_axis_y": 0.0, "mean_axis_z": 0.0,
+                   "kappa": 8.0 }
+  },
+
+  "shapes": [
+    { "type": "polyline_tube_oriented_input",
+      "position_x_dist": "pos", "position_y_dist": "pos", "position_z_dist": "pos",
+      "direction_dist": "fibre_dir",
+      "length_dist": "length", "radius_dist": "radius" }
+  ],
+
+  "generator":   { "type": "random", "max_attempts": 10000 },
+  "termination": { "type": "number_of_inclusions", "target": 15 },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 32, "ny": 32, "nz": 32,
+      "output_path": "bingham_fibres.vox" }
+  ]
+}

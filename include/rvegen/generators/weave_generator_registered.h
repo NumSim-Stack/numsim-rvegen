@@ -1,0 +1,123 @@
+#pragma once
+
+// Registry adapters for the deterministic textile generators (#73).
+//
+// `weave_generator` / `tow_weave_generator` keep their typed C++ ctors;
+// these thin adapters add the schema + `(parameter_handler_t const&)`
+// ctor the generator registry expects and defer building to compute(),
+// where the domain box is available.
+//
+// Registered names: "weave", "tow_weave". Termination and shape inputs
+// are ignored (see deterministic_generator.h).
+
+#include <array>
+#include <cstddef>
+#include <string>
+
+#include <numsim-core/input_parameter_controller.h>
+
+#include "../schema/field_list.h"
+#include "../types.h"
+#include "deterministic_generator.h"
+#include "tow_weave_generator.h"
+#include "weave_generator.h"
+
+namespace rvegen {
+
+namespace detail {
+
+template <typename T>
+using weave_fields = field_list<
+    field<"n_warp_yarns", std::size_t, true, min_only<std::size_t{1}>,
+          numsim_core::description_label<"number of yarns running along +x">>,
+    field<"n_weft_yarns", std::size_t, true, min_only<std::size_t{1}>,
+          numsim_core::description_label<"number of yarns running along +y">>,
+    field<"yarn_radius", T, true, min_only<T{0}>,
+          numsim_core::description_label<"yarn (tube) radius; must be > 0">>,
+    field<"amplitude", T, true, min_only<T{0}>,
+          numsim_core::description_label<"peak z-undulation of the yarn centerlines (0 for flat / 2D)">>>;
+
+// Optional knobs shared by both adapters (defaults via
+// numsim_core::set_default so the handler always carries them).
+inline void add_weave_optionals(parameter_controller_t& s) {
+  s.template insert<std::size_t>("n_segments_per_yarn")
+      .template add<numsim_core::set_default>(std::size_t{32})
+      .template add<min_only<std::size_t{2}>>()
+      .template add<numsim_core::description_label<"centerline samples per yarn (>= 2, default 32)">>();
+  s.template insert<std::string>("warp_phase_name")
+      .template add<numsim_core::set_default>(std::string{})
+      .template add<numsim_core::description_label<"optional phase name for warp yarns">>();
+  s.template insert<std::string>("weft_phase_name")
+      .template add<numsim_core::set_default>(std::string{})
+      .template add<numsim_core::description_label<"optional phase name for weft yarns">>();
+}
+
+template <typename T>
+[[nodiscard]] weave_generator<T>
+make_weave(parameter_handler_t const& h, std::array<T, 3> const& domain) {
+  auto const [nwarp, nweft, r, amp] = weave_fields<T>::extract(h);
+  weave_generator<T> w{domain, nwarp, nweft, r, amp,
+                       h.template get<std::size_t>("n_segments_per_yarn")};
+  w.set_warp_phase_name(h.template get<std::string>("warp_phase_name"));
+  w.set_weft_phase_name(h.template get<std::string>("weft_phase_name"));
+  return w;
+}
+
+} // namespace detail
+
+template <typename T = double>
+class registered_weave_generator final : public deterministic_generator<T> {
+public:
+  explicit registered_weave_generator(parameter_handler_t const& handler)
+      : _handler{handler} {}
+
+  [[nodiscard]] static parameter_controller_t parameters() {
+    auto s = detail::weave_fields<T>::schema();
+    detail::add_weave_optionals(s);
+    return s;
+  }
+
+protected:
+  [[nodiscard]] typename deterministic_generator<T>::shape_vector
+  build(std::array<T, 3> const& domain_box) const override {
+    return detail::make_weave<T>(_handler, domain_box).build();
+  }
+
+private:
+  parameter_handler_t _handler;
+};
+
+template <typename T = double>
+class registered_tow_weave_generator final : public deterministic_generator<T> {
+public:
+  explicit registered_tow_weave_generator(parameter_handler_t const& handler)
+      : _handler{handler} {}
+
+  [[nodiscard]] static parameter_controller_t parameters() {
+    auto s = detail::weave_fields<T>::schema();
+    detail::add_weave_optionals(s);
+    s.template insert<std::size_t>("n_fibres_per_tow")
+        .template add<numsim_core::is_required>()
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::description_label<"fibres hex-packed into each yarn cross-section">>();
+    s.template insert<T>("fibre_radius_factor")
+        .template add<numsim_core::set_default>(T{0.2})
+        .template add<numsim_core::description_label<"fibre radius as a fraction of the yarn radius, in (0, 1) (default 0.2)">>();
+    return s;
+  }
+
+protected:
+  [[nodiscard]] typename deterministic_generator<T>::shape_vector
+  build(std::array<T, 3> const& domain_box) const override {
+    tow_weave_generator<T> g{
+        detail::make_weave<T>(_handler, domain_box),
+        _handler.template get<std::size_t>("n_fibres_per_tow"),
+        _handler.template get<T>("fibre_radius_factor")};
+    return g.build();
+  }
+
+private:
+  parameter_handler_t _handler;
+};
+
+} // namespace rvegen

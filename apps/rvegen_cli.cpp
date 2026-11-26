@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -63,6 +64,7 @@ int run(int argc, char** argv) {
 
   // ---- 2. Register every known type in every registry --------------------
   rvegen::register_all_distributions<>();
+  rvegen::register_all_direction_distributions<>();
   rvegen::register_all_terminations<>();
   rvegen::register_all_generators<>();
   rvegen::register_all_inputs<>();
@@ -92,9 +94,30 @@ int run(int argc, char** argv) {
     }
   }
 
+  // Direction distributions (e.g. bingham) share the name space of the
+  // scalar map: each is stored as a direction_distribution_holder that
+  // direction-aware inputs (polyline_tube_oriented_input) unwrap.
+  if (config.contains("direction_distributions")) {
+    for (auto const& [name, spec] : config.at("direction_distributions").items()) {
+      if (dists.contains(name)) {
+        throw std::runtime_error{"duplicate distribution name '" + name +
+                                 "' (direction_distributions share the "
+                                 "distributions name space)"};
+      }
+      auto dir = rvegen::build_from_json(
+          rvegen::direction_distribution_registry_t<>::instance(), spec, engine);
+      dists.emplace(name,
+                    std::make_shared<rvegen::direction_distribution_holder<double>>(
+                        std::shared_ptr<rvegen::direction_distribution_base<double>>{
+                            std::move(dir)}));
+    }
+  }
+
   // ---- 5. Build inputs (cross-reference distributions by name) ----------
   rvegen::rve_generator_base<double>::input_vector inputs;
-  for (auto const& spec : config.at("shapes")) {
+  // "shapes" is optional: deterministic generators (weave, tow_weave,
+  // voronoi_*) build their shapes from the generator params alone.
+  for (auto const& spec : config.value("shapes", nlohmann::json::array())) {
     auto input = rvegen::build_from_json(
         rvegen::input_registry_t<>::instance(), spec, dists);
     inputs.push_back(std::move(input));
@@ -103,9 +126,21 @@ int run(int argc, char** argv) {
   // ---- 6. Generator + termination ---------------------------------------
   auto generator = rvegen::build_from_json(
       rvegen::generator_registry_t<>::instance(), config.at("generator"));
-  auto termination = rvegen::build_from_json(
-      rvegen::termination_registry_t<>::instance(),
-      config.at("termination"), domain_box);
+  // Deterministic generators ignore the termination predicate (#73), so
+  // the "termination" section is optional for them; a placeholder keeps
+  // the compute() signature uniform. Sampling generators still need it.
+  const bool deterministic =
+      dynamic_cast<rvegen::deterministic_generator<double>*>(generator.get()) !=
+      nullptr;
+  std::unique_ptr<rvegen::termination_base<double>> termination;
+  if (deterministic && !config.contains("termination")) {
+    termination = std::make_unique<rvegen::number_of_inclusions<double>>(
+        std::size_t{1});
+  } else {
+    termination = rvegen::build_from_json(
+        rvegen::termination_registry_t<>::instance(),
+        config.at("termination"), domain_box);
+  }
 
   // ---- 7. Run the pipeline ----------------------------------------------
   // Install a progress hook that prints "[N/T] φ = X.XX" lines to stderr

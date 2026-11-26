@@ -1,0 +1,165 @@
+// Registry coverage for the deterministic generators (weave, tow_weave,
+// voronoi_2d, voronoi_3d) and the direction-aware tube input (#84, #73).
+
+#include <array>
+#include <cstdlib>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <stdexcept>
+
+#include <nlohmann/json.hpp>
+
+#include "rvegen/rvegen.h"
+
+namespace {
+
+int failures = 0;
+
+#define REQUIRE(cond)                                                          \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::cerr << "REQUIRE failed: " #cond " at " __FILE__ ":" << __LINE__    \
+                << "\n";                                                       \
+      ++failures;                                                              \
+    }                                                                          \
+  } while (0)
+
+using json = nlohmann::json;
+using gen_t = rvegen::rve_generator_base<double>;
+
+auto build_gen(json const& spec) {
+  return rvegen::build_from_json(rvegen::generator_registry_t<>::instance(),
+                                 spec);
+}
+
+gen_t::shape_vector run_gen(json const& spec, std::array<double, 3> box) {
+  auto g = build_gen(spec);
+  gen_t::input_vector no_inputs;
+  // Termination must be ignored by deterministic generators; pass one
+  // that would otherwise stop immediately.
+  rvegen::number_of_inclusions<double> never_used{1};
+  return g->compute(no_inputs, never_used, box);
+}
+
+void test_registered() {
+  auto& r = rvegen::generator_registry_t<>::instance();
+  for (auto n : {"weave", "tow_weave", "voronoi_2d", "voronoi_3d"})
+    REQUIRE(r.contains(n));
+  REQUIRE(rvegen::input_registry_t<>::instance().contains(
+      "polyline_tube_oriented_input"));
+}
+
+void test_weave() {
+  json spec = {{"type", "weave"}, {"n_warp_yarns", 3}, {"n_weft_yarns", 2},
+               {"yarn_radius", 0.05}, {"amplitude", 0.04},
+               {"warp_phase_name", "warp"}, {"weft_phase_name", "weft"}};
+  auto shapes = run_gen(spec, {1.0, 1.0, 0.4});
+  REQUIRE(shapes.size() == 5);
+  REQUIRE(shapes.front()->phase_name() == "warp");
+  REQUIRE(shapes.back()->phase_name() == "weft");
+
+  // Invalid params surface as exceptions (schema range / ctor check).
+  bool threw = false;
+  try { run_gen({{"type", "weave"}, {"n_warp_yarns", 0}, {"n_weft_yarns", 2},
+                 {"yarn_radius", 0.05}, {"amplitude", 0.0}}, {1, 1, 0.4}); }
+  catch (std::exception const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_tow_weave() {
+  json spec = {{"type", "tow_weave"}, {"n_warp_yarns", 2}, {"n_weft_yarns", 2},
+               {"yarn_radius", 0.08}, {"amplitude", 0.05},
+               {"n_fibres_per_tow", 7}};
+  auto shapes = run_gen(spec, {1.0, 1.0, 0.4});
+  REQUIRE(shapes.size() == 4 * 7);
+}
+
+void test_voronoi_2d() {
+  json spec = {{"type", "voronoi_2d"}, {"n_seeds", 15}, {"seed", 5}};
+  auto shapes = run_gen(spec, {2.0, 1.0, 0.0});
+  REQUIRE(shapes.size() == 15);
+  double area = 0;
+  for (auto const& s : shapes) area += s->area();
+  REQUIRE(std::abs(area - 2.0) < 1e-9);   // cells tile the domain
+
+  // Same params -> same tessellation; different seed -> different.
+  auto again = run_gen(spec, {2.0, 1.0, 0.0});
+  REQUIRE(again[3]->area() == shapes[3]->area());
+  spec["seed"] = 6;
+  REQUIRE(run_gen(spec, {2.0, 1.0, 0.0})[3]->area() != shapes[3]->area());
+
+  // Explicit seeds + phase tag.
+  json two = {{"type", "voronoi_2d"}, {"seeds", {0.25, 0.5, 0.75, 0.5}},
+              {"phase_name", "grain"}};
+  auto halves = run_gen(two, {1.0, 1.0, 0.0});
+  REQUIRE(halves.size() == 2);
+  REQUIRE(std::abs(halves[0]->area() - 0.5) < 1e-12);
+  REQUIRE(halves[0]->phase_name() == "grain");
+
+  bool threw = false;   // 2D generator on a 3D box
+  try { run_gen(spec, {1, 1, 1}); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_voronoi_3d() {
+  json spec = {{"type", "voronoi_3d"}, {"n_seeds", 8}, {"seed", 2}};
+  auto shapes = run_gen(spec, {1.0, 1.0, 1.0});
+  REQUIRE(shapes.size() == 8);
+  double vol = 0;
+  for (auto const& s : shapes) vol += s->volume();
+  REQUIRE(std::abs(vol - 1.0) < 1e-6);
+
+  bool threw = false;
+  try { run_gen(spec, {1, 1, 0}); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_oriented_input() {
+  std::mt19937 eng{1};
+  rvegen::distribution_map_t<double> dists;
+  dists.emplace("c", std::make_shared<rvegen::constant_distribution<double>>(0.5));
+  auto dir = rvegen::build_from_json(
+      rvegen::direction_distribution_registry_t<>::instance(),
+      json{{"type", "bingham"}, {"mean_axis_x", 1.0}, {"mean_axis_y", 0.0},
+           {"mean_axis_z", 0.0}, {"kappa", 50.0}},
+      eng);
+  dists.emplace("d", std::make_shared<rvegen::direction_distribution_holder<double>>(
+                         std::shared_ptr<rvegen::direction_distribution_base<double>>{
+                             std::move(dir)}));
+  json spec = {{"type", "polyline_tube_oriented_input"},
+               {"position_x_dist", "c"}, {"position_y_dist", "c"},
+               {"position_z_dist", "c"}, {"direction_dist", "d"},
+               {"length_dist", "c"}, {"radius_dist", "c"},
+               {"phase_name", "fibre"}};
+  auto input = rvegen::build_from_json(rvegen::input_registry_t<>::instance(),
+                                       spec, dists);
+  auto shape = input->new_shape();
+  REQUIRE(shape->phase_name() == "fibre");
+
+  // A scalar distribution named as direction is rejected.
+  spec["direction_dist"] = "c";
+  bool threw = false;
+  try { (void)rvegen::build_from_json(rvegen::input_registry_t<>::instance(),
+                                      spec, dists); }
+  catch (std::exception const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+} // namespace
+
+int main() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_direction_distributions<>();
+  rvegen::register_all_generators<>();
+  rvegen::register_all_inputs<>();
+  test_registered();
+  test_weave();
+  test_tow_weave();
+  test_voronoi_2d();
+  test_voronoi_3d();
+  test_oriented_input();
+  if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
+  std::cout << "deterministic_generators_test OK\n";
+  return EXIT_SUCCESS;
+}

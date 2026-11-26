@@ -1,0 +1,18 @@
+{
+  "_comment": "Tow-level weave: every yarn of a 3x3 plain weave is a hex-packed bundle of 7 fibres.",
+
+  "domain_box": [1.0, 1.0, 0.4],
+
+  "generator": {
+    "type": "tow_weave",
+    "n_warp_yarns": 3, "n_weft_yarns": 3,
+    "yarn_radius": 0.08, "amplitude": 0.07,
+    "n_segments_per_yarn": 24,
+    "n_fibres_per_tow": 7, "fibre_radius_factor": 0.25
+  },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 48, "ny": 48, "nz": 24,
+      "output_path": "tow_weave.vox" }
+  ]
+}
