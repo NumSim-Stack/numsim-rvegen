@@ -83,18 +83,12 @@ public:
   [[nodiscard]] T volume() const override { return T{0}; }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {
-    // Largest distance from the centroid to any vertex. Used by
-    // only_inside placement to test whether the polygon's bounding
-    // radius fits in the RVE box.
-    T max_d2{0};
-    for (auto const& v : _vertices) {
-      const T dx = v[0] - _centroid[0];
-      const T dy = v[1] - _centroid[1];
-      const T d2 = dx * dx + dy * dy;
-      if (d2 > max_d2) max_d2 = d2;
-    }
-    const T r = std::sqrt(max_d2);
-    return {r, r, T{0}};
+    // Half-extents of the AABB on each axis (the shape_base contract,
+    // same as voronoi_cell; #79). Used by only_inside placement to
+    // test whether the polygon fits in the RVE box.
+    if (_vertices.empty()) return {T{0}, T{0}, T{0}};
+    auto [mn, mx] = extents();
+    return {(mx[0] - mn[0]) * T{0.5}, (mx[1] - mn[1]) * T{0.5}, T{0}};
   }
 
   [[nodiscard]] std::array<T, 3> get_middle_point() const override {
@@ -111,31 +105,33 @@ public:
     // For a CCW convex polygon, a point is inside iff it lies on the
     // left of (or on) every edge. The cross product (b - a) × (p - a)
     // must be ≥ 0 for every consecutive pair (a, b). Tolerance for
-    // on-edge classification matches the Voronoi clip helper.
+    // on-edge classification is scale-relative: the cross product has
+    // dimension length², so the tolerance is eps·1024·|edge|·(|edge| +
+    // |p - a|) (#79) and behaves identically at 1e-6 m and 1e3 m.
     if (_vertices.size() < 3) return false;
     const std::size_t n = _vertices.size();
     for (std::size_t k = 0; k < n; ++k) {
       auto const& a = _vertices[k];
       auto const& b = _vertices[(k + 1) % n];
-      const T cross = (b[0] - a[0]) * (point[1] - a[1])
-                    - (b[1] - a[1]) * (point[0] - a[0]);
-      if (cross < -std::numeric_limits<T>::epsilon() * T{1024}) return false;
+      const T ex = b[0] - a[0], ey = b[1] - a[1];
+      const T px = point[0] - a[0], py = point[1] - a[1];
+      const T cross = ex * py - ey * px;
+      const T e_len = std::sqrt(ex * ex + ey * ey);
+      const T p_len = std::sqrt(px * px + py * py);
+      const T tol = std::numeric_limits<T>::epsilon() * T{1024} * e_len *
+                    (e_len + p_len);
+      if (cross < -tol) return false;
     }
     return true;
   }
 
   void make_bounding_box() override {
-    T min_x = _vertices[0][0], max_x = _vertices[0][0];
-    T min_y = _vertices[0][1], max_y = _vertices[0][1];
-    for (auto const& v : _vertices) {
-      if (v[0] < min_x) min_x = v[0];
-      if (v[0] > max_x) max_x = v[0];
-      if (v[1] < min_y) min_y = v[1];
-      if (v[1] > max_y) max_y = v[1];
-    }
+    // A default-constructed (placeholder) polygon has no vertices: its
+    // box collapses to the origin instead of reading _vertices[0].
+    auto [mn, mx] = extents();
     auto box = std::make_unique<rectangle_bounding<T>>();
-    box->top_point()    = {max_x, max_y, T{0}};
-    box->bottom_point() = {min_x, min_y, T{0}};
+    box->top_point()    = {mx[0], mx[1], T{0}};
+    box->bottom_point() = {mn[0], mn[1], T{0}};
     this->_bounding_box = std::move(box);
   }
 
@@ -157,6 +153,17 @@ public:
   }
 
 private:
+  // AABB corners (min, max); both the origin for an empty polygon.
+  [[nodiscard]] std::pair<point_type, point_type> extents() const {
+    if (_vertices.empty()) return {point_type{}, point_type{}};
+    point_type mn = _vertices[0], mx = _vertices[0];
+    for (auto const& v : _vertices) {
+      mn[0] = std::min(mn[0], v[0]); mx[0] = std::max(mx[0], v[0]);
+      mn[1] = std::min(mn[1], v[1]); mx[1] = std::max(mx[1], v[1]);
+    }
+    return {mn, mx};
+  }
+
   static point_type compute_centroid(std::vector<point_type> const& v) {
     // Use the area-weighted polygon centroid (Wikipedia, "Centroid
     // of a polygon"). For a degenerate polygon (sum of signed
@@ -172,7 +179,15 @@ private:
       cx += (a[0] + b[0]) * cross;
       cy += (a[1] + b[1]) * cross;
     }
-    if (std::abs(sa) < std::numeric_limits<T>::epsilon() * T{1024}) {
+    // Degenerate test is scale-relative: sa has dimension length².
+    T lo_x = v[0][0], hi_x = v[0][0], lo_y = v[0][1], hi_y = v[0][1];
+    for (auto const& p : v) {
+      lo_x = std::min(lo_x, p[0]); hi_x = std::max(hi_x, p[0]);
+      lo_y = std::min(lo_y, p[1]); hi_y = std::max(hi_y, p[1]);
+    }
+    const T ext = std::max(hi_x - lo_x, hi_y - lo_y);
+    if (std::abs(sa) <
+        std::numeric_limits<T>::epsilon() * T{1024} * ext * ext) {
       // Degenerate — average vertex positions.
       T ax{0}, ay{0};
       for (auto const& p : v) { ax += p[0]; ay += p[1]; }

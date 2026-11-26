@@ -28,16 +28,22 @@
 // test ≈ O(N⁵). For N ≤ 50 seeds this is well under a second; beyond
 // that, switch to a real Voronoi library (Voro++, CGAL).
 //
-// Numerical robustness:
-//   * The 3x3 solve uses Eigen's PartialPivLU.
-//   * Feasibility test uses a relative tolerance (1e-9 of each
-//     half-space coefficient norm) — generous enough for typical
-//     engineering-scale inputs.
+// Numerical robustness (scale-invariant, #79):
+//   * Every half-space is normalised to a unit normal, so the 3x3
+//     determinant is dimensionless and the feasibility / merge
+//     tolerances are distances relative to the longest domain edge
+//     (1e-9 · scale). Domains of 1e-6 m and 1e3 m behave identically.
+//   * Bisector offsets are computed as n · midpoint (not from the
+//     difference of squared norms), avoiding cancellation for
+//     closely spaced seeds.
 //   * Coincident vertices (multiple triplets producing the same
 //     point at degeneracies) are deduplicated by L2 distance.
-//   * Coincident seeds are not handled — the output will contain a
-//     pathologically thin cell. Caller should filter coincident
-//     seeds upstream.
+//   * Coincident seeds (closer than 1e-9 of the domain size) and seeds
+//     outside the domain are rejected with std::runtime_error. Seeds on
+//     the domain boundary are valid.
+//   * `build()` always returns exactly one shape per seed, in seed
+//     order; a cell that collapses numerically is an empty
+//     `voronoi_cell` (volume() == 0) placeholder.
 
 #include <algorithm>
 #include <array>
@@ -54,6 +60,7 @@
 
 #include "../shapes/shape_base.h"
 #include "../shapes/voronoi_cell.h"
+#include "voronoi_seed_validation.h"
 
 namespace rvegen {
 
@@ -74,6 +81,8 @@ public:
       throw std::runtime_error{
           "voronoi_generator_3d: at least one seed required"};
     }
+    detail::validate_voronoi_seeds<T, 3>({Lx, Ly, Lz}, _seeds,
+                                         "voronoi_generator_3d");
   }
 
   [[nodiscard]] std::size_t seed_count() const noexcept {
@@ -95,10 +104,15 @@ private:
   T _Lx, _Ly, _Lz;
   std::vector<seed_type> _seeds;
 
-  // Half-space: A·x + B·y + C·z ≤ D.
+  // Half-space: A·x + B·y + C·z ≤ D with a UNIT normal (A, B, C), so D is
+  // a signed distance and all tolerances are plain lengths.
   struct half_space {
     T A, B, C, D;
   };
+
+  [[nodiscard]] T scale() const noexcept {
+    return std::max({_Lx, _Ly, _Lz});
+  }
 
   // Collect the 6 box + (N - 1) bisector half-spaces for cell `i`.
   [[nodiscard]] std::vector<half_space> half_spaces_for(std::size_t i) const {
@@ -111,18 +125,19 @@ private:
     hs.push_back({T{ 0}, T{ 1}, T{ 0}, _Ly });
     hs.push_back({T{ 0}, T{ 0}, T{-1}, T{0 }});
     hs.push_back({T{ 0}, T{ 0}, T{ 1}, _Lz });
-    // Bisectors: 2·(P_j − P_i) · x ≤ |P_j|² − |P_i|².
+    // Bisector toward seed j: n · x ≤ n · (P_i + P_j)/2 with
+    // n = (P_j − P_i)/|P_j − P_i|.
     auto const& Pi = _seeds[i];
-    const T mag_i = Pi[0] * Pi[0] + Pi[1] * Pi[1] + Pi[2] * Pi[2];
     for (std::size_t j = 0; j < _seeds.size(); ++j) {
       if (j == i) continue;
       auto const& Pj = _seeds[j];
-      hs.push_back({
-          T{2} * (Pj[0] - Pi[0]),
-          T{2} * (Pj[1] - Pi[1]),
-          T{2} * (Pj[2] - Pi[2]),
-          (Pj[0] * Pj[0] + Pj[1] * Pj[1] + Pj[2] * Pj[2]) - mag_i
-      });
+      const T dx = Pj[0] - Pi[0], dy = Pj[1] - Pi[1], dz = Pj[2] - Pi[2];
+      const T len = std::sqrt(dx * dx + dy * dy + dz * dz);
+      const T nx = dx / len, ny = dy / len, nz = dz / len;
+      hs.push_back({nx, ny, nz,
+                    nx * (Pi[0] + Pj[0]) * T{0.5} +
+                    ny * (Pi[1] + Pj[1]) * T{0.5} +
+                    nz * (Pi[2] + Pj[2]) * T{0.5}});
     }
     return hs;
   }
@@ -140,6 +155,8 @@ private:
       std::array<std::size_t, 3> on_planes;
     };
     std::vector<candidate> cands;
+    // Distance tolerance, relative to the domain size.
+    const T tol = static_cast<T>(detail::voronoi_rel_tol) * scale();
 
     for (std::size_t a = 0; a < H; ++a) {
       for (std::size_t b = a + 1; b < H; ++b) {
@@ -151,8 +168,8 @@ private:
           Eigen::Vector3<T> rhs;
           rhs << hs[a].D, hs[b].D, hs[c].D;
           Eigen::PartialPivLU<Eigen::Matrix3<T>> lu{M};
-          if (std::abs(M.determinant())
-              < std::numeric_limits<T>::epsilon() * T{1024}) {
+          // Unit normals → |det| is a dimensionless sine-volume.
+          if (std::abs(M.determinant()) < T{1e-10}) {
             continue;   // parallel / coplanar — no unique intersection
           }
           const Eigen::Vector3<T> x = lu.solve(rhs);
@@ -161,8 +178,6 @@ private:
           for (std::size_t k = 0; k < H; ++k) {
             if (k == a || k == b || k == c) continue;
             const T lhs = hs[k].A * x[0] + hs[k].B * x[1] + hs[k].C * x[2];
-            // Tolerance: 1e-9 relative to the coefficient norm.
-            const T tol = T{1e-9} * (T{1} + std::abs(hs[k].D));
             if (lhs > hs[k].D + tol) { feasible = false; break; }
           }
           if (!feasible) continue;
@@ -172,9 +187,9 @@ private:
     }
 
     if (cands.empty()) {
-      // Pathological — likely the seed sits outside the box, or
-      // every plane triplet is degenerate. Produce an empty cell;
-      // caller can detect via `volume() == 0`.
+      // Pathological (every plane triplet degenerate). Produce an
+      // empty placeholder so cell i still matches seed i; caller can
+      // detect via `volume() == 0`.
       return std::make_unique<voronoi_cell<T>>();
     }
 
@@ -184,7 +199,7 @@ private:
     // tolerance.
     std::vector<Eigen::Vector3<T>> verts;
     std::vector<std::vector<std::size_t>> vert_planes;   // which planes pass through each unique vertex
-    const T merge_tol = T{1e-9} * std::max({_Lx, _Ly, _Lz});
+    const T merge_tol = tol;
     for (auto const& c : cands) {
       bool dup = false;
       for (std::size_t v = 0; v < verts.size(); ++v) {
