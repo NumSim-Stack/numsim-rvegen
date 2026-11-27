@@ -146,6 +146,10 @@ add_executable(rvegen_end_to_end_smoke tests/end_to_end_smoke.cpp)
 target_link_libraries(rvegen_end_to_end_smoke PRIVATE rvegen_lib)
 add_test(NAME end_to_end_smoke COMMAND rvegen_end_to_end_smoke)
 
+add_executable(rvegen_weave_geometry_test tests/weave_geometry_test.cpp)
+target_link_libraries(rvegen_weave_geometry_test PRIVATE rvegen_lib)
+add_test(NAME weave_geometry_test COMMAND rvegen_weave_geometry_test)
+
 add_executable(rvegen_json_visitor_smoke tests/json_visitor_smoke.cpp)
 target_link_libraries(rvegen_json_visitor_smoke PRIVATE
     rvegen_lib
@@ -153,12 +157,31 @@ target_link_libraries(rvegen_json_visitor_smoke PRIVATE
 )
 add_test(NAME json_visitor_smoke COMMAND rvegen_json_visitor_smoke)
 
+add_executable(rvegen_orientation_sampler_test tests/orientation_sampler_test.cpp)
+target_link_libraries(rvegen_orientation_sampler_test PRIVATE rvegen_lib)
+add_test(NAME orientation_sampler_test COMMAND rvegen_orientation_sampler_test)
+
+add_executable(rvegen_orientation_a2_test tests/orientation_a2_test.cpp)
+target_link_libraries(rvegen_orientation_a2_test PRIVATE rvegen_lib)
+add_test(NAME orientation_a2_test COMMAND rvegen_orientation_a2_test)
+
 add_executable(rvegen_registry_smoke tests/registry_smoke.cpp)
 target_link_libraries(rvegen_registry_smoke PRIVATE
     rvegen_lib
     nlohmann_json::nlohmann_json
 )
 add_test(NAME registry_smoke COMMAND rvegen_registry_smoke)
+
+add_executable(rvegen_input_validation_test tests/input_validation_test.cpp)
+target_link_libraries(rvegen_input_validation_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME input_validation_test COMMAND rvegen_input_validation_test)
+
+add_executable(rvegen_golden_random_test tests/golden_random_test.cpp)
+target_link_libraries(rvegen_golden_random_test PRIVATE rvegen_lib)
+add_test(NAME golden_random_test COMMAND rvegen_golden_random_test)
 
 add_executable(rvegen_full_registry_smoke tests/full_registry_smoke.cpp)
 target_link_libraries(rvegen_full_registry_smoke PRIVATE
@@ -182,6 +205,14 @@ target_link_libraries(rvegen_concurrency_smoke PRIVATE
 )
 add_test(NAME concurrency_smoke COMMAND rvegen_concurrency_smoke)
 
+add_executable(rvegen_mesh_io_test tests/mesh_io_test.cpp)
+target_link_libraries(rvegen_mesh_io_test PRIVATE rvegen_lib)
+add_test(NAME mesh_io_test COMMAND rvegen_mesh_io_test)
+
+add_executable(rvegen_mesh_transform_test tests/mesh_transform_test.cpp)
+target_link_libraries(rvegen_mesh_transform_test PRIVATE rvegen_lib)
+add_test(NAME mesh_transform_test COMMAND rvegen_mesh_transform_test)
+
 add_executable(rvegen_post_process_smoke tests/post_process_smoke.cpp)
 target_link_libraries(rvegen_post_process_smoke PRIVATE
     rvegen_lib
@@ -189,9 +220,17 @@ target_link_libraries(rvegen_post_process_smoke PRIVATE
 )
 add_test(NAME post_process_smoke COMMAND rvegen_post_process_smoke)
 
+add_executable(rvegen_voxel_stats_3d_test tests/voxel_stats_3d_test.cpp)
+target_link_libraries(rvegen_voxel_stats_3d_test PRIVATE rvegen_lib)
+add_test(NAME voxel_stats_3d_test COMMAND rvegen_voxel_stats_3d_test)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
+
+add_executable(rvegen_visualization_writers_test tests/visualization_writers_test.cpp)
+target_link_libraries(rvegen_visualization_writers_test PRIVATE rvegen_lib Threads::Threads)
+add_test(NAME visualization_writers_test COMMAND rvegen_visualization_writers_test)
 
 add_executable(rvegen_schema_audit_test tests/schema_audit_test.cpp)
 target_link_libraries(rvegen_schema_audit_test PRIVATE rvegen_lib)
@@ -275,6 +314,11 @@ install(TARGETS rvegen_lib
     EXPORT rvegenTargets
 )
 
+# Licence texts: rvegen's own and those of the bundled GTE headers.
+install(FILES LICENSE THIRD_PARTY_NOTICES.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/rvegen
+)
+
 install(EXPORT rvegenTargets
     FILE rvegenTargets.cmake
     NAMESPACE rvegen::
@@ -309,6 +353,17 @@ install(FILES
 # WORKING_DIRECTORY so those relative paths resolve into the build tree
 # rather than the source tree.
 if(NOT DEFINED BUILD_TESTING OR BUILD_TESTING)
+# The wheel is built from python/ alone, so it carries copies of the licence
+# files; fail when a copy differs from the file at the repository root.
+foreach(_license_file LICENSE THIRD_PARTY_NOTICES.md)
+  add_test(
+      NAME license_files_in_sync_${_license_file}
+      COMMAND ${CMAKE_COMMAND} -E compare_files
+          ${CMAKE_CURRENT_SOURCE_DIR}/${_license_file}
+          ${CMAKE_CURRENT_SOURCE_DIR}/python/${_license_file}
+  )
+endforeach()
+
 add_test(
     NAME cli_circles_example
     COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json
@@ -337,6 +392,48 @@ set_tests_properties(cli_spheres_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# Top-level "seed" / "domain_box" validation. Each case writes a minimal
+# config with the given fragment and expects the CLI to reject it (message
+# naming the key) or, for the *_ok cases, to run.
+function(rvegen_add_cli_toplevel_test name fragment regex)
+  set(cfg ${CMAKE_CURRENT_BINARY_DIR}/cli_${name}.json)
+  file(WRITE ${cfg} "{ ${fragment},
+  \"distributions\": { \"u\": { \"type\": \"uniform_real\", \"a\": 0.2, \"b\": 0.8 },
+                      \"r\": { \"type\": \"uniform_real\", \"a\": 0.03, \"b\": 0.05 } },
+  \"shapes\": [ { \"type\": \"circle_input\", \"pos_x_dist\": \"u\",
+                 \"pos_y_dist\": \"u\", \"radius_dist\": \"r\" } ],
+  \"generator\": { \"type\": \"only_inside\", \"max_attempts\": 1000 },
+  \"termination\": { \"type\": \"number_of_inclusions\", \"target\": 2 } }
+")
+  add_test(NAME cli_${name} COMMAND rvegen ${cfg})
+  set_tests_properties(cli_${name} PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+
+rvegen_add_cli_toplevel_test(seed_negative   "\"seed\": -1"
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_fractional "\"seed\": 1.5"
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_string     "\"seed\": \"7\""
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_too_large  "\"seed\": 4294967296"
+    "seed must be <= 4294967295")
+rvegen_add_cli_toplevel_test(seed_max_ok     "\"seed\": 4294967295"
+    "generated 2 shapes")
+rvegen_add_cli_toplevel_test(domain_box_zero "\"domain_box\": [0, 0, 0]"
+    "domain_box x and y extents must be > 0")
+rvegen_add_cli_toplevel_test(domain_box_negative "\"domain_box\": [-1, 1, 0]"
+    "domain_box x and y extents must be > 0")
+rvegen_add_cli_toplevel_test(domain_box_negative_z "\"domain_box\": [1, 1, -1]"
+    "domain_box z extent must be >= 0")
+rvegen_add_cli_toplevel_test(domain_box_length "\"domain_box\": [1]"
+    "domain_box must be an array of 2 or 3 numbers")
+rvegen_add_cli_toplevel_test(domain_box_type "\"domain_box\": [1, \"a\"]"
+    "domain_box entries must be numbers")
+rvegen_add_cli_toplevel_test(domain_box_two_ok "\"domain_box\": [1, 1]"
+    "generated 2 shapes")
 
 add_test(
     NAME cli_periodic_circles_example

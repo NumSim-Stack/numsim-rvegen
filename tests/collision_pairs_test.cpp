@@ -189,6 +189,62 @@ mesh_inclusion<D> cube_mesh(D h, D centre_x, D centre_y, D centre_z,
   return m;
 }
 
+// Closed box mesh with half extents (hx, hy, hz) around the origin.
+mesh_inclusion<D> bar_mesh(D hx, D hy, D hz) {
+  std::array<std::array<D, 3>, 8> v;
+  for (int i = 0; i < 8; ++i) {
+    v[i] = {(i & 1) ? hx : -hx, (i & 2) ? hy : -hy, (i & 4) ? hz : -hz};
+  }
+  constexpr int faces[12][3] = {
+      {0, 1, 3}, {0, 3, 2}, {4, 5, 7}, {4, 7, 6}, {0, 1, 5}, {0, 5, 4},
+      {2, 3, 7}, {2, 7, 6}, {0, 2, 6}, {0, 6, 4}, {1, 3, 7}, {1, 7, 5}};
+  typename mesh_inclusion<D>::triangle_list tris;
+  for (auto const& f : faces) {
+    gte::Triangle3<D> t;
+    for (int k = 0; k < 3; ++k) {
+      for (int c = 0; c < 3; ++c) t.v[k][c] = v[f[k]][c];
+    }
+    tris.push_back(t);
+  }
+  return mesh_inclusion<D>{std::move(tris)};
+}
+
+// The pair tests must see the placed mesh (rotation, scale, translation),
+// not the base triangles shifted by the offset. Every case below gives the
+// opposite answer when the rotation or the scale is ignored.
+void test_mesh_placement_transform() {
+  // Bar along x, turned by 90 degrees about z: now along y.
+  auto bar = bar_mesh(2.0, 0.25, 0.25);
+  bar.set_rotation_axis_angle({0, 0, 1}, pi / 2);
+  REQUIRE(hit(bar, sphere<D>{0.0, 2.05, 0.0, 0.1}));    // touches the y end cap
+  REQUIRE(!hit(bar, sphere<D>{2.05, 0.0, 0.0, 0.1}));   // old x end cap is gone
+  REQUIRE(hit(bar, box<D>{0.0, 2.1, 0.0, 0.4, 0.4, 0.4}));
+  REQUIRE(!hit(bar, box<D>{2.1, 0.0, 0.0, 0.4, 0.4, 0.4}));
+  polyline_tube<D> across{std::vector<P3>{{-1, 1.5, 0.3}, {1, 1.5, 0.3}}, 0.1};
+  polyline_tube<D> beside{std::vector<P3>{{1.5, -1, 0.3}, {1.5, 1, 0.3}}, 0.1};
+  REQUIRE(hit(bar, across));                             // grazes the top face
+  REQUIRE(!hit(bar, beside));
+  REQUIRE(hit(bar, cube_mesh(0.1, 0.0, 2.05, 0.0)));    // straddles the y end cap
+  REQUIRE(!hit(bar, cube_mesh(0.1, 2.05, 0.0, 0.0)));
+
+  // Rotation and translation together.
+  bar.set_middle_point({10, 0, 0});
+  REQUIRE(hit(bar, sphere<D>{10.0, 2.05, 0.0, 0.1}));
+  REQUIRE(!hit(bar, sphere<D>{12.05, 0.0, 0.0, 0.1}));
+
+  // Unit cube scaled by 3: the surface is at |x| = 3.
+  auto big = bar_mesh(1.0, 1.0, 1.0);
+  big.set_scale(3.0);
+  REQUIRE(hit(big, sphere<D>{3.05, 0.0, 0.0, 0.1}));
+  REQUIRE(!hit(big, sphere<D>{3.2, 0.0, 0.0, 0.1}));
+  REQUIRE(hit(big, cube_mesh(0.1, 3.05, 0.0, 0.0)));
+  // Scaled down: nothing at the old surface any more.
+  auto small = bar_mesh(1.0, 1.0, 1.0);
+  small.set_scale(0.25);
+  REQUIRE(!hit(small, sphere<D>{1.05, 0.0, 0.0, 0.1}));
+  REQUIRE(hit(small, sphere<D>{0.3, 0.0, 0.0, 0.1}));
+}
+
 void test_mesh_sphere() {
   auto m = cube_mesh(1.0, 1, 1, 1);     // [0,2]^3
   REQUIRE(hit(m, sphere<D>{2.5, 1, 1, 0.5}));     // touching a face
@@ -289,6 +345,7 @@ int main() {
   test_mesh_box();
   test_mesh_tube();
   test_mesh_mesh();
+  test_mesh_placement_transform();
   test_dispatcher();
   if (failures != 0) {
     std::cerr << failures << " failure(s)\n";

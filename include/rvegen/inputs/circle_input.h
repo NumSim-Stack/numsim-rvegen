@@ -31,8 +31,10 @@ public:
   // Direct ctor — used by tests and library users not driving via JSON.
   circle_input(distribution_base<value_type>& pos_x,
                distribution_base<value_type>& pos_y,
-               distribution_base<value_type>& radius) noexcept
-      : _pos_x{pos_x}, _pos_y{pos_y}, _radius{radius} {}
+               distribution_base<value_type>& radius)
+      : _pos_x{pos_x}, _pos_y{pos_y}, _radius{radius} {
+    this->require_positive_support(_radius, "circle_input", "radius");
+  }
 
   // Schema-driven ctor — registry calls this. Looks up distributions by
   // name in the map. Requires the map to outlive the circle_input.
@@ -63,8 +65,15 @@ public:
     return s;
   }
 
+  // Draw order: x, y, radius.
+  // The radius distribution is truncated to (0, inf): non-positive draws
+  // are resampled. See shape_input_base for the constructor check
+  // and the redraw backstop.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto shape = std::make_unique<circle<value_type>>(_pos_x(), _pos_y(), _radius());
+    const value_type x = _pos_x();
+    const value_type y = _pos_y();
+    const value_type r = this->draw_positive(_radius, "circle_input", "radius");
+    auto shape = std::make_unique<circle<value_type>>(x, y, r);
     this->tag(*shape);
     return shape;
   }

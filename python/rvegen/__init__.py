@@ -17,6 +17,7 @@ from ._core import (
     VoronoiCell,
     VoronoiGenerator2d,
     WeaveGenerator,
+    WeavePattern,
 )
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "VoronoiCell",
     "VoronoiGenerator2d",
     "WeaveGenerator",
+    "WeavePattern",
 ]
 __version__ = "0.1.0"

@@ -96,38 +96,41 @@ template <typename T>
   return b;
 }
 
-// Bounds of the placed mesh: cached base AABB + offset, O(1).
+// Bounds of the placed mesh (rotation, scale and translation applied),
+// read from the shape's cache: O(1).
 template <typename T>
 [[nodiscard]] inline bounds3<T> mesh_bounds(mesh_inclusion<T> const& m) {
-  auto const& off = m.offset();
   bounds3<T> b;
-  for (int k = 0; k < 3; ++k) {
-    b.lo[k] = m.base_lo()[k] + off[k];
-    b.hi[k] = m.base_hi()[k] + off[k];
-  }
+  b.lo = m.placed_lo();
+  b.hi = m.placed_hi();
   return b;
 }
 
-// Translated triangle together with its AABB.
+// Placed (world-space) triangle together with its AABB.
 template <typename T>
 struct tri_box {
   gte::Triangle3<T> tri;
   bounds3<T> box;
 };
 
+// Maps a base triangle of `m` through the shape's placement
+// (mesh_inclusion::to_world: rotation, scale, translation).
 template <typename T>
-[[nodiscard]] inline tri_box<T> translated(gte::Triangle3<T> const& src,
-                                            std::array<T, 3> const& off) {
+[[nodiscard]] inline tri_box<T> placed(gte::Triangle3<T> const& src,
+                                        mesh_inclusion<T> const& m) {
   tri_box<T> r{src, {}};
+  for (int i = 0; i < 3; ++i) {
+    const auto w = m.to_world(src.v[i]);
+    for (int k = 0; k < 3; ++k) r.tri.v[i][k] = w[k];
+  }
   for (int k = 0; k < 3; ++k) {
-    for (int i = 0; i < 3; ++i) r.tri.v[i][k] += off[k];
     r.box.lo[k] = std::min({r.tri.v[0][k], r.tri.v[1][k], r.tri.v[2][k]});
     r.box.hi[k] = std::max({r.tri.v[0][k], r.tri.v[1][k], r.tri.v[2][k]});
   }
   return r;
 }
 
-// Visit translated triangles of `m` whose AABB overlaps `region`, without
+// Visit placed triangles of `m` whose AABB overlaps `region`, without
 // materialising them; stops at the first `f` that returns true.
 template <typename T, typename F>
 [[nodiscard]] inline bool any_mesh_triangle_in(mesh_inclusion<T> const& m,
@@ -135,24 +138,22 @@ template <typename T, typename F>
                                                 F&& f) {
   auto const base = m.base_triangles();
   if (!base || !overlap(mesh_bounds(m), region)) return false;
-  auto const& off = m.offset();
   for (auto const& src : *base) {
-    auto const t = translated(src, off);
+    auto const t = placed(src, m);
     if (overlap(t.box, region) && f(t.tri)) return true;
   }
   return false;
 }
 
-// Translated triangles of `m` whose AABB overlaps `region`.
+// Placed triangles of `m` whose AABB overlaps `region`.
 template <typename T>
 [[nodiscard]] inline std::vector<tri_box<T>>
 mesh_triangles_in(mesh_inclusion<T> const& m, bounds3<T> const& region) {
   std::vector<tri_box<T>> out;
   auto const base = m.base_triangles();
   if (!base || !overlap(mesh_bounds(m), region)) return out;
-  auto const& off = m.offset();
   for (auto const& src : *base) {
-    auto t = translated(src, off);
+    auto t = placed(src, m);
     if (overlap(t.box, region)) out.push_back(t);
   }
   return out;
@@ -162,9 +163,7 @@ template <typename T>
 [[nodiscard]] inline std::array<T, 3> mesh_first_vertex(mesh_inclusion<T> const& m) {
   auto const base = m.base_triangles();
   if (!base || base->empty()) return {};
-  auto const& v = (*base)[0].v[0];
-  auto const& off = m.offset();
-  return {v[0] + off[0], v[1] + off[1], v[2] + off[2]};
+  return m.to_world((*base)[0].v[0]);
 }
 
 } // namespace detail
