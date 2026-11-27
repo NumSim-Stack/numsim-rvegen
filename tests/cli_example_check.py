@@ -6,9 +6,12 @@ truncated or unmeshable file. For every postprocess entry the config
 declares, this script verifies the output file itself:
 
   .vox   header grid and extent match the config, data count == nx*ny*nz,
-         ids in 0..N, both matrix and inclusion voxels, most shapes present
-  .vtk   DIMENSIONS match the config, ORIGIN 0 and SPACING*DIMENSIONS ==
-         domain, value count == POINT_DATA, same id checks as .vox
+         id checks below
+  .vtk   POINT_DATA layout (one point per voxel, DIMENSIONS == grid,
+         SPACING*DIMENSIONS == domain) or CELL_DATA layout (one cell per
+         voxel, DIMENSIONS == grid+1, SPACING*(DIMENSIONS-1) == domain);
+         a flat 2D axis has DIMENSIONS 1 in both; ORIGIN 0, value count ==
+         the data count, id checks below
   .geo   gmsh meshes it; the mesh has >= 2 top-dimension volumes/surfaces
          (matrix + inclusions), its elements tile the domain exactly (total
          area/volume == domain, so no gaps or overlapping fragments) and,
@@ -17,6 +20,19 @@ declares, this script verifies the output file itself:
   .html  contains a script and >= N shapes
   .csv   (statistics) header volume fraction in (0, 1), 3 columns, r
          increasing, 0 <= S2(r) <= phi, S2 not constant, g(r) >= 0 and not 0
+  .yaml  (damask_material_config) every declared phase under phase:, one
+         material entry per voxel id 0..P
+
+Voxel ids (.vox / .vtk) are read in one of three modes:
+  shapes        ids in 0..N, both matrix and inclusion voxels, at least
+                half of the N shape ids present
+  phases        the config declares phases / phase_assignment, so ids are
+                phase ids: in 0..P (P = number of phases) and more than one
+                distinct value; the file's id-scheme tag must say so too
+  tessellation  generator voronoi_2d / voronoi_3d: grains fill the domain,
+                so no voxel is matrix (0); ids in 1..N and the number of
+                distinct ids is within 10% of N (N <= n_seeds, also within
+                10%)
 
 N is the shape count the CLI reports. The checks rely on the exit status
 only (no "PASS" line matching), so any failure or crash fails the test.
@@ -53,8 +69,78 @@ def expected_grid(pp):
     return None
 
 
+TESSELLATION_GENERATORS = ("voronoi_2d", "voronoi_3d")
+
+
+class IdMode:
+    """How the voxel values of a config are to be read (see module doc)."""
+
+    def __init__(self, config, nshapes):
+        self.nshapes = nshapes
+        gen = config.get("generator", {})
+        self.tessellation = gen.get("type") in TESSELLATION_GENERATORS
+        self.n_seeds = gen.get("n_seeds") if self.tessellation else None
+        self.phases = None
+        if "phases" in config or "phase_assignment" in config:
+            phases = config.get("phases")
+            if not isinstance(phases, list) or not phases:
+                fail("config has phase_assignment but no non-empty 'phases' list")
+            self.phases = [ph.get("name") for ph in phases]
+
+    def check(self, name, vals):
+        """Shared voxel-id checks for .vox and .vtk grids."""
+        if self.phases is not None:
+            return self._check_phases(name, vals)
+        if self.tessellation:
+            return self._check_tessellation(name, vals)
+        return self._check_shapes(name, vals)
+
+    def _check_phases(self, name, vals):
+        nph = len(self.phases)
+        if min(vals) < 0 or max(vals) > nph:
+            fail(f"{name}: phase ids outside 0..{nph} "
+                 f"(found {min(vals)}..{max(vals)})")
+        distinct = set(vals)
+        if len(distinct) < 2:
+            fail(f"{name}: every voxel has phase id {min(vals)}, "
+                 "the phase map is uniform")
+        if self.tessellation and 0 in distinct:
+            fail(f"{name}: tessellation left untagged (0) voxels")
+        return (f"phase ids {sorted(distinct)} of 0..{nph}", len(distinct))
+
+    def _check_tessellation(self, name, vals):
+        n = self.nshapes
+        if self.n_seeds is not None:
+            seeds = int(self.n_seeds)
+            if n > seeds or n < 0.9 * seeds:
+                fail(f"{name}: {n} grains for n_seeds = {seeds}")
+        if min(vals) < 1 or max(vals) > n:
+            fail(f"{name}: grain ids outside 1..{n} "
+                 f"(found {min(vals)}..{max(vals)}); a tessellation has no matrix")
+        present = len(set(vals))
+        # A grain smaller than a voxel may be missed by every sample, but
+        # most must show up. Mapping all grains onto a few ids fails here.
+        if present < 0.9 * n:
+            fail(f"{name}: only {present} of {n} grain ids appear in the grid")
+        return ("tessellation, no matrix voxel", present)
+
+    def _check_shapes(self, name, vals):
+        inclusion, present = check_ids(name, vals, self.nshapes)
+        return (f"inclusion fraction {inclusion:.3f}", present)
+
+
+def check_id_scheme(name, tag, mode):
+    """A file's id-scheme tag (if it has one) must match the config's mode."""
+    if tag is None:
+        return
+    says_phases = "phase" in tag.lower()
+    if says_phases != (mode.phases is not None):
+        fail(f"{name}: id scheme {tag!r}, but the config "
+             f"{'declares' if mode.phases is not None else 'does not declare'} phases")
+
+
 def check_ids(name, vals, nshapes):
-    """Shared voxel-id checks for .vox and .vtk grids."""
+    """Voxel-id checks for shape-index grids (matrix + inclusions)."""
     if min(vals) < 0 or max(vals) > nshapes:
         fail(f"{name}: ids outside 0..{nshapes}")
     inclusion = sum(1 for v in vals if v > 0) / len(vals)
@@ -71,12 +157,16 @@ def check_ids(name, vals, nshapes):
     return inclusion, present
 
 
-def check_vox(path, nshapes, pp, domain):
+def check_vox(path, mode, pp, domain):
     nx = ny = nz = None
     extent = None
+    scheme = None
     vals = []
     for line in path.read_text().splitlines():
         if line.startswith("#"):
+            m = re.match(r"# id scheme:\s*(.*)", line)
+            if m:
+                scheme = m.group(1)
             m = re.match(r"# nx ny nz:\s+(\d+) (\d+) (\d+)", line)
             if m:
                 nx, ny, nz = map(int, m.groups())
@@ -96,15 +186,17 @@ def check_vox(path, nshapes, pp, domain):
         fail(f"{path.name}: extent {extent} != domain_box {domain}")
     if len(vals) != nx * ny * nz:
         fail(f"{path.name}: {len(vals)} voxels, header says {nx * ny * nz}")
-    inclusion, present = check_ids(path.name, vals, nshapes)
-    return f"{len(vals)} voxels, inclusion fraction {inclusion:.3f}, {present} ids"
+    check_id_scheme(path.name, scheme, mode)
+    what, present = mode.check(path.name, vals)
+    return f"{len(vals)} voxels, {what}, {present} ids"
 
 
-def check_vtk(path, nshapes, pp, domain):
+def check_vtk(path, mode, pp, domain):
     lines = path.read_text().splitlines()
     if not lines or not lines[0].startswith("# vtk DataFile"):
         fail(f"{path.name}: not a legacy VTK file")
-    dims = npts = origin = spacing = None
+    dims = origin = spacing = None
+    layout = count = field = None
     start = None
     for i, line in enumerate(lines):
         if line.startswith("DIMENSIONS"):
@@ -113,32 +205,54 @@ def check_vtk(path, nshapes, pp, domain):
             origin = list(map(float, line.split()[1:4]))
         elif line.startswith("SPACING"):
             spacing = list(map(float, line.split()[1:4]))
-        elif line.startswith("POINT_DATA"):
-            npts = int(line.split()[1])
+        elif line.startswith(("POINT_DATA", "CELL_DATA")):
+            if layout is not None:
+                fail(f"{path.name}: both POINT_DATA and CELL_DATA sections")
+            layout, count = line.split()[0], int(line.split()[1])
+        elif line.startswith("SCALARS"):
+            field = line.split()[1]
         elif line.startswith("LOOKUP_TABLE"):
             start = i + 1
             break
-    if dims is None or npts is None or start is None:
-        fail(f"{path.name}: missing DIMENSIONS / POINT_DATA / LOOKUP_TABLE")
-    if npts != dims[0] * dims[1] * dims[2]:
-        fail(f"{path.name}: POINT_DATA {npts} != DIMENSIONS {dims}")
+    if dims is None or layout is None or start is None:
+        fail(f"{path.name}: missing DIMENSIONS / POINT_DATA or CELL_DATA / LOOKUP_TABLE")
+    if len(dims) != 3 or min(dims) < 1:
+        fail(f"{path.name}: DIMENSIONS {dims}")
+    cell = layout == "CELL_DATA"
+    # Voxels per axis. POINT_DATA puts one point per voxel; CELL_DATA one
+    # cell per voxel, so DIMENSIONS (point counts) are one more. A flat
+    # (2D) axis is a single point in both layouts (VTK pixel cells).
+    for axis in range(3):
+        if domain[axis] <= 0 and dims[axis] != 1:
+            fail(f"{path.name}: DIMENSIONS {dims}, flat axis {axis} must be 1")
+        if cell and domain[axis] > 0 and dims[axis] < 2:
+            fail(f"{path.name}: CELL_DATA needs >= 2 points on axis {axis}, "
+                 f"DIMENSIONS {dims}")
+    grid = [d - 1 if cell and d > 1 else d for d in dims]
+    if count != grid[0] * grid[1] * grid[2]:
+        fail(f"{path.name}: {layout} {count} != {grid[0] * grid[1] * grid[2]} "
+             f"for DIMENSIONS {dims}")
     want = expected_grid(pp)
-    if want and dims != want:
-        fail(f"{path.name}: DIMENSIONS {dims}, config asks for {want}")
+    if want and grid != want:
+        fail(f"{path.name}: {layout} grid {grid} (DIMENSIONS {dims}), "
+             f"config asks for {want}")
     if origin is None or spacing is None:
         fail(f"{path.name}: missing ORIGIN / SPACING")
     if not all(close(o, 0.0) for o in origin):
         fail(f"{path.name}: ORIGIN {origin}, expected 0 0 0")
     for axis in range(3):
         # A flat (2D) axis has a single cell; its spacing is a placeholder.
-        if domain[axis] > 0 and not close(spacing[axis] * dims[axis], domain[axis]):
-            fail(f"{path.name}: SPACING*DIMENSIONS on axis {axis} is "
-                 f"{spacing[axis] * dims[axis]}, domain is {domain[axis]}")
+        if domain[axis] > 0 and not close(spacing[axis] * grid[axis], domain[axis]):
+            fail(f"{path.name}: extent on axis {axis} is SPACING {spacing[axis]} "
+                 f"* {grid[axis]} voxels = {spacing[axis] * grid[axis]}, "
+                 f"domain is {domain[axis]}")
+    if field in ("phase_id", "shape_index"):
+        check_id_scheme(path.name, field, mode)
     vals = [int(x) for x in " ".join(lines[start:]).split()]
-    if len(vals) != npts:
-        fail(f"{path.name}: {len(vals)} values, POINT_DATA says {npts}")
-    inclusion, present = check_ids(path.name, vals, nshapes)
-    return f"{npts} points, inclusion fraction {inclusion:.3f}, {present} ids"
+    if len(vals) != count:
+        fail(f"{path.name}: {len(vals)} values, {layout} says {count}")
+    what, present = mode.check(path.name, vals)
+    return f"{layout} {'x'.join(map(str, grid))}, {what}, {present} ids"
 
 
 # gmsh MSH 2.2 element type -> (dimension, number of corner nodes).
@@ -304,6 +418,39 @@ def check_csv(path):
     return f"{len(rows)} bins, phi {phi:.3f}"
 
 
+def check_damask_yaml(path, mode):
+    """material.yaml from damask_material_config: one material per voxel id."""
+    if mode.phases is None:
+        fail(f"{path.name}: DAMASK material config for a config without phases")
+    text = path.read_text()
+    section = None
+    names, materials = [], 0
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            section = line.split(":", 1)[0].strip()
+            continue
+        if section == "phase":
+            m = re.match(r'^  "?([^":\s]+)"?:\s*$', line)
+            if m:
+                names.append(m.group(1))
+        elif section == "material" and re.match(r"^  - ", line):
+            materials += 1
+    for key in ("homogenization", "phase", "material"):
+        if not re.search(rf"^{key}:", text, re.M):
+            fail(f"{path.name}: missing top-level '{key}:' section")
+    missing = [n for n in mode.phases if n not in names]
+    if missing:
+        fail(f"{path.name}: phases {missing} not under 'phase:' (found {names})")
+    # Material index k is voxel id k, 0 = matrix gap, 1..P = phases.
+    want = len(mode.phases) + 1
+    if materials != want:
+        fail(f"{path.name}: {materials} material entries, voxel ids 0..{want - 1} "
+             f"need {want}")
+    return f"{len(names)} phases, {materials} materials"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rvegen", required=True)
@@ -336,6 +483,7 @@ def main():
             fail("generated 0 shapes")
         print(f"{config_path.name}: {nshapes} shapes")
 
+        mode = IdMode(config, nshapes)
         domain = [float(v) for v in config.get("domain_box", [1, 1, 0])] + [0.0]
         domain = domain[:3]
         three_d = domain[2] > 0
@@ -352,9 +500,9 @@ def main():
                 fail(f"{pp['type']}: output {out} missing or empty")
             ext = p.suffix.lower()
             if ext == ".vox":
-                msg = check_vox(p, nshapes, pp, domain)
+                msg = check_vox(p, mode, pp, domain)
             elif ext == ".vtk":
-                msg = check_vtk(p, nshapes, pp, domain)
+                msg = check_vtk(p, mode, pp, domain)
             elif ext == ".geo":
                 msg = check_geo(p, gmsh, three_d, work, pp, domain)
                 if msg is None:
@@ -366,6 +514,8 @@ def main():
                 msg = check_html(p, nshapes)
             elif ext == ".csv":
                 msg = check_csv(p)
+            elif ext == ".yaml" and pp["type"] == "damask_material_config":
+                msg = check_damask_yaml(p, mode)
             else:
                 fail(f"{out}: no checker for extension {ext}")
             print(f"  {out}: {msg}")
