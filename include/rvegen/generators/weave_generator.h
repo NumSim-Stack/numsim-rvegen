@@ -138,9 +138,9 @@ public:
       throw std::runtime_error{
           "weave_generator: n_warp_yarns and n_weft_yarns must both be ≥ 1"};
     }
-    if (yarn_radius <= value_type{0}) {
+    if (!(yarn_radius > value_type{0}) || !std::isfinite(yarn_radius)) {
       throw std::runtime_error{
-          "weave_generator: yarn_radius must be positive"};
+          "weave_generator: yarn_radius must be positive and finite"};
     }
     if (n_segments_per_yarn < 2) {
       throw std::runtime_error{
@@ -152,16 +152,22 @@ public:
           "weave_generator: n_segments_per_yarn must be ≤ "
           + std::to_string(max_segments_per_yarn)};
     }
-    if (_domain[0] <= value_type{0} || _domain[1] <= value_type{0}) {
+    if (!(_domain[0] > value_type{0}) || !(_domain[1] > value_type{0})
+        || !std::isfinite(_domain[0]) || !std::isfinite(_domain[1])) {
       throw std::runtime_error{
-          "weave_generator: domain Lx and Ly must both be positive"};
+          "weave_generator: domain Lx and Ly must both be positive and "
+          "finite"};
+    }
+    if (!(_domain[2] >= value_type{0}) || !std::isfinite(_domain[2])) {
+      throw std::runtime_error{
+          "weave_generator: domain Lz must be ≥ 0 and finite"};
     }
     // 2D domains (Lz == 0) physically can't carry undulation; the
     // yarns would land at z = ±amplitude, outside a zero-extent domain.
     // Reject rather than silently producing geometrically meaningless
     // shapes — voxelization of a 2D domain collapses to a single
     // z-slice that won't capture undulation anyway.
-    if (_domain[2] <= value_type{0} && amplitude != value_type{0}) {
+    if (_domain[2] <= value_type{0} && !(amplitude == value_type{0})) {
       throw std::runtime_error{
           "weave_generator: 2D domain (Lz == 0) requires amplitude = 0; "
           "for an undulating weave use a 3D domain with positive Lz"};
@@ -174,9 +180,11 @@ public:
           "periodic seam"};
     }
     // Segment multiplier q needed for polyline clearance (3D only;
-    // a flat 2D weave has no crimp to resolve).
+    // a flat 2D weave has no crimp to resolve, but still needs the
+    // in-plane spacing / box checks).
     std::size_t q_clearance = 1;
     if (_domain[2] > value_type{0}) q_clearance = validate_clearance();
+    else validate_in_plane();
     _n_seg_warp = segments_for(_n_weft, q_clearance);
     _n_seg_weft = segments_for(_n_warp, q_clearance);
   }
@@ -243,6 +251,7 @@ public:
       }
       auto tube = std::make_unique<polyline_tube<value_type>>(
           centerline, _yarn_radius);
+      tube->make_bounding_box();
       if (!_warp_phase.empty()) tube->set_phase_name(_warp_phase);
       out.push_back(std::move(tube));
     }
@@ -262,6 +271,7 @@ public:
       }
       auto tube = std::make_unique<polyline_tube<value_type>>(
           centerline, _yarn_radius);
+      tube->make_bounding_box();
       if (!_weft_phase.empty()) tube->set_phase_name(_weft_phase);
       out.push_back(std::move(tube));
     }
@@ -329,6 +339,24 @@ private:
           "margin min(amplitude, spacing/(π·√2)) − yarn_radius"};
     }
     return step * q;
+  }
+
+  // 2D (Lz == 0) checks: parallel yarns must not overlap and the
+  // outermost yarns must stay inside the box, i.e. 2·r ≤ the yarn
+  // spacing in both directions (edge yarns sit half a spacing from the
+  // faces). Warp/weft overlap at crossings is by design in 2D.
+  void validate_in_plane() const {
+    const value_type s = std::min(
+        _domain[0] / static_cast<value_type>(_n_weft),
+        _domain[1] / static_cast<value_type>(_n_warp));
+    const value_type tol = value_type{1}
+        + value_type{64} * std::numeric_limits<value_type>::epsilon();
+    if (!(value_type{2} * _yarn_radius <= s * tol)) {
+      throw std::runtime_error{
+          "weave_generator: yarn_radius must be ≤ spacing/2, with "
+          "spacing = min(Lx/n_weft_yarns, Ly/n_warp_yarns) — otherwise "
+          "parallel yarns overlap and the outer yarns leave the box"};
+    }
   }
 
   // Checks the 3D feasibility conditions and returns the segment
