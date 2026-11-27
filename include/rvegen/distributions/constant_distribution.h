@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+#include <optional>
 #include <random>
 
 #include <numsim-core/input_parameter_controller.h>
@@ -42,6 +44,11 @@ public:
   }
 
   [[nodiscard]] value_type operator()() noexcept override { return _value; }
+
+  [[nodiscard]] std::optional<value_type> positive_probability() const override {
+    return (_value > value_type{0} && std::isfinite(_value)) ? value_type{1}
+                                                             : value_type{0};
+  }
 
   void set_value(value_type value) noexcept { _value = value; }
   [[nodiscard]] value_type value() const noexcept { return _value; }

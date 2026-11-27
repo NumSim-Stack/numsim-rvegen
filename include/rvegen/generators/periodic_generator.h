@@ -82,8 +82,15 @@ public:
       // has its own periodic image overlapping itself.
       if (self_periodic_collides(*prim_bb, domain_box)) continue;
 
-      // Build the periodic equivalence class — primary + wraps.
+      // Build the periodic equivalence class — primary + wraps. Only a
+      // multi-piece class gets an inclusion id (shared by all members);
+      // a primary without wraps is an ordinary single shape.
       auto wraps = generate_periodic_wraps(*primary, domain_box);
+      if (!wraps.empty()) {
+        const auto id = next_inclusion_id();
+        primary->set_inclusion_id(id);
+        for (auto& w : wraps) w->set_inclusion_id(id);
+      }
 
       // Check every class member vs every accepted shape. The accepted
       // vector already contains all previously-inserted primaries AND

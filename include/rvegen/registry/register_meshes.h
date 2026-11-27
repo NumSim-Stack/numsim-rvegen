@@ -48,4 +48,16 @@ inline void register_all_meshes() {
   d.template register_shape<mesh_inclusion<T>>();
 }
 
+// Install every built-in conversion that is not registered yet, keeping
+// anything the host already registered (including overrides of built-ins).
+// Used by the writers' lazy auto-registration so one custom registration
+// does not suppress the built-ins.
+template <typename T = double>
+inline void register_missing_meshes() {
+  auto& d = mesh_dispatcher<T>::instance();
+  const auto before = d.snapshot();
+  register_all_meshes<T>();
+  d.restore_present(before);
+}
+
 } // namespace rvegen
