@@ -404,42 +404,55 @@ void test_vtk_legacy_writer_header_and_size() {
 }
 
 // ----------------------------------------------------------------------------
-// gmsh_geo_writer periodic mode: emits Periodic Curve / Surface directives
-// + Coherence; for FE-RVE workflows that need matching nodes on opposite
-// faces. Default mode (periodic=false) leaves the output untouched.
+// gmsh_geo_writer periodic mode: pairs boundary curves / faces by
+// bounding-box matching after BooleanFragments, for FE-RVE workflows that
+// need matching nodes on opposite faces. Default mode (periodic=false)
+// emits no Periodic constraints. The gmsh_geo_roundtrip_test meshes
+// these files with a real gmsh and checks the node matching.
 // ----------------------------------------------------------------------------
 void test_gmsh_geo_writer_periodic_2d() {
   rvegen::gmsh_geo_writer<double>::shape_vector shapes;
-  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.25, 0.1));
 
   rvegen::gmsh_geo_writer<double> writer{"", true};   // periodic = true
   std::stringstream out;
-  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  // largest extent 1: written unscaled, so the shifts are the box edges
+  writer.write(out, shapes, {1.0, 0.5, 0.0});
 
   const auto txt = out.str();
-  REQUIRE(txt.find("Periodic Curve { 3 } = { 1 }") != std::string::npos);
-  REQUIRE(txt.find("Periodic Curve { 2 } = { 4 }") != std::string::npos);
-  REQUIRE(txt.find("Coherence;")                   != std::string::npos);
+  REQUIRE(txt.find("OCCBoundsUseStl") == std::string::npos);  // 2D: not needed, 16x slower
+  REQUIRE(txt.find("no periodic partner") != std::string::npos);
+  REQUIRE(txt.find("Curve In BoundingBox") != std::string::npos);
+  REQUIRE(txt.find("Periodic Curve{_hi(_j)} = {_lo(_i)} Translate{1, 0, 0};") !=
+          std::string::npos);
+  REQUIRE(txt.find("Periodic Curve{_hi(_j)} = {_lo(_i)} Translate{0, 0.5, 0};") !=
+          std::string::npos);
+  REQUIRE(txt.find("Periodic Surface") == std::string::npos);  // 2D
+  REQUIRE(txt.find("Coherence") == std::string::npos);
 }
 
 void test_gmsh_geo_writer_periodic_3d() {
   rvegen::gmsh_geo_writer<double>::shape_vector shapes;
-  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.25, 0.125, 0.1));
 
   rvegen::gmsh_geo_writer<double> writer{"", true};
   std::stringstream out;
-  writer.write(out, shapes, {1.0, 1.0, 1.0});
+  writer.write(out, shapes, {1.0, 0.5, 0.25});
 
   const auto txt = out.str();
-  REQUIRE(txt.find("Periodic Surface { 2 } = { 1 }") != std::string::npos);
-  REQUIRE(txt.find("Periodic Surface { 4 } = { 3 }") != std::string::npos);
-  REQUIRE(txt.find("Periodic Surface { 6 } = { 5 }") != std::string::npos);
-  REQUIRE(txt.find("Coherence;")                     != std::string::npos);
+  REQUIRE(txt.find("Geometry.OCCBoundsUseStl = 1;") != std::string::npos);
+  REQUIRE(txt.find("Surface In BoundingBox") != std::string::npos);
+  REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{1, 0, 0};") !=
+          std::string::npos);
+  REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{0, 0.5, 0};") !=
+          std::string::npos);
+  REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{0, 0, 0.25};") !=
+          std::string::npos);
+  REQUIRE(txt.find("Coherence") == std::string::npos);
 }
 
 void test_gmsh_geo_writer_non_periodic_unchanged() {
-  // Default (periodic=false) must NOT emit the Periodic block — keeps
-  // existing configs producing byte-identical output.
+  // Default (periodic=false) must NOT emit any Periodic constraint.
   rvegen::gmsh_geo_writer<double>::shape_vector shapes;
   shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
 
@@ -449,7 +462,115 @@ void test_gmsh_geo_writer_non_periodic_unchanged() {
 
   const auto txt = out.str();
   REQUIRE(txt.find("Periodic")  == std::string::npos);
-  REQUIRE(txt.find("Coherence") == std::string::npos);
+  REQUIRE(txt.find("Geometry.OCCBoundsUseStl") == std::string::npos);
+}
+
+// #74: the .geo must target the OpenCASCADE kernel (Rectangle / Disk /
+// Box / Sphere only exist there) and fragment the domain against the
+// inclusions so the mesh is conforming.
+void test_gmsh_geo_writer_sets_occ_factory_and_fragments() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  const auto factory_pos  = txt.find("SetFactory(\"OpenCASCADE\");");
+  const auto domain_pos   = txt.find("Rectangle(1)");
+  const auto fragment_pos = txt.find("BooleanFragments{ Surface{_matrix(), _inc()}; Delete; }{}");
+  REQUIRE(factory_pos  != std::string::npos);
+  REQUIRE(domain_pos   != std::string::npos);
+  REQUIRE(fragment_pos != std::string::npos);
+  REQUIRE(factory_pos < domain_pos);
+  REQUIRE(domain_pos  < fragment_pos);
+  REQUIRE(txt.find("_inc() = {2};") != std::string::npos);
+  // Fully-inside inclusion: no clipping.
+  REQUIRE(txt.find("BooleanIntersection") == std::string::npos);
+}
+
+// #74: inclusions that leave the domain (periodic wraps, random-generator
+// overhang) are clipped to the domain and referenced through the clip
+// result afterwards.
+void test_gmsh_geo_writer_clips_inclusions_leaving_the_domain() {
+  rvegen::phase_collection<double> phases;
+  phases.add("fibre");
+
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  auto inside = std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1);
+  inside->set_phase_name("fibre");
+  inside->make_bounding_box();
+  shapes.emplace_back(std::move(inside));
+  auto crossing = std::make_unique<rvegen::circle<double>>(0.95, 0.5, 0.1);
+  crossing->set_phase_name("fibre");
+  crossing->make_bounding_box();
+  shapes.emplace_back(std::move(crossing));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  REQUIRE(txt.find("_r() = BooleanIntersection{ Surface{3}; Delete; }"
+                   "{ Surface{1}; };") != std::string::npos);
+  REQUIRE(txt.find("_inc_3() += _r(_k);") != std::string::npos);
+  REQUIRE(txt.find("_inc_2()") == std::string::npos);
+  REQUIRE(txt.find("_inc() = {2, _inc_3()};") != std::string::npos);
+  REQUIRE(txt.find("Physical Surface(\"fibre\", 1) = {2, _inc_3()};") !=
+          std::string::npos);
+}
+
+// #74: unsupported shapes used to be replaced by a comment, silently
+// producing an RVE with missing inclusions. They must throw, before
+// anything is written.
+void test_gmsh_geo_writer_unsupported_shape_throws() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.3, 0.3, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::polyline_tube<double>>(
+      std::vector<std::array<double, 3>>{{0.1, 0.1, 0.0}, {0.9, 0.9, 0.0}}, 0.05));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  bool threw = false;
+  std::string what;
+  try { writer.write(out, shapes, {1.0, 1.0, 0.0}); }
+  catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("shape #1") != std::string::npos);
+  REQUIRE(out.str().empty());
+
+  // A 2D shape in a 3D domain is equally unsupported.
+  rvegen::gmsh_geo_writer<double>::shape_vector mixed;
+  mixed.emplace_back(std::make_unique<rvegen::circle<double>>(0.3, 0.3, 0.1));
+  threw = false;
+  try { writer.write(out, mixed, {1.0, 1.0, 1.0}); }
+  catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+// #74: ellipses are emitted as an OCC Disk (rx >= ry, as gmsh requires)
+// plus a Rotate; coordinates use the shortest round-trip form.
+void test_gmsh_geo_writer_emits_rotated_ellipse_and_round_trip_numbers() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  // Minor axis first: the writer must swap and add 90°.
+  shapes.emplace_back(std::make_unique<rvegen::ellipse<double>>(
+      0.5, 0.5, 0.05, 0.1, 0.0));
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(
+      0.123456789012345, 0.25, 0.1));
+
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::stringstream out;
+  writer.write(out, shapes, {1.0, 1.0, 0.0});
+  const auto txt = out.str();
+
+  REQUIRE(txt.find("Disk(2) = {0.5, 0.5, 0, 0.1, 0.05};") != std::string::npos);
+  REQUIRE(txt.find("Rotate {{0, 0, 1}, {0.5, 0.5, 0}, 1.5707963267948966} "
+                   "{ Surface{2}; }") != std::string::npos);
+  // Default stream precision would have written 0.123457.
+  REQUIRE(txt.find("Disk(3) = {0.123456789012345, 0.25, 0, 0.1, 0.1};") !=
+          std::string::npos);
 }
 
 // gmsh_geo_writer with a phase_collection emits one Physical Surface /
@@ -479,8 +600,13 @@ void test_gmsh_geo_writer_2d_physical_groups_per_phase() {
   // entity 4 is the untagged circle).
   REQUIRE(txt.find("Physical Surface(\"fibre\", 2) = {2, 3};") !=
           std::string::npos);
-  // Untagged shape must NOT appear in any Physical group.
-  REQUIRE(txt.find("Physical Surface(\"matrix\"") == std::string::npos);
+  // Everything that is not a tagged inclusion (matrix region + the
+  // untagged circle) lands in the declared "matrix" phase — otherwise
+  // gmsh would drop the matrix elements from the .msh.
+  REQUIRE(txt.find("_matrix() = BooleanDifference{ Surface{1}; Delete; }"
+                   "{ Surface{_inc()}; };") != std::string::npos);
+  REQUIRE(txt.find("Physical Surface(\"matrix\", 1) = {_matrix(), 4};") !=
+          std::string::npos);
   REQUIRE(txt.find("Physical Volume") == std::string::npos);  // 2D, no volumes
 }
 
@@ -527,7 +653,8 @@ void test_gmsh_geo_writer_periodic_and_phases_combine() {
   // Both features wire into write_2d / write_3d independently; this
   // test pins the emission order so a future refactor that
   // accidentally swapped them would fail loudly. Order on the .geo
-  // is: header → entities → Periodic + Coherence → Physical groups.
+  // is: header → entities → BooleanFragments → Periodic → Physical groups
+  // (periodic constraints must reference the post-fragment entities).
   rvegen::phase_collection<double> phases;
   phases.add("matrix");
   phases.add("fibre");
@@ -551,17 +678,17 @@ void test_gmsh_geo_writer_periodic_and_phases_combine() {
   // change to the id-allocation scheme doesn't silently break this
   // order check.
   const auto entity_pos    = txt.find("Disk(");
+  const auto fragment_pos  = txt.find("BooleanFragments");
   const auto periodic_pos  = txt.find("Periodic Curve");
-  const auto coherence_pos = txt.find("Coherence;");
   const auto physical_pos  = txt.find("Physical Surface(\"fibre\"");
   REQUIRE(entity_pos    != std::string::npos);
+  REQUIRE(fragment_pos  != std::string::npos);
   REQUIRE(periodic_pos  != std::string::npos);
-  REQUIRE(coherence_pos != std::string::npos);
   REQUIRE(physical_pos  != std::string::npos);
-  // Strict order: entity < periodic < coherence < physical.
-  REQUIRE(entity_pos    < periodic_pos);
-  REQUIRE(periodic_pos  < coherence_pos);
-  REQUIRE(coherence_pos < physical_pos);
+  // Strict order: entity < fragments < periodic < physical.
+  REQUIRE(entity_pos    < fragment_pos);
+  REQUIRE(fragment_pos  < periodic_pos);
+  REQUIRE(periodic_pos  < physical_pos);
 }
 
 // 3D variant of the periodic + phases combination test. Catches the
@@ -586,17 +713,17 @@ void test_gmsh_geo_writer_periodic_and_phases_combine_3d() {
   const auto txt = out.str();
 
   const auto entity_pos    = txt.find("Sphere(");
+  const auto fragment_pos  = txt.find("BooleanFragments");
   const auto periodic_pos  = txt.find("Periodic Surface");
-  const auto coherence_pos = txt.find("Coherence;");
   const auto physical_pos  = txt.find("Physical Volume(\"particle\"");
   REQUIRE(entity_pos    != std::string::npos);
+  REQUIRE(fragment_pos  != std::string::npos);
   REQUIRE(periodic_pos  != std::string::npos);
-  REQUIRE(coherence_pos != std::string::npos);
   REQUIRE(physical_pos  != std::string::npos);
-  // Strict order: entity < periodic < coherence < physical.
-  REQUIRE(entity_pos    < periodic_pos);
-  REQUIRE(periodic_pos  < coherence_pos);
-  REQUIRE(coherence_pos < physical_pos);
+  // Strict order: entity < fragments < periodic < physical.
+  REQUIRE(entity_pos    < fragment_pos);
+  REQUIRE(fragment_pos  < periodic_pos);
+  REQUIRE(periodic_pos  < physical_pos);
 }
 
 void test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order() {
@@ -628,9 +755,11 @@ void test_gmsh_geo_writer_physical_groups_emitted_in_alpha_order() {
   REQUIRE(ceramic_pos != std::string::npos);
   REQUIRE(fibre_pos   != std::string::npos);
   REQUIRE(ceramic_pos < fibre_pos);
-  // Declared but untagged "matrix" phase must NOT appear — no shape
-  // carries it, so it shouldn't be in any Physical group.
-  REQUIRE(txt.find("Physical Surface(\"matrix\"") == std::string::npos);
+  // The declared "matrix" phase holds the matrix region (and sorts
+  // alphabetically with the others).
+  const auto matrix_pos = txt.find("Physical Surface(\"matrix\", 1) = {_matrix()};");
+  REQUIRE(matrix_pos != std::string::npos);
+  REQUIRE(fibre_pos < matrix_pos);
 }
 
 void test_gmsh_geo_writer_phases_unknown_name_throws() {
@@ -3752,6 +3881,10 @@ int main() {
   test_gmsh_geo_writer_periodic_2d();
   test_gmsh_geo_writer_periodic_3d();
   test_gmsh_geo_writer_non_periodic_unchanged();
+  test_gmsh_geo_writer_sets_occ_factory_and_fragments();
+  test_gmsh_geo_writer_clips_inclusions_leaving_the_domain();
+  test_gmsh_geo_writer_unsupported_shape_throws();
+  test_gmsh_geo_writer_emits_rotated_ellipse_and_round_trip_numbers();
   test_gmsh_geo_writer_2d_physical_groups_per_phase();
   test_gmsh_geo_writer_3d_physical_groups_per_phase();
   test_gmsh_geo_writer_without_phases_emits_no_physical_groups();

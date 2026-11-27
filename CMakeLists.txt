@@ -156,6 +156,13 @@ target_link_libraries(rvegen_full_registry_smoke PRIVATE
 )
 add_test(NAME full_registry_smoke COMMAND rvegen_full_registry_smoke)
 
+add_executable(rvegen_deterministic_generators_test tests/deterministic_generators_test.cpp)
+target_link_libraries(rvegen_deterministic_generators_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME deterministic_generators_test COMMAND rvegen_deterministic_generators_test)
+
 add_executable(rvegen_extra_types_smoke tests/extra_types_smoke.cpp)
 target_link_libraries(rvegen_extra_types_smoke PRIVATE
     rvegen_lib
@@ -190,12 +197,21 @@ add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
 add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
 
-add_executable(rvegen_deterministic_generators_test tests/deterministic_generators_test.cpp)
-target_link_libraries(rvegen_deterministic_generators_test PRIVATE
-    rvegen_lib
-    nlohmann_json::nlohmann_json
-)
-add_test(NAME deterministic_generators_test COMMAND rvegen_deterministic_generators_test)
+# gmsh round-trip (#74): meshes gmsh_geo_writer output with a real gmsh
+# and checks validity, conformity, clipping and periodic node matching.
+# Only registered when gmsh is on the PATH (or RVEGEN_GMSH_EXECUTABLE is
+# set explicitly).
+find_program(RVEGEN_GMSH_EXECUTABLE gmsh)
+if(RVEGEN_GMSH_EXECUTABLE)
+  add_executable(rvegen_gmsh_geo_roundtrip_test tests/gmsh_geo_roundtrip_test.cpp)
+  target_link_libraries(rvegen_gmsh_geo_roundtrip_test PRIVATE rvegen_lib)
+  target_compile_definitions(rvegen_gmsh_geo_roundtrip_test PRIVATE
+      RVEGEN_GMSH_EXECUTABLE="${RVEGEN_GMSH_EXECUTABLE}")
+  add_test(NAME gmsh_geo_roundtrip_test COMMAND rvegen_gmsh_geo_roundtrip_test
+           WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+else()
+  message(STATUS "gmsh not found — skipping gmsh_geo_roundtrip_test")
+endif()
 
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
@@ -316,28 +332,6 @@ set_tests_properties(cli_periodic_circles_example PROPERTIES
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
 
-# Combined run: gmsh_geo + voxel as two post-processes from one JSON.
-add_test(
-    NAME cli_circles_with_voxelize_example
-    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_with_voxelize.json
-)
-set_tests_properties(cli_circles_with_voxelize_example PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    PASS_REGULAR_EXPRESSION "post-process 'voxel' done"
-)
-
-# End-to-end FE-RVE workflow: periodic generator + every gmsh knob
-# (size, order, algorithm, recombine). Smoke-tests that the JSON-driven
-# path through the registry consumes the new gmsh-writer parameters.
-add_test(
-    NAME cli_fe_rve_workflow_example
-    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/fe_rve_workflow.json
-)
-set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
-)
-
 # Deterministic generators (#73/#84) and Bingham-oriented tubes through
 # the CLI. Each example's output must be written, not just reported.
 foreach(_ex IN ITEMS voronoi_2d voronoi_3d plain_weave tow_weave bingham_fibres)
@@ -368,6 +362,28 @@ rvegen_cli_msg_test(deterministic_ignored_keys deterministic_ignored_keys.json
     "\"shapes\" is ignored.*\"termination\" is ignored")
 rvegen_cli_msg_test(generator_unknown_key generator_unknown_key.json
     "unknown key 'n_seedz' for generator 'voronoi_2d' is ignored")
+
+# Combined run: gmsh_geo + voxel as two post-processes from one JSON.
+add_test(
+    NAME cli_circles_with_voxelize_example
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_with_voxelize.json
+)
+set_tests_properties(cli_circles_with_voxelize_example PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "post-process 'voxel' done"
+)
+
+# End-to-end FE-RVE workflow: periodic generator + every gmsh knob
+# (size, order, algorithm, recombine). Smoke-tests that the JSON-driven
+# path through the registry consumes the new gmsh-writer parameters.
+add_test(
+    NAME cli_fe_rve_workflow_example
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/fe_rve_workflow.json
+)
+set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
+)
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
