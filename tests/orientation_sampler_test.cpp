@@ -250,6 +250,43 @@ void test_bingham_prolate_high_kappa_is_fast_and_correct() {
   }
 }
 
+void test_bingham_oblate_is_fast_and_correct() {
+  // Oblate κ down to -1e10 used to cost ~1e5 candidates per draw; the
+  // truncated-normal path is O(1) (cap 64 would trip on the old sampler) and
+  // E[cos²θ] matches quadrature of exp(κu²) on [0, 1].
+  using arr = std::array<double, 3>;
+  for (double kappa : {-1.0, -1e3, -1e10}) {
+    std::mt19937 engine{21};
+    rvegen::bingham_distribution<double> d{arr{0, 0, 1}, kappa, engine};
+    d.set_max_iterations(64);
+    const int n = 20000;
+    double m2 = 0;
+    for (int i = 0; i < n; ++i) {
+      const auto v = d.sample();
+      REQUIRE(std::abs(v[0] * v[0] + v[1] * v[1] + v[2] * v[2] - 1.0) < 1e-9);
+      m2 += v[2] * v[2];
+    }
+    m2 /= n;
+    const double a = -kappa;
+    const double umax = std::min(1.0, 12.0 / std::sqrt(a));
+    double num = 0, den = 0;
+    const int q = 2000000;
+    for (int i = 0; i < q; ++i) {
+      const double u = (i + 0.5) / q * umax;
+      const double w = std::exp(-a * u * u);
+      num += w * u * u;
+      den += w;
+    }
+    const double expect = num / den;
+    const double tol = 6 * std::sqrt(expect / n);
+    if (std::abs(m2 - expect) > tol) {
+      std::cerr << "kappa=" << kappa << " m2=" << m2 << " expect=" << expect
+                << "\n";
+    }
+    REQUIRE(std::abs(m2 - expect) <= tol);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -262,6 +299,7 @@ int main() {
   test_bingham_iteration_cap_throws_quickly();
   test_bingham_kappa_range_and_default_cap();
   test_bingham_prolate_high_kappa_is_fast_and_correct();
+  test_bingham_oblate_is_fast_and_correct();
 
   if (failures > 0) {
     std::cerr << failures << " orientation sampler test failure(s)\n";

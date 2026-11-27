@@ -45,7 +45,8 @@
 //   κ ∈ [1e-6, 1e10]): p ≥ 1 / (1 + 2κ) prolate, p ≥ 1 / (3(1 + √|κ|))
 //   oblate. Measured with 200k samples: κ = 5 → 11.6 %, κ = 50 → 1.0 %,
 //   κ = 200 → 0.25 %; κ = −5 → 39.6 %, κ = −50 → 12.5 %, κ = −200 →
-//   6.3 %. Prolate sampling therefore costs ~2κ candidates per draw.
+//   6.3 %. These figures are for the plain uniform proposal; the κ > 0 and κ ≤ −1
+//   branches use the O(1) envelopes described below instead.
 //
 // Prolate fast path (κ > 0):
 //   Let t = 1 − |cos θ|. The target exp(−κ t (2 − t)) is bounded by the
@@ -53,14 +54,17 @@
 //   inversion; the sign of cos θ is a fair coin. Acceptance probability is
 //   exp(−κ t (1 − t)) with overall rate ≥ (1 + e^−κ)/2 ≥ 1/2, so a draw
 //   costs O(1) candidates for any κ (the aligned-A2, κ = 1e5 case used to
-//   cost ~11 ms). The oblate branch still uses the uniform envelope.
+//   cost ~11 ms).
+//
+// Oblate fast path (κ ≤ −1): cos θ is exactly a normal with variance
+//   1/(2|κ|) truncated to [−1, 1]; rejecting |x| > 1 has acceptance
+//   erf(√|κ|) ≥ 0.84, so draws are O(1) down to κ = −1e10. For −1 < κ < 0
+//   the uniform envelope (acceptance ≥ 0.37) is used.
 //
 // Supported κ range and iteration cap:
 //   * κ ∈ [−1e10, 1e5] (`min_kappa` / `max_kappa`); anything outside
 //     throws std::invalid_argument at construction. The upper bound is a
-//     validation limit only (the prolate sampler is O(1)); the oblate end
-//     still costs ~1e5–2e5 candidates (a few ms) per draw since it uses
-//     the uniform proposal (needs Wood / Kent-Ganeiber-Mardia ACG; #77).
+//     validation limit only; both ends are O(1) per draw (see the fast paths above).
 //   * Each sample() is capped at 40× the bound-implied expected trial
 //     count, so a spurious std::runtime_error has probability
 //     ≤ (1 − p)^cap ≤ e⁻⁴⁰ for every accepted κ. The cap only fires on a
@@ -101,10 +105,15 @@ public:
   using vector_type = gte::Vector<3, T>;
 
   bingham_distribution(vector_type mean_axis, T kappa, engine_type& engine)
-      : _kappa{kappa}, _engine{engine}, _uniform{T{0}, T{1}} {
+      : _kappa{kappa}, _engine{engine}, _uniform{T{0}, T{1}},
+        _normal{T{0}, T{1}} {
     if (!std::isfinite(_kappa)) {
       throw std::invalid_argument{
           "bingham_distribution: kappa must be finite"};
+    }
+    if (_kappa <= T{-1}) {
+      _normal = std::normal_distribution<T>{
+          T{0}, std::sqrt(T{1} / (T{2} * -_kappa))};
     }
     if (_kappa > max_kappa) {
       throw std::invalid_argument{
@@ -206,11 +215,19 @@ public:
         // target exp(-k t (2 - t)) / envelope exp(-k t)
         accept = std::exp(-_kappa * t * (T{1} - t));
       } else {
-        const T u1 = _uniform(_engine.get());
-        x = T{2} * u1 - T{1};   // candidate cos θ in [-1, 1]
-        accept = std::exp(_kappa * (x * x));
+        if (_kappa <= T{-1}) {
+          // Oblate, |κ| ≥ 1: x ~ N(0, 1/(2|κ|)) truncated to [-1, 1] is
+          // exactly the target; accept iff |x| ≤ 1 (rate erf(√|κ|) ≥ 0.84).
+          x = _normal(_engine.get());
+          accept = (std::abs(x) <= T{1}) ? T{1} : T{0};
+        } else {
+          // Weakly oblate: uniform envelope, acceptance ≥ ~0.37.
+          const T u1 = _uniform(_engine.get());
+          x = T{2} * u1 - T{1};   // candidate cos θ in [-1, 1]
+          accept = std::exp(_kappa * (x * x));
+        }
       }
-      const T u2 = _uniform(_engine.get());
+      const T u2 = (accept >= T{1}) ? T{0} : _uniform(_engine.get());
       if (u2 <= accept) break;
     }
     const T phi = T{2} * std::numbers::pi_v<T> * _uniform(_engine.get());
@@ -318,6 +335,7 @@ private:
   std::size_t _max_iterations{0};
   std::reference_wrapper<engine_type> _engine;
   std::uniform_real_distribution<T> _uniform;
+  std::normal_distribution<T> _normal;
 };
 
 } // namespace rvegen
