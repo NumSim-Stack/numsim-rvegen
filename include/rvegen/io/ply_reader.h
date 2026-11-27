@@ -86,6 +86,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -112,6 +113,10 @@ namespace detail {
 // matches the binary-STL cap; a single polygon with more than ~1M
 // corners is certainly malformed.
 inline constexpr std::uint64_t max_ply_element_count = 100'000'000;
+// Maximum number of `element` declarations in one header. Real files
+// have a handful; the cap keeps a hostile header from growing the
+// element table without bound.
+inline constexpr std::size_t max_ply_element_decls = 1024;
 inline constexpr std::uint64_t max_ply_list_count = 1u << 20;
 inline constexpr std::uint64_t max_ply_triangle_count =
     ply_read_limits{}.max_triangles;
@@ -208,6 +213,7 @@ read_ply_header(std::istream& in) {
   const ply_format format = parse_format_keyword(fmt);
 
   std::vector<ply_element> elems;
+  std::unordered_set<std::string> element_names;
   std::string line;
   bool saw_end_header = false;
   while (next_header_line(in, line)) {
@@ -225,11 +231,14 @@ read_ply_header(std::istream& in) {
       const auto count = checked_count(
           count_value, max_ply_element_count,
           "element '" + name + "' count");
-      for (auto const& e : elems) {
-        if (e.name == name) {
-          throw std::runtime_error{
-              "read_ply: element '" + name + "' declared twice"};
-        }
+      if (elems.size() >= max_ply_element_decls) {
+        throw std::runtime_error{
+            "read_ply: header declares more than " +
+            std::to_string(max_ply_element_decls) + " elements"};
+      }
+      if (!element_names.insert(name).second) {
+        throw std::runtime_error{
+            "read_ply: element '" + name + "' declared twice"};
       }
       elems.push_back({name, count, {}});
     } else if (lower.rfind("property", 0) == 0) {
