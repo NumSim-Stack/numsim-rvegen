@@ -51,7 +51,7 @@ jobs:
             full: false
             timeout: 30
             # Runs the full test suite. Needs numsim-core at or after
-            # 0e6a8bf (NumSim-Stack/numsim-core#30): before it,
+            # v1.3.0 (lazy ids, NumSim-Stack/numsim-core#30): before it,
             # static_indexing copied an unordered inline static that clang
             # initialised first, so shape types shared id 0. The
             # dispatchers refuse duplicate ids (shape_id_claims.h) and
@@ -68,13 +68,13 @@ jobs:
       # Bump deliberately - see CONTRIBUTING.md for the procedure.
       # The pin must be at or after ef6d2ac ("make the installed package
       # consumable"): rvegen consumes numsim-core through its installed
-      # CMake package (numsim-core::numsim-core), and at or after 0e6a8bf
+      # CMake package (numsim-core::numsim-core), and at or after v1.3.0
       # (lazy static_indexing ids) for the clang job.
       - name: Checkout numsim-core (pinned)
         uses: actions/checkout@v4
         with:
           repository: NumSim-Stack/numsim-core
-          ref: 0e6a8bf499110a562fdf7603cb5ae62474e1e05f
+          ref: 61bcb7663ddd8ae9fc3fd239a716a4cacb366e6f  # v1.3.0
           path: numsim-core
 
       # GCC 14 for `<print>` (numsim-core needs C++23 lib support); the
