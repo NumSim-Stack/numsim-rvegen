@@ -18,7 +18,7 @@ namespace rvegen {
 // Normal distribution N(mean, stddev^2).
 //
 // Validation: `mean` and `stddev` must be finite and `stddev > 0`;
-// otherwise the ctor throws std::runtime_error.
+// otherwise the ctor throws std::invalid_argument.
 // std::normal_distribution has undefined behaviour for stddev <= 0.
 template <typename T = double, typename Engine = std::mt19937>
 class normal_distribution final : public distribution_base<T> {
@@ -59,7 +59,7 @@ private:
                                                 value_type stddev) {
     if (!std::isfinite(mean) || !std::isfinite(stddev) ||
         !(stddev > value_type{0})) {
-      throw std::runtime_error{
+      throw std::invalid_argument{
           "normal_distribution: invalid parameters mean=" +
           std::to_string(mean) + ", stddev=" + std::to_string(stddev) +
           " (need finite mean and finite stddev > 0)"};
