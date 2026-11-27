@@ -23,6 +23,14 @@ Inkscape (or ImageMagick), Chrome and gmsh are optional: outputs that
 need a missing tool are reported as skipped. The three.js pages load
 three.js from unpkg, so screenshots of them need network access.
 
+`--check` renders nothing: it compares the entries the script would
+generate (names, PNG files, captions) with docs/gallery/README.md and the
+PNGs on disk and exits non-zero on drift (the `gallery_index_check` test).
+
+A renderer that exits 0 is still checked: a gmsh log with an `Error` line,
+a mesh without matrix elements and a blank three.js screenshot (which is
+what a page without network access produces) fail the entry.
+
 Exit status is non-zero when rvegen fails on a config, when a config's
 post-process does not write its output, or when a renderer that is
 available fails on an output (a missing tool is a skip, not a failure).
@@ -31,7 +39,9 @@ A config may carry a top-level "_comment" string; it becomes the
 caption. The rvegen CLI resolves relative paths against its working
 directory; the gallery runs each config as if from the config's own
 directory (`cd examples && rvegen x.json`), so relative "*_path" inputs
-(e.g. "mesh_path") are resolved against the config's directory.
+(e.g. "mesh_path") are resolved against the config's directory. Run by
+hand, the CLI needs the same: examples/mesh_inclusions_3d.json reads
+"data/octahedron.stl" and only works from inside examples/.
 "output_path" values are reduced to their basename so every output
 lands in the scratch directory. Configs whose file names share a stem
 (e.g. a/x.json and b/x.json) get distinct output names.
@@ -129,6 +139,17 @@ def find_browser(explicit: str | None) -> str | None:
     return None
 
 
+def gmsh_version(gmsh: str | None) -> str | None:
+    if not gmsh:
+        return None
+    try:
+        out = subprocess.run([gmsh, "--version"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"\d+\.\d+\.\d+", out.stdout + out.stderr)
+    return m.group(0) if m else None
+
+
 def find_svg_converter() -> tuple[str | None, list[str] | None]:
     if shutil.which("inkscape"):
         return "inkscape", ["inkscape", "--export-type=png"]
@@ -203,6 +224,31 @@ def assign_slugs(configs: list[Path]) -> list[tuple[Path, str]]:
     return out
 
 
+def unique_png(stem: str, kind: str, used: set[str]) -> str:
+    """PNG name for post-process `kind` of config `stem`; records it in `used`."""
+    name = f"{stem}-{kind}.png"
+    n = 2
+    while name in used:
+        name = f"{stem}-{kind}-{n}.png"
+        n += 1
+    used.add(name)
+    return name
+
+
+def planned_pngs(cfg: dict, slug: str) -> list[str]:
+    """The PNG names a successful run of `cfg` writes, without rendering."""
+    used: set[str] = set()
+    names = []
+    for pp in cfg.get("postprocess", []):
+        output = pp.get("output_path")
+        if not output:
+            continue
+        kind = pp.get("type", Path(output).suffix.lstrip("."))
+        if Path(output).suffix.lower() in (".svg", ".html", ".vox", ".vtk", ".geo", ".csv"):
+            names.append(unique_png(slug, kind, used))
+    return names
+
+
 def process(cfg_path: Path, slug: str, out_dir: Path, work_root: Path, tools: Tools) -> Result:
     cfg = json.loads(cfg_path.read_text())
     res = Result(cfg_path, cfg, slug=slug)
@@ -236,12 +282,7 @@ def process(cfg_path: Path, slug: str, out_dir: Path, work_root: Path, tools: To
         if not src.is_file():
             res.failed.append(f"{output}: not written by rvegen")
             continue
-        name = f"{stem}-{kind}.png"
-        n = 2
-        while name in used:
-            name = f"{stem}-{kind}-{n}.png"
-            n += 1
-        used.add(name)
+        name = unique_png(stem, kind, used)
         dst = out_dir / name
         try:
             label = render(src, dst, kind, is_3d, work, tools)
@@ -330,7 +371,34 @@ def render_html(src: Path, dst: Path, tools: Tools) -> str:
         run_tool(cmd, tools.timeout)
     if not dst.is_file():
         raise RuntimeError("browser produced no screenshot")
+    # Offline, the page still renders: an empty viewer with its info box.
+    if blank := png_blank_reason(dst):
+        dst.unlink()
+        raise RuntimeError(f"browser screenshot is blank ({blank}); is unpkg.com reachable?")
     return "three.js viewer (screenshot)"
+
+
+# A real three.js render has thousands of colours (shading) and the
+# background covers well under 95 % of it; the empty viewer with only its
+# info box has a few hundred colours and about 97 % background.
+BLANK_MIN_COLOURS = 2000
+BLANK_MAX_DOMINANT = 0.95
+
+
+def png_blank_reason(path: Path) -> str | None:
+    """Describe why an image is (nearly) one colour, or None if it is not."""
+    from PIL import Image  # matplotlib already depends on Pillow
+
+    with Image.open(path) as im:
+        rgb = im.convert("RGB")
+        colours = rgb.getcolors(rgb.size[0] * rgb.size[1]) or []
+    total = sum(n for n, _ in colours)
+    top = max((n for n, _ in colours), default=0)
+    if len(colours) < BLANK_MIN_COLOURS:
+        return f"{len(colours)} distinct colours"
+    if total and top / total > BLANK_MAX_DOMINANT:
+        return f"{100 * top / total:.1f} % one colour"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -454,15 +522,44 @@ def render_geo(src: Path, dst: Path, is_3d: bool, work: Path, tools: Tools) -> s
     proc = subprocess.run([tools.gmsh, "-3" if is_3d else "-2", "-format", "msh22",
                            "-o", str(msh), str(src)],
                           capture_output=True, text=True, timeout=tools.timeout, cwd=work)
-    if proc.returncode != 0 or not msh.is_file():
-        errors = [ln for ln in (proc.stdout + proc.stderr).splitlines() if "Error" in ln]
+    # The pip `gmsh` launcher exits 0 after script errors, so the log is
+    # checked as well as the exit status.
+    errors = gmsh_log_errors(proc.stdout + proc.stderr)
+    if proc.returncode != 0 or not msh.is_file() or errors:
         raise RuntimeError("gmsh failed: " + ("; ".join(errors[:3]) or f"exit {proc.returncode}"))
     nodes, elements, names = read_msh(msh)
+    if problem := mesh_problem(elements, names, is_3d):
+        raise RuntimeError("gmsh mesh is incomplete: " + problem)
     if is_3d:
         plot_mesh_3d(nodes, elements, names, dst)
     else:
         plot_mesh_2d(nodes, elements, names, dst)
     return "gmsh mesh of the .geo"
+
+
+def gmsh_log_errors(log: str) -> list[str]:
+    """Lines of a gmsh log that report an error ("Error   : ...")."""
+    return [ln.strip() for ln in log.splitlines() if re.match(r"\s*Error\b", ln)]
+
+
+def mesh_problem(elements, names, is_3d: bool) -> str | None:
+    """Why a parsed mesh cannot be a complete RVE, or None if it looks fine.
+
+    Needs elements of the domain's dimension, no named physical group
+    without elements, and (when groups are named) one called "matrix".
+    """
+    dim = 3 if is_3d else 2
+    mine = [e for e in elements if e[0] == dim]
+    if not mine:
+        return f"no {dim}D elements"
+    used = {e[1] for e in mine}
+    groups = {tag: name for (d, tag), name in names.items() if d == dim}
+    empty = sorted(name for tag, name in groups.items() if tag not in used)
+    if empty:
+        return "physical group(s) without elements: " + ", ".join(empty)
+    if groups and not any(n.lower() == "matrix" for n in groups.values()):
+        return "no matrix physical group"
+    return None
 
 
 def read_msh(path: Path):
@@ -650,7 +747,7 @@ def describe(cfg: dict, shapes: int | None) -> str:
     return " · ".join(parts)
 
 
-def write_index(results: list[Result], out_dir: Path) -> None:
+def write_index(results: list[Result], out_dir: Path, gmsh_version: str | None = None) -> None:
     lines = [
         "# rvegen example gallery",
         "",
@@ -659,7 +756,14 @@ def write_index(results: list[Result], out_dir: Path) -> None:
         "Every picture below is rendered from a config in `examples/`. Regenerate with",
         "`scripts/make_gallery.py` or `cmake --build build --target gallery`.",
         "",
+        "The gallery script resolves each config's relative input paths (`mesh_path`) against",
+        "the config's directory. Run by hand, `examples/mesh_inclusions_3d.json` needs the",
+        "working directory `examples/` (`cd examples && rvegen mesh_inclusions_3d.json`).",
+        "",
     ]
+    if gmsh_version:
+        lines += [f"The `gmsh_geo` pictures were meshed with gmsh {gmsh_version}; other gmsh",
+                  "versions mesh differently, so the element counts in their titles change.", ""]
     for res in sorted(results, key=lambda r: r.slug):
         rel = os.path.relpath(res.config, out_dir)
         lines.append(f"## {res.slug}")
@@ -684,6 +788,71 @@ def write_index(results: list[Result], out_dir: Path) -> None:
         if res.skipped or res.failed:
             lines.append("")
     (out_dir / "README.md").write_text("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+def check_index(configs: list[Path], out_dir: Path) -> list[str]:
+    """Compare the entries this script generates with the committed index.
+
+    No rendering: the entry list (slugs, PNG names, captions, config
+    summary lines) comes from the configs, the other side is
+    `<out_dir>/README.md` and the PNGs in `out_dir`. Returns the problems.
+    """
+    problems: list[str] = []
+    readme = out_dir / "README.md"
+    if not readme.is_file():
+        return [f"{readme} does not exist"]
+    sections: dict[str, list[str]] = {}
+    current = None
+    for line in readme.read_text().splitlines():
+        if line.startswith("## "):
+            current = line[3:].strip()
+            if current in sections:
+                problems.append(f"README lists '{current}' twice")
+            sections[current] = []
+        elif current is not None:
+            sections[current].append(line)
+
+    entries = {slug: c for c, slug in assign_slugs(configs)}
+    for slug in sorted(set(entries) - set(sections)):
+        problems.append(f"{slug}: generated from {entries[slug].name} but missing in README")
+    for slug in sorted(set(sections) - set(entries)):
+        problems.append(f"{slug}: in README but no config generates it")
+
+    expected_files: set[str] = set()
+    for slug in sorted(set(entries) & set(sections)):
+        path = entries[slug]
+        cfg = json.loads(path.read_text())
+        body = sections[slug]
+        pngs = planned_pngs(cfg, slug)
+        expected_files.update(pngs)
+        listed = [m.group(1) for ln in body if (m := re.match(r'<img src="([^"]+)"', ln))]
+        if not any(ln.startswith("**Not rendered:**") for ln in body):
+            # A missing tool is recorded in the index as "_skipped_", so the
+            # image list may legitimately be shorter, never longer.
+            extra = sorted(set(listed) - set(pngs))
+            if extra:
+                problems.append(f"{slug}: README shows {', '.join(extra)}, not generated by the config")
+            skipped = [ln for ln in body if ln.startswith("- _skipped_")]
+            if not skipped:
+                missing = sorted(set(pngs) - set(listed))
+                if missing:
+                    problems.append(f"{slug}: README does not show {', '.join(missing)}")
+        for name in listed:
+            if not (out_dir / name).is_file():
+                problems.append(f"{slug}: README shows {name}, which is not on disk")
+        caption = [ln[2:] for ln in body if ln.startswith("> ")]
+        want = [cfg["_comment"]] if cfg.get("_comment") else []
+        if caption != want:
+            problems.append(f"{slug}: caption differs from the _comment of {path.name}")
+        info = next((ln for ln in body if ln.startswith("[`")), "")
+        head = f"[`{path.name}`]({os.path.relpath(path, out_dir)}) · {describe(cfg, None)}"
+        if not (info == head or info.startswith(head + " · ")):
+            problems.append(f"{slug}: config summary line differs from the config ({path.name})")
+    for f in sorted(out_dir.glob("*.png")):
+        if f.name not in expected_files:
+            problems.append(f"{f.name}: on disk but no config generates it")
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -713,11 +882,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--work", help="keep intermediate files in this directory")
     ap.add_argument("--browser-no-sandbox", action="store_true",
                     help="pass --no-sandbox to Chrome (implied when running as root)")
+    ap.add_argument("--check", action="store_true",
+                    help="render nothing; fail if the README index or the PNGs in --out "
+                         "differ from what the configs would generate")
     idx = ap.add_mutually_exclusive_group()
     idx.add_argument("--index", action="store_true",
                      help="write README.md even for an explicit list of configs")
     idx.add_argument("--no-index", action="store_true", help="do not write README.md")
     args = ap.parse_args(argv)
+    if args.check:
+        out_dir = Path(args.out).resolve()
+        problems = check_index(collect_configs(args.configs), out_dir)
+        for p in problems:
+            print(f"make_gallery --check: {p}", file=sys.stderr)
+        if problems:
+            print(f"make_gallery: {out_dir / 'README.md'} is out of date; "
+                  "run scripts/make_gallery.py", file=sys.stderr)
+            return 1
+        print(f"gallery index up to date: {out_dir / 'README.md'}")
+        return 0
     # A subset run would replace the full index with a partial one.
     write_idx = args.index or (not args.no_index and not args.configs)
 
@@ -767,7 +950,7 @@ def main(argv: list[str] | None = None) -> int:
             tmp.cleanup()
 
     if write_idx:
-        write_index(results, out_dir)
+        write_index(results, out_dir, gmsh_version(tools.gmsh))
         print(f"index: {out_dir / 'README.md'}")
     bad = [r for r in results if not r.ok or r.failed]
     if bad:
