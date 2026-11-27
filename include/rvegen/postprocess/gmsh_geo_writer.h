@@ -102,6 +102,15 @@ namespace rvegen {
 // gmsh). Physical groups: "grain_<i>" (tag i+1, i = index in the shape
 // list) per cell and "boundary" (tag N+1) for the outer faces / curves.
 // Mixing cells with other shapes, or combining with periodic, is rejected.
+// Coordinates are written box-relative with Mesh.ScalingFactor = L like
+// the inclusion path (see step 0), so the merge tolerance and gmsh's own
+// tolerances do not depend on the absolute size. Unsupported: seeds on a
+// lattice jittered by more than 0 but less than about 1e-5 of the cell
+// size, and almost coincident seeds. Their Voronoi vertices are not
+// resolved by the generator (before the robust generator: up to ~1e-7 of
+// the cell size, afterwards: below ~1e-9), the cells come out open after
+// merging, and write() throws "not a closed polyhedron" / "seeds ..."
+// instead of emitting a geometry gmsh may crash on.
 //
 // Supported shapes: circle, rectangle, ellipse, convex_polygon (2D);
 // sphere, box (3D). Any other shape makes write() throw before anything
@@ -520,26 +529,8 @@ private:
 
   // Drop repeated consecutive vertex ids of one face ring.
   static std::vector<std::size_t> clean_ring(std::vector<std::size_t> r) {
-    // Repeat until stable: removing a repeated vertex can expose a spike
-    // (…, a, b, a, …) — a zero-width sliver whose two edges cancel — and
-    // removing the spike can create the next repeat.
-    for (bool changed = true; changed;) {
-      changed = false;
-      const auto n0 = r.size();
-      r.erase(std::unique(r.begin(), r.end()), r.end());
-      while (r.size() > 1 && r.front() == r.back()) r.pop_back();
-      for (std::size_t k = 0; r.size() >= 3 && k < r.size(); ++k) {
-        const auto prev = r[(k + r.size() - 1) % r.size()];
-        const auto next = r[(k + 1) % r.size()];
-        if (prev == next) {  // r[k] is the tip of a spike: drop tip and one base
-          r.erase(r.begin() + static_cast<std::ptrdiff_t>(k));
-          if (k < r.size()) r.erase(r.begin() + static_cast<std::ptrdiff_t>(k));
-          else r.erase(r.begin());
-          k = static_cast<std::size_t>(-1);  // restart scan
-        }
-      }
-      changed = r.size() != n0;
-    }
+    r.erase(std::unique(r.begin(), r.end()), r.end());
+    while (r.size() > 1 && r.front() == r.back()) r.pop_back();
     return r;
   }
 
@@ -652,9 +643,10 @@ private:
               " is not a closed polyhedron after merging features below " +
               raw_num(topo.tol) + " (an edge is not shared by exactly two of "
               "its faces): the seeds form a nearly degenerate configuration "
-              "(e.g. a lattice jittered by less than ~1e-5 of the domain "
-              "size, or almost coincident seeds). Separate the seeds "
-              "further or snap them exactly onto the lattice"};
+              "(a lattice jittered by more than 0 but less than ~1e-5 of "
+              "the cell size, or almost coincident seeds), which the "
+              "Voronoi generator cannot resolve reliably. Separate the "
+              "seeds further or snap them exactly onto the lattice"};
         }
       }
     }
