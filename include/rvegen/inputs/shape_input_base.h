@@ -103,12 +103,13 @@ protected:
   // Two recognised fields:
   //   * `phase_name` (string) — convenience shortcut, stamped onto
   //     shape's info.phase_name.
-  //   * `metadata` (JSON-encoded string) — arbitrary key/value pairs
-  //     parsed via nlohmann::json and merged into the shape's info.
-  //     The string-encoding is a stop-gap until the parameter visitor
-  //     gains nested-object passthrough; until then, callers escape
-  //     their JSON as a string in the config:
+  //   * `metadata` (JSON object, or a JSON-encoded string) — arbitrary
+  //     key/value pairs merged into the shape's info. The parameter
+  //     visitor serialises an object value to its string form, so both
+  //       "metadata": {"orientation_deg": 42.5, "source": "a.stl"}
   //       "metadata": "{\"orientation_deg\": 42.5, \"source\": \"a.stl\"}"
+  //     give the same info blob. Any other JSON type throws, naming the
+  //     key.
   //
   // Order: `phase_name` is read first, then `metadata` is merged on
   // top — so a `phase_name` key inside the metadata object overrides
@@ -120,13 +121,41 @@ protected:
   // by the explicit `phase_name` field. Useful for opt-out cases;
   // surprising if the caller expects "set to null" semantics — pass
   // an empty string instead if that's what you want.
+  //
+  // An empty or whitespace-only `metadata` string is treated as absent
+  // (a form left blank means "no metadata"). Any other value must parse
+  // as a JSON object; malformed JSON or a non-object (which merge_patch
+  // would otherwise use to replace the whole info blob) throws
+  // std::runtime_error naming the `metadata` key.
   void read_metadata(parameter_handler_t const& handler) {
     if (handler.contains("phase_name")) {
       _info.set_phase_name(handler.template get<std::string>("phase_name"));
     }
     if (handler.contains("metadata")) {
       auto const& blob = handler.template get<std::string>("metadata");
-      _info.json().merge_patch(nlohmann::json::parse(blob));
+      if (blob.find_first_not_of(" \t\n\r\f\v") == std::string::npos) return;
+      nlohmann::json patch;
+      try {
+        patch = nlohmann::json::parse(blob);
+      } catch (nlohmann::json::parse_error const& e) {
+        throw std::runtime_error{
+            std::string{"shape input: 'metadata' is not valid JSON: "} +
+            e.what()};
+      }
+      if (!patch.is_object()) {
+        throw std::runtime_error{
+            "shape input: 'metadata' must be a JSON object, got " +
+            patch.dump()};
+      }
+      _info.json().merge_patch(patch);
+      // phase_name() reads this as a string later (in the writers), so a
+      // wrong type must fail here, not after the whole generation ran.
+      if (auto const it = _info.json().find("phase_name");
+          it != _info.json().end() && !it->is_string()) {
+        throw std::runtime_error{
+            "shape input: 'metadata' key 'phase_name' must be a string, got " +
+            it->dump()};
+      }
     }
   }
 
