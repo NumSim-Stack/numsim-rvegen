@@ -171,6 +171,17 @@ void test_gmsh_geo_writer_defaults() {
   }));
 }
 
+// Default narrowing guard (compile-time): lossy conversions are flagged,
+// exact ones are not.
+static_assert(rvegen::detail::default_is_lossless<std::size_t>(3));
+static_assert(rvegen::detail::default_is_lossless<double>(0.5));
+static_assert(rvegen::detail::default_is_lossless<double>(1));
+static_assert(rvegen::detail::default_is_lossless<bool>(false));
+static_assert(!rvegen::detail::default_is_lossless<std::size_t>(-1));
+static_assert(!rvegen::detail::default_is_lossless<int>(1.5));
+static_assert(!rvegen::detail::default_is_lossless<float>(0.1));
+static_assert(!rvegen::detail::default_is_lossless<int>(3000000000LL));
+
 } // namespace
 
 int main() {

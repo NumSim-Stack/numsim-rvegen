@@ -76,6 +76,23 @@
 
 namespace rvegen {
 
+namespace detail {
+
+// True if converting `d` to T and back reproduces `d` exactly and keeps
+// its sign, i.e. a `field_with_default` default is not silently narrowed
+// (e.g. -1 into size_t, 0.1 into float, 1.5 into int).
+template <typename T, typename D>
+[[nodiscard]] constexpr bool default_is_lossless(D d) {
+  if constexpr (std::is_arithmetic_v<T> && std::is_arithmetic_v<D>) {
+    const T v = static_cast<T>(d);
+    return static_cast<D>(v) == d && ((v < T{}) == (d < D{}));
+  } else {
+    return true;
+  }
+}
+
+} // namespace detail
+
 // One field declaration. `Name` is a compile-time string (NTTP via
 // numsim_core::fixed_string), `T` is the value type, `Required`
 // determines whether the field is added with `is_required` in the
@@ -129,6 +146,9 @@ struct field_with_default {
     } else {
       static_assert(std::is_convertible_v<decltype(Default), T>,
                     "field_with_default: Default must convert to T");
+      static_assert(detail::default_is_lossless<T>(Default),
+                    "field_with_default: Default does not survive conversion "
+                    "to T unchanged (narrowing, sign change or truncation)");
       return static_cast<T>(Default);
     }
   }
