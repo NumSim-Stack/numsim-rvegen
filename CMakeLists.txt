@@ -465,6 +465,14 @@ if(Python3_Interpreter_FOUND)
               --rvegen $<TARGET_FILE:rvegen>
               --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples)
     set_tests_properties(gallery_script_check PROPERTIES TIMEOUT 900 LABELS "cli")
+    # The committed docs/gallery index and PNGs must list exactly what the
+    # script generates from examples/ (renders nothing).
+    add_test(NAME gallery_index_check
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py --check
+              --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery
+              ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    set_tests_properties(gallery_index_check PROPERTIES LABELS "cli")
   else()
     message(STATUS "numpy/matplotlib not found - skipping gallery_smoke and gallery_script_check")
   endif()

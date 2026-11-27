@@ -39,9 +39,23 @@ namespace rvegen {
 //   1. `SetFactory("OpenCASCADE");` + optional Mesh.* directives.
 //   2. `Rectangle(1)` for the domain, then one entity per inclusion with
 //      explicit tags 2, 3, ... (Disk / Rectangle / Plane Surface).
+//   0. Scale: when the largest box extent L is not 1, every coordinate,
+//      radius and mesh size is written divided by L (OpenCASCADE's
+//      absolute tolerances make RVEs of 1e-5 or 1e5 units lose or fail
+//      their boolean clips) and `Mesh.ScalingFactor = L` makes gmsh save
+//      the mesh in the original units. Unit boxes are written unchanged.
 //   3. Inclusions whose bounding box leaves the domain (periodic wrap
 //      copies, random-generator overhang) are clipped to the domain with
 //      `BooleanIntersection`; the result is captured in `_inc_<id>()`.
+//      The result list is filtered: gmsh 4.14.0 answers an empty
+//      intersection with the tool's tag (the domain), which is dropped.
+//      Circles / spheres that provably miss the domain (centre-to-box
+//      distance >= r, typical for periodic wrap images) are not emitted.
+//      A shape that clearly overlaps the domain but clips to nothing
+//      makes the script call gmsh `Error(...)`. With periodic=true a
+//      circle / sphere within 1e-5 L of touching a periodic plane is
+//      written 1e-5 L short of it (a one-sided point contact cannot be
+//      paired across the periodic faces).
 //   3b. First shape wins (like voxel_grid): an inclusion whose bounding
 //      box overlaps an earlier one becomes `BooleanDifference` of itself
 //      minus those earlier inclusions, so the final pieces are disjoint
@@ -81,7 +95,7 @@ namespace rvegen {
 // is emitted — dropping an inclusion silently would produce a wrong RVE.
 //
 // Gmsh version requirement: ≥ 4.0 (OpenCASCADE kernel, string-named
-// Physical groups). Tested against 4.12.
+// Physical groups). Tested against 4.12 and 4.14.
 template <typename T = double>
 class gmsh_geo_writer final : public post_process_base<T> {
 public:
@@ -294,6 +308,7 @@ public:
 
     // Emit into a local buffer (num() rejects NaN/inf by throwing), so
     // `out` only ever receives a complete script.
+    set_length_scale(box);
     std::ostringstream buf;
     write_header(buf);
     const auto inclusions = is_3d ? write_entities_3d(buf, shapes, box)
@@ -306,6 +321,18 @@ public:
   }
 
 private:
+  // OpenCASCADE booleans work with absolute tolerances (~1e-7), so an RVE
+  // that is tiny or huge in absolute units loses or fails its clips. The
+  // script therefore describes the geometry in box-relative units: every
+  // coordinate, radius and mesh size is divided by the largest box extent
+  // L, and `Mesh.ScalingFactor = L` makes gmsh save the mesh in the
+  // original units. Boxes with L == 1 are written unchanged.
+  // Set at the start of every write() (the writer is not thread-safe for
+  // concurrent write() calls on one object).
+  void set_length_scale(std::array<value_type, 3> const& box) const {
+    _length_scale = std::max({box[0], box[1], box[2]});
+  }
+
   // Shortest decimal form that round-trips to the same value
   // (std::to_chars without a precision) — `0.05` stays `0.05`, while
   // values that need 17 digits get them. Independent of the stream's
@@ -317,11 +344,19 @@ private:
     }
   }
 
-  static std::string num(value_type v) {
+  static std::string raw_num(value_type v) {
     require_finite(v, "coordinate or size");
     std::array<char, 64> buf{};
     auto const res = std::to_chars(buf.data(), buf.data() + buf.size(), v);
     return std::string(buf.data(), res.ptr);
+  }
+
+  // A length (coordinate, radius, mesh size) in the units of the script:
+  // divided by the characteristic length of the current write() call, which
+  // is 1 for unit-sized boxes (output unchanged).
+  std::string num(value_type v) const {
+    require_finite(v, "coordinate or size");
+    return raw_num(_length_scale == value_type{1} ? v : v / _length_scale);
   }
 
   // One emitted inclusion: `ref` is the .geo expression for its final
@@ -389,9 +424,110 @@ private:
     return e;
   }
 
+  // Distance from `p` to the domain box (0 when inside), over `dim` axes.
+  static value_type distance_to_box(std::array<value_type, 3> const& p,
+                                    std::array<value_type, 3> const& box,
+                                    std::size_t dim) {
+    value_type d2{0};
+    for (std::size_t k = 0; k < dim; ++k) {
+      const value_type d = std::max({value_type{0}, -p[k], p[k] - box[k]});
+      d2 += d * d;
+    }
+    return std::sqrt(d2);
+  }
+
+  // Radius written for a circle / sphere. In a periodic RVE a circle that
+  // touches a periodic plane (|r - distance of the centre to the nearest
+  // lattice plane| below 1e-5 L, from either side) leaves a one-sided
+  // point contact: the plane carries a split vertex on the low face but
+  // not on the high face, and gmsh cannot pair the two faces. Such a
+  // circle is written 1e-5 L short of the plane instead. The decision only
+  // depends on the centre modulo the box, so a shape and its periodic
+  // images are treated identically. Everything else keeps its radius.
+  value_type emitted_radius(std::array<value_type, 3> const& centre,
+                            value_type r,
+                            std::array<value_type, 3> const& box) const {
+    if (!_periodic) return r;
+    const value_type gap = value_type{1e-5} * _length_scale;
+    if (!(r > value_type{10} * gap)) return r;
+    value_type out = r;
+    for (std::size_t k = 0; k < dim_of(box); ++k) {
+      const value_type t = centre[k] / box[k];
+      const value_type d = std::abs((t - std::round(t)) * box[k]);
+      if (std::abs(r - d) < gap) out = std::min(out, d - gap);
+    }
+    return out;
+  }
+
+  static std::size_t dim_of(std::array<value_type, 3> const& box) {
+    return box[2] > value_type{0} ? 3 : 2;
+  }
+
+  // True when the shape provably has no volume inside the domain: it is
+  // not emitted at all (exact and cheap, and it keeps OCC away from
+  // zero-measure contacts). Circle / sphere: centre-to-box distance >= r;
+  // every shape: the extent box lies outside / only touches the domain.
+  static bool misses_domain(shape_base<value_type> const& s,
+                            std::array<value_type, 3> const& box) {
+    const std::size_t dim = dim_of(box);
+    if (auto const* c = dynamic_cast<circle<value_type> const*>(&s)) {
+      if (distance_to_box(c->get_middle_point(), box, dim) >= c->radius) return true;
+    } else if (auto const* sp = dynamic_cast<sphere<value_type> const*>(&s)) {
+      if (distance_to_box(sp->get_middle_point(), box, dim) >= sp->radius) return true;
+    }
+    const auto e = extent_of(s);
+    for (std::size_t k = 0; k < dim; ++k) {
+      if (e.top[k] <= value_type{0} || e.bottom[k] >= box[k]) return true;
+    }
+    return false;
+  }
+
+  // True when the shape clearly overlaps the domain (by more than a small
+  // fraction of the box), so an empty clip result cannot be "vanished" but
+  // is a failed boolean. Conservative: only cases that are exact for the
+  // shape — centre well inside the domain (every supported shape contains
+  // its centre), circle / sphere penetration depth, rectangle / box extent
+  // overlap. Anything else is not claimed to overlap.
+  static bool clearly_overlaps(shape_base<value_type> const& s,
+                               std::array<value_type, 3> const& box) {
+    const std::size_t dim = dim_of(box);
+    const value_type margin =
+        value_type{1e-4} * std::max({box[0], box[1], box[2]});
+    const auto mid = s.get_middle_point();
+    bool centre_inside = true;
+    for (std::size_t k = 0; k < dim; ++k) {
+      if (!(mid[k] > margin && mid[k] < box[k] - margin)) centre_inside = false;
+    }
+    if (centre_inside) return true;
+    if (auto const* c = dynamic_cast<circle<value_type> const*>(&s)) {
+      return distance_to_box(mid, box, dim) < c->radius - margin;
+    }
+    if (auto const* sp = dynamic_cast<sphere<value_type> const*>(&s)) {
+      return distance_to_box(mid, box, dim) < sp->radius - margin;
+    }
+    if (dynamic_cast<rectangle<value_type> const*>(&s) ||
+        dynamic_cast<rvegen::box<value_type> const*>(&s)) {
+      const auto e = extent_of(s);
+      for (std::size_t k = 0; k < dim; ++k) {
+        if (!(e.top[k] > margin && e.bottom[k] < box[k] - margin)) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
   void write_header(std::ostream& out) const {
-    out << "// rvegen — generated gmsh .geo script\n"
-        << "SetFactory(\"OpenCASCADE\");\n";
+    out << "// rvegen — generated gmsh .geo script\n";
+    if (_length_scale != value_type{1}) {
+      out << "// Lengths are in box-relative units (divided by the largest box\n"
+             "// extent L = " << raw_num(_length_scale) << "); Mesh.ScalingFactor = L below makes gmsh\n"
+             "// save the mesh in the original units. This keeps OpenCASCADE's\n"
+             "// absolute tolerances independent of the RVE size.\n";
+    }
+    out << "SetFactory(\"OpenCASCADE\");\n";
+    if (_length_scale != value_type{1}) {
+      out << "Mesh.ScalingFactor = " << raw_num(_length_scale) << ";\n";
+    }
     // Emit active mesh-size directives (positive value → uncommented
     // directive; otherwise keep the placeholder so users still see
     // the syntax they need to enable manually).
@@ -431,10 +567,15 @@ private:
     std::size_t entity_id = 2;
     for (auto const& shape : shapes) {
       auto const* raw = shape.get();
+      if (misses_domain(*raw, domain_box)) {
+        ids.push_back(entity_id++);  // keeps tags stable; nothing emitted
+        continue;
+      }
       if (auto const* c = dynamic_cast<circle<value_type> const*>(raw); c) {
         out << "Disk(" << entity_id << ") = {"
             << num((*c)(0)) << ", " << num((*c)(1)) << ", 0, "
-            << num(c->radius) << ", " << num(c->radius) << "};\n";
+            << num(emitted_radius(c->get_middle_point(), c->radius, domain_box)) << ", "
+            << num(emitted_radius(c->get_middle_point(), c->radius, domain_box)) << "};\n";
       } else if (auto const* r = dynamic_cast<rectangle<value_type> const*>(raw); r) {
         const auto half_w = r->width()  * value_type{0.5};
         const auto half_h = r->height() * value_type{0.5};
@@ -462,10 +603,15 @@ private:
     std::size_t entity_id = 2;
     for (auto const& shape : shapes) {
       auto const* raw = shape.get();
+      if (misses_domain(*raw, domain_box)) {
+        ids.push_back(entity_id++);  // keeps tags stable; nothing emitted
+        continue;
+      }
       if (auto const* s = dynamic_cast<sphere<value_type> const*>(raw); s) {
         out << "Sphere(" << entity_id << ") = {"
             << num((*s)(0)) << ", " << num((*s)(1)) << ", " << num((*s)(2)) << ", "
-            << num(s->radius) << "};\n";
+            << num(emitted_radius(s->get_middle_point(), s->radius, domain_box))
+            << "};\n";
         if (_periodic) write_pole_rotation(out, *s, entity_id, domain_box);
       } else if (auto const* b = dynamic_cast<box<value_type> const*>(raw); b) {
         const auto hx = b->width()  * value_type{0.5};
@@ -524,9 +670,9 @@ private:
     return best;
   }
 
-  static void write_pole_rotation(std::ostream& out, sphere<value_type> const& s,
+  void write_pole_rotation(std::ostream& out, sphere<value_type> const& s,
                                   std::size_t id,
-                                  std::array<value_type, 3> const& box) {
+                                  std::array<value_type, 3> const& box) const {
     const int axis = pole_axis(s, box);
     if (axis == 2) return;
     // z -> x : rotate about y; z -> -y : rotate about x.
@@ -537,8 +683,8 @@ private:
 
   // gmsh's OCC Disk needs rx >= ry; swap the semi-axes and rotate a
   // further 90° when the ellipse's first axis is the minor one.
-  static void write_ellipse(std::ostream& out, ellipse<value_type> const& e,
-                            std::size_t id) {
+  void write_ellipse(std::ostream& out, ellipse<value_type> const& e,
+                            std::size_t id) const {
     value_type rx = e.extent[0];
     value_type ry = e.extent[1];
     value_type angle = std::atan2(e.axis[0][1], e.axis[0][0]);
@@ -551,7 +697,7 @@ private:
         << num(rx) << ", " << num(ry) << "};\n";
     if (angle != value_type{0}) {
       out << "Rotate {{0, 0, 1}, {" << num(e.center[0]) << ", " << num(e.center[1])
-          << ", 0}, " << num(angle) << "} { Surface{" << id << "}; }\n";
+          << ", 0}, " << raw_num(angle) << "} { Surface{" << id << "}; }\n";
     }
   }
 
@@ -559,8 +705,8 @@ private:
   // so they never collide with the tags OCC auto-assigns to the
   // boundaries of Rectangle / Disk entities. Only the Plane Surface uses
   // the explicit inclusion id.
-  static void write_polygon(std::ostream& out, convex_polygon<value_type> const& p,
-                            std::size_t id) {
+  void write_polygon(std::ostream& out, convex_polygon<value_type> const& p,
+                            std::size_t id) const {
     auto const& verts = p.vertices();
     const std::size_t n = verts.size();
     for (std::size_t k = 0; k < n; ++k) {
@@ -642,15 +788,17 @@ private:
       const auto var = "_inc_" + id + "()";
       const bool clip = needs_clip(*shapes[i], domain_box);
 
+      const bool absent = misses_domain(*shapes[i], domain_box);
       std::vector<std::string> tools;
-      for (std::size_t j = 0; j < shapes.size(); ++j) {
+      for (std::size_t j = 0; j < shapes.size() && !absent; ++j) {
         const bool before = prio[j] < prio[i] || (prio[j] == prio[i] && j < i);
-        if (before && aabb_overlap(extents[i], extents[j])) {
+        if (before && !misses_domain(*shapes[j], domain_box) &&
+            aabb_overlap(extents[i], extents[j])) {
           tools.push_back(refs[j].ref);
         }
       }
 
-      if (!clip && tools.empty()) {
+      if (!absent && !clip && tools.empty()) {
         refs[i] = {id, shapes[i]->phase_name()};
         continue;
       }
@@ -660,9 +808,32 @@ private:
                "// (first shape wins). `_inc_<id>()` holds the final pieces.\n";
         header_done = true;
       }
+      if (absent) {
+        out << "// shape #" << i << " does not reach the domain: not emitted\n"
+            << var << " = {};\n";
+        refs[i] = {var, shapes[i]->phase_name()};
+        continue;
+      }
       if (clip) {
-        out << var << " = BooleanIntersection{ " << kind << "{" << id
-            << "}; Delete; }{ " << kind << "{1}; };\n";
+        // The result list of an intersection that can be empty is not
+        // trusted as it is: gmsh 4.14.0 answers an empty intersection with
+        // the tag of the tool (the domain, tag 1), which would delete the
+        // matrix later. Tag 1 is never a legitimate piece, so drop it.
+        out << "_r() = BooleanIntersection{ " << kind << "{" << id
+            << "}; Delete; }{ " << kind << "{1}; };\n"
+            << var << " = {};\n"
+            << "For _k In {0:#_r()-1}\n"
+            << "  If (_r(_k) != 1)\n"
+            << "    " << var << " += _r(_k);\n"
+            << "  EndIf\n"
+            << "EndFor\n";
+        if (clearly_overlaps(*shapes[i], domain_box)) {
+          out << "If (#" << var << " == 0)\n"
+              << "  Error(\"gmsh_geo_writer: shape #" << i
+              << " clearly overlaps the domain but its clip came out empty "
+                 "(OpenCASCADE boolean failed)\");\n"
+              << "EndIf\n";
+        }
       } else {
         out << var << " = {" << id << "};\n";
       }
@@ -720,9 +891,9 @@ private:
   // axis with its translated image on the high side, matching by
   // bounding box (gmsh tutorial t18). Emitted after fragmenting so the
   // constraints reference the final, split boundary entities.
-  static void write_periodic(std::ostream& out,
+  void write_periodic(std::ostream& out,
                              std::array<value_type, 3> const& dom,
-                             bool is_3d) {
+                             bool is_3d) const {
     const char* ent = is_3d ? "Surface" : "Curve";
     const int n_axes = is_3d ? 3 : 2;
     const value_type lmax = std::max({dom[0], dom[1], dom[2]});
@@ -825,6 +996,7 @@ private:
   bool _phase_strict{false};
   value_type _char_length_min{0};
   value_type _char_length_max{0};
+  mutable value_type _length_scale{1};
   int _element_order{0};
   int _algorithm{0};
   bool _recombine_quads{false};

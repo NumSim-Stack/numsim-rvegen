@@ -11,6 +11,7 @@
 //
 // The test is only registered when CMake finds gmsh.
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -595,6 +596,237 @@ void test_periodic_unmatched_errors() {
   }
 }
 
+// --- scale independence and empty clips -------------------------------
+
+std::string script_of(rvegen::gmsh_geo_writer<double> const& writer,
+                      shape_vector const& shapes, box_t const& box) {
+  std::ostringstream buf;
+  writer.write(buf, shapes, box);
+  return buf.str();
+}
+
+// A 2D RVE of edge `L` (in absolute units) with a fully inside circle A and
+// a circle B centred on the x = L face, plus (periodic) its wrap image on
+// x = 0. OpenCASCADE's absolute tolerances used to drop B at L = 1e-5 and
+// fail outright at 1e-6; the script is box-relative now. B must cover pi r^2
+// / 2 (pi r^2 with the image), the mesh must come out in absolute units.
+void check_scaled_boundary_cut_2d(double L, bool periodic) {
+  using C = rvegen::circle<double>;
+  const double r = 0.1 * L;
+  std::vector<item> v;
+  v.push_back(mk<C>("a", 0.2 * L, 0.3 * L, r));
+  v.push_back(mk<C>("b", L, 0.3 * L, r));
+  if (periodic) v.push_back(mk<C>("b", 0.0, 0.3 * L, r));
+  const auto shapes = make_shapes(std::move(v));
+  const box_t box{L, L, 0.0};
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("a");
+  phases.add("b");
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  writer.set_periodic(periodic);
+  writer.set_characteristic_length_max(0.02 * L);
+  const std::string stem = std::string{"gmsh_rt_scale2d_"} +
+                           (periodic ? "per_" : "non_") + std::to_string(L);
+  const cleanup_on_success cleanup{stem};
+  const auto m = write_and_mesh(writer, shapes, box, stem);
+  if (!m.ok) return;
+  check_inside_domain(m, box);
+  if (periodic) check_periodic_nodes(m, box);
+  const double pi_r2 = std::acos(-1.0) * r * r;
+  REQUIRE(std::abs(total_measure(m) - L * L) < 1e-9 * L * L);
+  const double a = measure_of(m, "a");
+  const double b = measure_of(m, "b");
+  // Inscribed polygons lose ~1% at this mesh size; a missing piece loses 50%+.
+  REQUIRE(a > 0.97 * pi_r2 && a <= pi_r2 * (1.0 + 1e-9));
+  const double b_expect = periodic ? pi_r2 : 0.5 * pi_r2;
+  REQUIRE(b > 0.97 * b_expect && b <= b_expect * (1.0 + 1e-9));
+  // saved in absolute units: the far node sits at L
+  double xmax = 0.0;
+  for (std::size_t i = 1; i < m.nodes.size(); ++i) xmax = std::max(xmax, m.nodes[i][0]);
+  REQUIRE(std::abs(xmax - L) < 1e-9 * L);
+}
+
+void test_scale_independence_2d() {
+  for (double L : {1e-9, 1e-5, 1e5, 1e9}) {
+    check_scaled_boundary_cut_2d(L, false);
+    check_scaled_boundary_cut_2d(L, true);
+  }
+}
+
+void test_scale_independence_3d() {
+  using S = rvegen::sphere<double>;
+  for (double L : {1e-6, 1e6}) {
+    for (bool periodic : {false, true}) {
+      const double r = 0.15 * L;
+      std::vector<item> v;
+      v.push_back(mk<S>("a", 0.3 * L, 0.5 * L, 0.5 * L, r));
+      v.push_back(mk<S>("b", L, 0.5 * L, 0.5 * L, r));
+      if (periodic) v.push_back(mk<S>("b", 0.0, 0.5 * L, 0.5 * L, r));
+      const auto shapes = make_shapes(std::move(v));
+      const box_t box{L, L, L};
+      rvegen::phase_collection<double> phases;
+      phases.add("matrix");
+      phases.add("a");
+      phases.add("b");
+      rvegen::gmsh_geo_writer<double> writer{};
+      writer.set_phases(&phases);
+      writer.set_periodic(periodic);
+      writer.set_characteristic_length_max(0.1 * L);
+      const std::string stem = std::string{"gmsh_rt_scale3d_"} +
+                               (periodic ? "per_" : "non_") + std::to_string(L);
+      const cleanup_on_success cleanup{stem};
+      const auto m = write_and_mesh(writer, shapes, box, stem);
+      if (!m.ok) continue;
+      check_inside_domain(m, box);
+      if (periodic) check_periodic_nodes(m, box);
+      const double ball = 4.0 / 3.0 * std::acos(-1.0) * r * r * r;
+      REQUIRE(std::abs(total_measure(m) - L * L * L) < 1e-8 * L * L * L);
+      const double b_expect = periodic ? ball : 0.5 * ball;
+      REQUIRE(measure_of(m, "b") > 0.7 * b_expect);
+      REQUIRE(measure_of(m, "b") <= b_expect * (1.0 + 1e-9));
+    }
+  }
+}
+
+// Unit boxes keep the old script (no scaling lines); other boxes say what
+// was done in the header.
+void test_scale_header() {
+  using C = rvegen::circle<double>;
+  rvegen::gmsh_geo_writer<double> writer{};
+  auto const unit = script_of(writer, make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 0.5, 0.5, 0.1)); return v; }()), {1.0, 1.0, 0.0});
+  REQUIRE(unit.find("ScalingFactor") == std::string::npos);
+  auto const big = script_of(writer, make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 5.0, 2.0, 1.0)); return v; }()), {10.0, 4.0, 0.0});
+  REQUIRE(big.find("Mesh.ScalingFactor = 10;") != std::string::npos);
+  REQUIRE(big.find("Rectangle(1) = {0, 0, 0, 1, 0.4, 0};") != std::string::npos);
+  REQUIRE(big.find("Disk(2) = {0.5, 0.2, 0, 0.1, 0.1};") != std::string::npos);
+}
+
+// Mesh `shapes` periodically and require a clean exit plus tiling
+// (total measure == domain, periodic nodes match, every shape's phase
+// present). The wrap images that miss the cell must not disturb anything.
+void check_periodic_images(shape_vector const& shapes, box_t const& box,
+                           std::string const& stem, double h) {
+  const cleanup_on_success cleanup{stem};
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("p");
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  writer.set_periodic(true);
+  writer.set_characteristic_length_max(h);
+  const auto m = write_and_mesh(writer, shapes, box, stem);
+  if (!m.ok) return;
+  check_inside_domain(m, box);
+  check_periodic_nodes(m, box);
+  const double domain = box[0] * box[1] * (box[2] > 0.0 ? box[2] : 1.0);
+  REQUIRE(std::abs(total_measure(m) - domain) < 1e-8 * domain);
+  REQUIRE(measure_of(m, "matrix") > 0.5 * domain);
+  REQUIRE(measure_of(m, "p") > 0.0);
+}
+
+// gmsh 4.14.0 answers an empty BooleanIntersection with the tool's tag
+// (the domain), which deleted the matrix. Wrap images that miss the cell
+// must be harmless: the exact circle / sphere test drops them before they
+// are emitted, and every other shape's result list is guarded.
+void test_periodic_images_missing_the_cell() {
+  using S = rvegen::sphere<double>;
+  using C = rvegen::circle<double>;
+  using P = rvegen::convex_polygon<double>;
+  // The spheres of examples/periodic_spheres_gmsh_3d that crossed two faces:
+  // image 7 (centre (0.7015, 1.1465, -0.0736), r 0.1549) is 0.164 from the box.
+  {
+    std::vector<item> v;
+    const double x = 0.7015279153230102, y = 0.14652468207184144;
+    const double z = 0.9264383943468313, r = 0.15488354350926983;
+    v.push_back(mk<S>("p", x, y, z, r));
+    v.push_back(mk<S>("p", x, y + 1.0, z, r));
+    v.push_back(mk<S>("p", x, y, z - 1.0, r));
+    v.push_back(mk<S>("p", x, y + 1.0, z - 1.0, r));
+    const auto shapes = make_shapes(std::move(v));
+    rvegen::gmsh_geo_writer<double> writer{};
+    writer.set_periodic(true);
+    const auto txt = script_of(writer, shapes, {1.0, 1.0, 1.0});
+    REQUIRE(txt.find("Sphere(4)") != std::string::npos);
+    REQUIRE(txt.find("Sphere(5)") == std::string::npos);  // misses the cell
+    check_periodic_images(shapes, {1.0, 1.0, 1.0}, "gmsh_rt_missing_sphere", 0.06);
+  }
+  // 2D: a circle crossing two faces misses the corner cell.
+  {
+    std::vector<item> v;
+    v.push_back(mk<C>("p", 0.92, 0.92, 0.12));
+    v.push_back(mk<C>("p", -0.08, 0.92, 0.12));
+    v.push_back(mk<C>("p", 0.92, -0.08, 0.12));
+    v.push_back(mk<C>("p", -0.08, -0.08, 0.12));  // reaches the cell: dist 0 < r
+    v.push_back(mk<C>("p", 1.92, 0.5, 0.12));     // far outside
+    const auto shapes = make_shapes(std::move(v));
+    check_periodic_images(shapes, {1.0, 1.0, 0.0}, "gmsh_rt_missing_circle", 0.02);
+  }
+  // A shape whose bounding box overlaps the cell but which does not: the
+  // clip is empty and must not be mistaken for the domain.
+  {
+    std::vector<item> v;
+    v.push_back(mk<C>("p", 0.3, 0.3, 0.1));
+    v.push_back(mk<P>("p", std::vector<typename P::point_type>{{0.9, 1.2}, {1.2, 0.9}, {1.2, 1.2}}));
+    const auto shapes = make_shapes(std::move(v));
+    rvegen::gmsh_geo_writer<double> writer{};
+    const auto txt = script_of(writer, shapes, {1.0, 1.0, 0.0});
+    REQUIRE(txt.find("!= 1") != std::string::npos);  // guarded result list
+    // Not periodic: the polygon-only shape exercises the guard on its own.
+    const std::string stem = "gmsh_rt_missing_polygon";
+    const cleanup_on_success cleanup{stem};
+    rvegen::phase_collection<double> phases;
+    phases.add("matrix");
+    phases.add("p");
+    writer.set_phases(&phases);
+    writer.set_characteristic_length_max(0.03);
+    const auto m = write_and_mesh(writer, shapes, {1.0, 1.0, 0.0}, stem);
+    if (m.ok) {
+      REQUIRE(std::abs(total_measure(m) - 1.0) < 1e-9);
+      REQUIRE(measure_of(m, "matrix") > 0.9);
+    }
+  }
+}
+
+// A shape that clearly overlaps the domain but clips to nothing is an
+// error in the script, not a silent "vanished". Text check only: a real
+// OpenCASCADE failure cannot be provoked on purpose.
+void test_clip_error_guard_text() {
+  using C = rvegen::circle<double>;
+  rvegen::gmsh_geo_writer<double> writer{};
+  auto const overlap = script_of(writer, make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 1.0, 0.5, 0.2)); return v; }()), {1.0, 1.0, 0.0});
+  REQUIRE(overlap.find("clearly overlaps the domain") != std::string::npos);
+  // inside the domain: nothing is clipped, nothing to guard
+  auto const inside = script_of(writer, make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 0.5, 0.5, 0.2)); return v; }()), {1.0, 1.0, 0.0});
+  REQUIRE(inside.find("Error(") == std::string::npos);
+}
+
+// A circle / sphere exactly tangent to a periodic face used to make the
+// periodic output fail (one-sided point contact).
+void test_periodic_tangent() {
+  using C = rvegen::circle<double>;
+  using S = rvegen::sphere<double>;
+  {
+    std::vector<item> v;
+    v.push_back(mk<C>("p", 0.1, 0.5, 0.1));
+    v.push_back(mk<C>("p", 1.1, 0.5, 0.1));
+    check_periodic_images(make_shapes(std::move(v)), {1.0, 1.0, 0.0},
+                          "gmsh_rt_tangent_circle", 0.05);
+  }
+  {
+    std::vector<item> v;
+    v.push_back(mk<S>("p", 0.2, 0.5, 0.5, 0.2));
+    v.push_back(mk<S>("p", 1.2, 0.5, 0.5, 0.2));
+    check_periodic_images(make_shapes(std::move(v)), {1.0, 1.0, 1.0},
+                          "gmsh_rt_tangent_sphere", 0.08);
+  }
+}
+
 // Rejected input must not truncate an existing file, and non-finite
 // numbers must be rejected.
 void test_writer_rejects_bad_input() {
@@ -638,6 +870,12 @@ int main() {
   test_first_wins_periodic_order();
   test_periodic_sphere_cut_near_pole();
   test_periodic_unmatched_errors();
+  test_scale_independence_2d();
+  test_scale_independence_3d();
+  test_scale_header();
+  test_periodic_images_missing_the_cell();
+  test_clip_error_guard_text();
+  test_periodic_tangent();
   test_writer_rejects_bad_input();
   if (failures == 0) {
     std::cout << "gmsh_geo_roundtrip_test: PASS\n";
