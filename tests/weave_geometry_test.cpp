@@ -27,6 +27,7 @@
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <Mathematics/DistPointSegment.h>
@@ -427,6 +428,19 @@ double check_tow_cross(rvegen::weave_generator<double> const& base,
 
 void test_tow_cross_yarn_clearance() {
   using G = rvegen::weave_generator<double>;
+  using P = rvegen::weave_pattern;
+  for (std::size_t n_seg : {8u, 16u, 32u}) {
+    for (auto const& pc :
+         {std::pair{P::twill_2_2, weave_cfg{{1.0, 1.0, 0.3}, 4, 4, 0.04, 0.05, n_seg}},
+          std::pair{P::twill_2_2, weave_cfg{{1.0, 1.0, 1.0}, 4, 4, 0.056, 0.0562, n_seg}},
+          std::pair{P::satin_5, weave_cfg{{1.0, 1.0, 0.3}, 5, 5, 0.035, 0.04, n_seg}},
+          std::pair{P::satin_5, weave_cfg{{1.0, 1.0, 1.0}, 5, 5, 0.045, 0.0451, n_seg}}}) {
+      auto const& c = pc.second;
+      G base{c.box, c.n_warp, c.n_weft, c.r, c.A, c.n_seg, pc.first};
+      REQUIRE(check_tow_cross(base, c.box, 7, 1.0 / 3.0) >= 1.0 - 1e-9);
+      REQUIRE(check_tow_cross(base, c.box, 19, 1.0 / 5.0) >= 1.0 - 1e-9);
+    }
+  }
   for (std::size_t n_seg : {8u, 16u, 32u}) {
     for (auto const& c : {weave_cfg{{1.0, 1.0, 0.3}, 4, 4, 0.04, 0.05, n_seg},
                           weave_cfg{{1.0, 1.0, 1.0}, 4, 4, 0.056, 0.0562, n_seg},
@@ -497,19 +511,18 @@ double voxel_fraction(rvegen::weave_generator<double>::shape_vector const& yarns
   return static_cast<double>(filled) / static_cast<double>(grid.size());
 }
 
-void test_plain_weave_voxel_fraction() {
+void check_weave_voxel_fraction(rvegen::weave_pattern pattern, std::size_t n,
+                                double r, double A, double target) {
   using G = rvegen::weave_generator<double>;
-  const double r = 0.05, A = 0.055;
-  const double target = 0.30;
   // Yarn lengths don't depend on Lz, so size the cell from a trial
   // build: Lz = V_yarns / (target · Lx · Ly).
   double V = 0.0;
-  for (auto const& s : G{{1, 1, 1}, 4, 4, r, A, 32}.build()) {
+  for (auto const& s : G{{1, 1, 1}, n, n, r, A, 32, pattern}.build()) {
     V += s->volume();   // π r² · polyline length
   }
   const double Lz = V / target;
   const std::array<double, 3> box{1.0, 1.0, Lz};
-  G gen{box, 4, 4, r, A, 32};
+  G gen{box, n, n, r, A, 32, pattern};
   auto yarns = gen.build();
   double V_check = 0.0;
   for (auto const& s : yarns) V_check += s->volume();
@@ -539,6 +552,17 @@ void test_plain_weave_voxel_fraction() {
   const double vf = voxel_fraction(yarns, box, n_xy, n_z);
   REQUIRE(std::abs(vf - vf_analytic) / vf_analytic <= tol);
   REQUIRE(tol < 0.05);   // keeps the test meaningful if parameters change
+}
+
+void test_plain_weave_voxel_fraction() {
+  check_weave_voxel_fraction(rvegen::weave_pattern::plain, 4, 0.05, 0.055, 0.30);
+}
+
+// Twill 2/2 and satin 5 have long floats and different crossing sets, so
+// check that they too voxelize to the analytic (non-interpenetrating) volume.
+void test_pattern_weave_voxel_fraction() {
+  check_weave_voxel_fraction(rvegen::weave_pattern::twill_2_2, 4, 0.04, 0.05, 0.10);
+  check_weave_voxel_fraction(rvegen::weave_pattern::satin_5, 5, 0.035, 0.04, 0.10);
 }
 
 // ----------------------------------------------------------------------------
@@ -607,6 +631,7 @@ int main() {
   test_weave_patterns_clear_and_match_matrix();
   test_weave_validation();
   test_plain_weave_voxel_fraction();
+  test_pattern_weave_voxel_fraction();
   test_tow_fibres_do_not_overlap();
   test_tow_cross_yarn_clearance();
   test_tow_infeasible_factor_throws();
