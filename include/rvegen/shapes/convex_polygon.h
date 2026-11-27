@@ -83,12 +83,13 @@ public:
   [[nodiscard]] T volume() const override { return T{0}; }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {
-    // Half-extents of the AABB on each axis (the shape_base contract,
-    // same as voronoi_cell; #79). Used by only_inside placement to
-    // test whether the polygon fits in the RVE box.
+    // Per-axis largest one-sided extent from get_middle_point() (the
+    // area centroid), so middle +/- max_expansion() always encloses the
+    // polygon even when the centroid is off the AABB centre (#79).
     if (_vertices.empty()) return {T{0}, T{0}, T{0}};
     auto [mn, mx] = extents();
-    return {(mx[0] - mn[0]) * T{0.5}, (mx[1] - mn[1]) * T{0.5}, T{0}};
+    return {std::max(mx[0] - _centroid[0], _centroid[0] - mn[0]),
+            std::max(mx[1] - _centroid[1], _centroid[1] - mn[1]), T{0}};
   }
 
   [[nodiscard]] std::array<T, 3> get_middle_point() const override {
