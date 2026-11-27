@@ -237,6 +237,12 @@ target_link_libraries(rvegen PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+# Install rules only for a top-level build. When rvegen is pulled in with
+# add_subdirectory (e.g. by the Python wheel build, python/CMakeLists.txt),
+# its dependencies may be FetchContent'd targets that are in no export set,
+# so install(EXPORT) would fail at generate time, and the wheel must not
+# ship the CLI / headers anyway.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 install(TARGETS rvegen
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
@@ -297,6 +303,7 @@ install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/rvegenConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rvegen
 )
+endif() # top-level install rules
 
 # Smoke tests: drive the CLI against the bundled example configs. Each
 # config self-describes its output destination via output_path entries in

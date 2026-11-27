@@ -30,6 +30,9 @@ cmake.source-dir = "."
 cmake.version = ">=3.20"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["rvegen"]
+# A FetchContent'd Eigen (not found on the build image) installs its headers
+# and CMake files; the wheel must carry only the extension module.
+wheel.exclude = ["include/**", "share/**", "lib/**", "lib64/**", "bin/**"]
 
 [tool.cibuildwheel]
 # CPython 3.10-3.13, manylinux x86_64 (musllinux and PyPy skipped).
