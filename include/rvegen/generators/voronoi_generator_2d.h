@@ -90,7 +90,7 @@ public:
     out.reserve(_seeds.size());
     const polygon_type bbox = make_bounding_rectangle();
     const T merge_tol =
-        std::numeric_limits<T>::epsilon() * T{16} * std::max(_Lx, _Ly);
+        std::numeric_limits<T>::epsilon() * T{16} * std::min(_Lx, _Ly);
 
     for (std::size_t i = 0; i < _seeds.size(); ++i) {
       polygon_type cell = bbox;

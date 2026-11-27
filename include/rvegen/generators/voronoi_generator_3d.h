@@ -39,7 +39,7 @@
 // Numerical robustness (scale-invariant, #79):
 //   * Every half-space is normalised to a unit normal, so the 3x3
 //     determinant is dimensionless and the feasibility / merge
-//     tolerances are distances relative to the longest domain edge
+//     tolerances are distances relative to the shortest domain edge
 //     (1e-9 · scale). Domains of 1e-6 m and 1e3 m behave identically.
 //   * Bisector offsets are computed as n · midpoint (not from the
 //     difference of squared norms), avoiding cancellation for
@@ -145,7 +145,22 @@ private:
   };
 
   [[nodiscard]] T scale() const noexcept {
-    return std::max({_Lx, _Ly, _Lz});
+    return std::min({_Lx, _Ly, _Lz});
+  }
+
+  // Distance tolerance for feasibility / vertex merging. Relative to the
+  // SHORTEST edge (so a thin slab keeps its resolution) and deliberately
+  // far below the seed-coincidence threshold: near-degenerate vertex
+  // clusters (jittered lattices) only resolve correctly when the merge
+  // tolerance is much smaller than the feature size. The second term is
+  // the roundoff floor of the 3x3 solves, which grows with the domain
+  // aspect ratio (nearly parallel bisectors).
+  [[nodiscard]] T geometric_tol() const noexcept {
+    const T lmin = scale();
+    const T lmax = std::max({_Lx, _Ly, _Lz});
+    return std::max(T{1e-12} * lmin,
+                    T{64} * std::numeric_limits<T>::epsilon() * lmax *
+                        (lmax / lmin));
   }
 
   // Collect the 6 box + (N - 1) bisector half-spaces for cell `i`.
@@ -190,7 +205,7 @@ private:
     };
     std::vector<candidate> cands;
     // Distance tolerance, relative to the domain size.
-    const T tol = static_cast<T>(detail::voronoi_rel_tol) * scale();
+    const T tol = geometric_tol();
 
     for (std::size_t a = 0; a < H; ++a) {
       for (std::size_t b = a + 1; b < H; ++b) {

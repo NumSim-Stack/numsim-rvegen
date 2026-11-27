@@ -298,6 +298,12 @@ private:
         // ends up in any Physical group. Total ids consumed = 2N + 2.
         auto const& verts = p->vertices();
         const std::size_t n_verts = verts.size();
+        if (n_verts < 3) {
+          // Empty / collapsed placeholder (e.g. a degenerate Voronoi cell):
+          // `Line Loop{}` would be invalid .geo, so skip it.
+          out << "// (degenerate polygon skipped)\n";
+          continue;
+        }
         const std::size_t first_point_id = entity_id;
         for (auto const& v : verts) {
           out << "Point(" << entity_id << ") = {"
