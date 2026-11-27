@@ -131,6 +131,17 @@ add_executable(rvegen_new_tree_smoke tests/new_tree_smoke.cpp)
 target_link_libraries(rvegen_new_tree_smoke PRIVATE rvegen_lib)
 add_test(NAME new_tree_smoke COMMAND rvegen_new_tree_smoke)
 
+add_executable(rvegen_collision_pairs_test tests/collision_pairs_test.cpp)
+target_link_libraries(rvegen_collision_pairs_test PRIVATE rvegen_lib)
+add_test(NAME collision_pairs_test COMMAND rvegen_collision_pairs_test)
+
+add_executable(rvegen_placement_test tests/placement_test.cpp)
+target_link_libraries(rvegen_placement_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME placement_test COMMAND rvegen_placement_test)
+
 add_executable(rvegen_end_to_end_smoke tests/end_to_end_smoke.cpp)
 target_link_libraries(rvegen_end_to_end_smoke PRIVATE rvegen_lib)
 add_test(NAME end_to_end_smoke COMMAND rvegen_end_to_end_smoke)
@@ -360,6 +371,17 @@ add_test(
 set_tests_properties(cli_circles_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated 10 shapes"
+)
+
+# Unreachable target: the generator gives up at max_attempts and the CLI
+# warns on stderr (PASS_REGULAR_EXPRESSION matches stdout and stderr).
+add_test(
+    NAME cli_max_attempts_warning
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_max_attempts.json
+)
+set_tests_properties(cli_max_attempts_warning PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "warning .* stopped at max_attempts"
 )
 
 add_test(

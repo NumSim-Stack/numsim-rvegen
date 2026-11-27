@@ -1008,6 +1008,18 @@ public:
   [[nodiscard]] std::array<T, 3> const& offset() const noexcept {
     return _offset;
   }
+  // AABB of the placed mesh (rotation, scale and translation applied),
+  // the same box make_bounding_box() builds. O(1): read from the cache.
+  [[nodiscard]] std::array<T, 3> placed_lo() const noexcept {
+    return {_base_centre[0] + _offset[0] + _rel_min[0],
+            _base_centre[1] + _offset[1] + _rel_min[1],
+            _base_centre[2] + _offset[2] + _rel_min[2]};
+  }
+  [[nodiscard]] std::array<T, 3> placed_hi() const noexcept {
+    return {_base_centre[0] + _offset[0] + _rel_max[0],
+            _base_centre[1] + _offset[1] + _rel_max[1],
+            _base_centre[2] + _offset[2] + _rel_max[2]};
+  }
 
 private:
   [[noreturn]] static void throw_empty() {

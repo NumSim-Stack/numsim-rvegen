@@ -5,6 +5,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../intersection/aabb_grid.h"
 #include "../intersection/aabb_overlap.h"
 #include "../intersection/collision_dispatcher.h"
 #include "../schema/field_list.h"
@@ -67,7 +68,13 @@ public:
     std::size_t input_idx = 0;
     std::size_t last_emit = 0;
 
-    while (!termination(accepted) && attempts < _max_attempts) {
+    // Broad phase: bucket grid over the accepted AABBs (#83). The
+    // termination predicate only depends on `accepted`, so it is
+    // re-evaluated after each accept rather than on every attempt.
+    aabb_grid<value_type> grid;
+    bool done = termination(accepted);
+
+    while (!done && attempts < _max_attempts) {
       if (opts.cancel()) return accepted;
       ++attempts;
       auto& input = *inputs[input_idx];
@@ -93,18 +100,16 @@ public:
       }
 
       // Check every class member vs every accepted shape. The accepted
-      // vector already contains all previously-inserted primaries AND
-      // their wraps, so plain (non-periodic) two-stage dispatch suffices.
+      // vector (and the grid mirroring it) already contains all
+      // previously-inserted primaries AND their wraps, so plain
+      // (non-periodic) two-stage dispatch suffices.
       bool collides = false;
       auto check_member = [&](shape_base<value_type> const& m) {
         auto const bound =
             collision_dispatcher<value_type>::instance().bind_lhs(m);
-        auto const* mbb = m.bounding_box();
-        for (auto const& other : accepted) {
-          if (!aabb_overlap(*mbb, *other->bounding_box())) continue;
-          if (bound(m, *other)) return true;
-        }
-        return false;
+        return grid.any_overlap(*m.bounding_box(), [&](std::size_t i) {
+          return bound(m, *accepted[i]);
+        });
       };
 
       if (check_member(*primary)) continue;
@@ -116,8 +121,12 @@ public:
       // Accept: push primary first, then wraps. Centre-in-domain
       // accounting (volume_fraction termination) distinguishes them
       // by their middle_point, not by insertion role.
+      grid.insert(*primary->bounding_box());
       accepted.push_back(std::move(primary));
-      for (auto& w : wraps) accepted.push_back(std::move(w));
+      for (auto& w : wraps) {
+        grid.insert(*w->bounding_box());
+        accepted.push_back(std::move(w));
+      }
 
       if (accepted.size() - last_emit >= opts.emit_every) {
         opts.on_progress({accepted.size(),
@@ -125,6 +134,7 @@ public:
                           current_volume_fraction(accepted, domain_box)});
         last_emit = accepted.size();
       }
+      done = termination(accepted);
     }
 
     return accepted;
