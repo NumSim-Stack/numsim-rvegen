@@ -128,6 +128,7 @@ def test_module_exports():
         "VoronoiCell",
         "VoronoiGenerator2d",
         "WeaveGenerator",
+        "WeavePattern",
     ]:
         assert hasattr(rvegen, name), f"rvegen.{name} missing from public API"
 
@@ -236,6 +237,45 @@ def test_weave_generator_phase_tagging_propagates():
     # property assertions above are the binding-level test.
 
 
+def test_weave_generator_default_pattern_is_plain():
+    gen = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.2), n_warp_yarns=2, n_weft_yarns=2,
+        yarn_radius=0.04, amplitude=0.05)
+    assert gen.pattern == rvegen.WeavePattern.plain
+
+
+def test_weave_generator_twill_and_satin_patterns():
+    twill = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.3), n_warp_yarns=4, n_weft_yarns=4,
+        yarn_radius=0.04, amplitude=0.05,
+        pattern=rvegen.WeavePattern.twill_2_2)
+    assert twill.pattern == rvegen.WeavePattern.twill_2_2
+    assert len(twill.build()) == 8
+    # Strings are accepted too.
+    satin = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.3), n_warp_yarns=5, n_weft_yarns=5,
+        yarn_radius=0.03, amplitude=0.04, pattern="satin_5")
+    assert satin.pattern == rvegen.WeavePattern.satin_5
+    assert len(satin.build()) == 10
+    with pytest.raises(ValueError, match="unknown pattern"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.3), n_warp_yarns=4, n_weft_yarns=4,
+            yarn_radius=0.04, amplitude=0.05, pattern="basket")
+
+
+def test_weave_generator_pattern_count_validation():
+    """Counts must be multiples of the pattern repeat (4 twill, 5 satin)."""
+    with pytest.raises(RuntimeError, match="multiples of the pattern repeat"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.3), n_warp_yarns=2, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.05, pattern="twill_2_2")
+    with pytest.raises(RuntimeError, match="multiples of the pattern repeat"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.3), n_warp_yarns=4, n_weft_yarns=4,
+            yarn_radius=0.03, amplitude=0.04,
+            pattern=rvegen.WeavePattern.satin_5)
+
+
 def test_weave_generator_validates_inputs():
     """Bad parameters surface as Python RuntimeError, not silent garbage."""
     with pytest.raises(RuntimeError, match="n_warp_yarns"):
@@ -248,7 +288,7 @@ def test_weave_generator_validates_inputs():
             domain_box=(1.0, 1.0, 0.2),
             n_warp_yarns=2, n_weft_yarns=2,
             yarn_radius=-0.01, amplitude=0.03)
-    with pytest.raises(RuntimeError, match="even"):
+    with pytest.raises(RuntimeError, match="multiples of the pattern repeat"):
         # Odd counts cannot tile a periodic plain weave.
         rvegen.WeaveGenerator(
             domain_box=(1.0, 1.0, 0.2),

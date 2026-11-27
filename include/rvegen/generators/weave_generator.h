@@ -132,15 +132,16 @@ namespace rvegen {
 // for the matrices and their repeats).
 enum class weave_pattern { plain, twill_2_2, satin_5 };
 
-// Repeat of a pattern: the yarn counts must be multiples of it.
+// Repeat of a pattern: the yarn counts must be multiples of it. Throws
+// std::invalid_argument for a value outside the enum.
 [[nodiscard]] constexpr std::size_t
-weave_pattern_repeat(weave_pattern p) noexcept {
+weave_pattern_repeat(weave_pattern p) {
   switch (p) {
+    case weave_pattern::plain: return 2;
     case weave_pattern::twill_2_2: return 4;
     case weave_pattern::satin_5: return 5;
-    case weave_pattern::plain: break;
   }
-  return 2;
+  throw std::invalid_argument{"weave_pattern: unknown pattern value"};
 }
 
 template <typename T = double>

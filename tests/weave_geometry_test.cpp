@@ -288,6 +288,15 @@ void test_weave_patterns_clear_and_match_matrix() {
 // ----------------------------------------------------------------------------
 void test_weave_validation() {
   using G = rvegen::weave_generator<double>;
+  // A pattern value outside the enum is rejected, not treated as plain.
+  const auto bad = static_cast<rvegen::weave_pattern>(7);
+  const auto throws_invalid = [](auto&& f) {
+    try { f(); } catch (std::invalid_argument const&) { return true; }
+    catch (...) {}
+    return false;
+  };
+  REQUIRE(throws_invalid([&] { (void)rvegen::weave_pattern_repeat(bad); }));
+  REQUIRE(throws_invalid([&] { G{{1, 1, 0.3}, 2, 2, 0.04, 0.05, 32, bad}; }));
   // Odd counts cannot tile a periodic plain weave.
   REQUIRE(throws([] { G{{1, 1, 0.3}, 3, 2, 0.04, 0.05}; }));
   REQUIRE(throws([] { G{{1, 1, 0.3}, 2, 1, 0.04, 0.05}; }));
@@ -538,6 +547,10 @@ double voxel_fraction(rvegen::weave_generator<double>::shape_vector const& yarns
   return static_cast<double>(filled) / static_cast<double>(grid.size());
 }
 
+// What this proves: the yarns do not overlap and none is missing, since
+// the voxel fill fraction must equal the summed tube volume. It does NOT
+// prove the over/under topology: any non-overlapping pattern passes. The
+// interlacing is covered by test_weave_patterns_clear_and_match_matrix.
 void check_weave_voxel_fraction(rvegen::weave_pattern pattern, std::size_t n,
                                 double r, double A, double target) {
   using G = rvegen::weave_generator<double>;
