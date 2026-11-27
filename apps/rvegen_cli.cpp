@@ -14,7 +14,11 @@
 #include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -79,8 +83,33 @@ int run(int argc, char** argv) {
     domain_box[1] = db.at(1).get<double>();
     domain_box[2] = db.size() >= 3 ? db.at(2).get<double>() : 0.0;
   }
-  const auto seed = config.value<std::uint64_t>("seed", 42);
-  std::mt19937 engine{seed};
+  // Warn about unknown top-level keys (typos would otherwise be ignored).
+  for (auto const& [key, value] : config.items()) {
+    static constexpr std::array<char const*, 8> known{
+        "domain_box", "seed", "distributions", "direction_distributions",
+        "shapes", "generator", "termination", "postprocess"};
+    if (std::find_if(known.begin(), known.end(), [&](char const* k) {
+          return key == k;
+        }) == known.end()) {
+      std::cerr << "rvegen: warning - unknown top-level key '" << key
+                << "' is ignored\n";
+    }
+  }
+  // The sampling engine is a 32-bit mt19937: reject seeds it would silently
+  // truncate (or wrap, for negative values) instead of mis-reporting them.
+  std::uint64_t seed = 42;
+  if (config.contains("seed")) {
+    auto const& sj = config.at("seed");
+    if (!sj.is_number_integer() ||
+        (sj.is_number_integer() && !sj.is_number_unsigned() &&
+         sj.get<std::int64_t>() < 0) ||
+        sj.get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::runtime_error{
+          "'seed' must be an integer in [0, 4294967295] (32-bit engine)"};
+    }
+    seed = sj.get<std::uint64_t>();
+  }
+  std::mt19937 engine{static_cast<std::uint32_t>(seed)};
 
   // ---- 4. Build distributions -------------------------------------------
   rvegen::distribution_map_t<double> dists;
@@ -118,6 +147,25 @@ int run(int argc, char** argv) {
   // "shapes" is optional: deterministic generators (weave, tow_weave,
   // voronoi_*) build their shapes from the generator params alone.
   for (auto const& spec : config.value("shapes", nlohmann::json::array())) {
+    // A direction distribution in a scalar slot would otherwise only fail
+    // at the first new_shape(); catch it here and name the key.
+    if (spec.is_object()) {
+      for (auto const& [key, value] : spec.items()) {
+        if (key == "direction_dist" || !value.is_string() ||
+            !key.ends_with("_dist"))
+          continue;
+        auto const it = dists.find(value.get<std::string>());
+        if (it != dists.end() &&
+            dynamic_cast<rvegen::direction_distribution_holder<double>*>(
+                it->second.get()) != nullptr) {
+          throw std::runtime_error{
+              "shape input '" + spec.value("type", std::string{"?"}) +
+              "': key '" + key + "' refers to direction distribution '" +
+              value.get<std::string>() +
+              "', but a scalar distribution is required"};
+        }
+      }
+    }
     auto input = rvegen::build_from_json(
         rvegen::input_registry_t<>::instance(), spec, dists);
     inputs.push_back(std::move(input));
@@ -133,7 +181,17 @@ int run(int argc, char** argv) {
       dynamic_cast<rvegen::deterministic_generator<double>*>(generator.get()) !=
       nullptr;
   std::unique_ptr<rvegen::termination_base<double>> termination;
-  if (deterministic && !config.contains("termination")) {
+  if (deterministic) {
+    if (config.contains("shapes") && !config.at("shapes").empty())
+      std::cerr << "rvegen: warning - generator '"
+                << config.at("generator").value("type", std::string{"?"})
+                << "' is deterministic: \"shapes\" is ignored\n";
+    if (config.contains("termination"))
+      std::cerr << "rvegen: warning - generator '"
+                << config.at("generator").value("type", std::string{"?"})
+                << "' is deterministic: \"termination\" is ignored\n";
+  }
+  if (deterministic) {
     termination = std::make_unique<rvegen::number_of_inclusions<double>>(
         std::size_t{1});
   } else {
