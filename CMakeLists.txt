@@ -133,7 +133,7 @@ if(RVEGEN_WITH_VORO_PP)
   FetchContent_Declare(
     voropp
     GIT_REPOSITORY https://github.com/chr1shr/voro.git
-    GIT_TAG v0.4.6   # 43d460b83d5f33392bb599a401f05c37af3d7441
+    GIT_TAG 43d460b83d5f33392bb599a401f05c37af3d7441   # v0.4.6 (tags are mutable; pin the commit)
     SOURCE_SUBDIR no_cmake_here
   )
   FetchContent_MakeAvailable(voropp)
@@ -153,6 +153,15 @@ if(RVEGEN_WITH_VORO_PP)
     ${voropp_SOURCE_DIR}/src)
   set_target_properties(rvegen_voropp PROPERTIES POSITION_INDEPENDENT_CODE ON)
   target_compile_options(rvegen_voropp PRIVATE -w)   # third-party code
+  # Voro++ calls exit() on fatal errors; force-include the shim that turns
+  # that into a C++ exception (same shim the consumer-side include applies).
+  if(MSVC)
+    target_compile_options(rvegen_voropp PRIVATE
+      /FI${CMAKE_CURRENT_SOURCE_DIR}/include/rvegen/generators/voronoi_voropp_exit_shim.h)
+  else()
+    target_compile_options(rvegen_voropp PRIVATE
+      -include ${CMAKE_CURRENT_SOURCE_DIR}/include/rvegen/generators/voronoi_voropp_exit_shim.h)
+  endif()
   target_link_libraries(rvegen_lib INTERFACE $<BUILD_INTERFACE:rvegen_voropp>)
   target_compile_definitions(rvegen_lib INTERFACE
     $<BUILD_INTERFACE:RVEGEN_WITH_VORO_PP=1>)
