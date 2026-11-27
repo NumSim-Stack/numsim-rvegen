@@ -3726,7 +3726,7 @@ void test_voxel_writer_header_lists_phase_names_when_attached() {
   // as vtk_legacy_writer's title-line marker, so a single regex in a
   // downstream multi-format reader can pick out the version of any
   // rvegen-emitted file.
-  REQUIRE(text.find("[rvegen-voxel-format: v2]") != std::string::npos);
+  REQUIRE(text.find("[rvegen-voxel-format: v3]") != std::string::npos);
 }
 
 } // namespace

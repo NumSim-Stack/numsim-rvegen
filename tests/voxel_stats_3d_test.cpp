@@ -337,9 +337,50 @@ void test_statistics_post_process_3d() {
   std::remove("voxel_stats_3d_test_nonz.csv");
 }
 
+// The AABB-pruned scan must reproduce the brute-force first-match result,
+// including overlaps (lowest index wins) and shapes sticking out of the box.
+void test_voxel_matches_brute_force() {
+  std::mt19937 gen{7};
+  std::uniform_real_distribution<double> u(-0.2, 1.2), ur(0.02, 0.25);
+  shape_vector shapes;
+  for (int i = 0; i < 40; ++i) {
+    shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(
+        u(gen), u(gen), u(gen), ur(gen)));
+  }
+  const std::array<double, 3> box{1.0, 1.0, 1.0};
+  const std::size_t n = 24;
+  auto grid = rvegen::sample_voxel_grid(shapes, box, n, n, n);
+  std::size_t mismatches = 0;
+  for (std::size_t k = 0; k < n; ++k)
+    for (std::size_t j = 0; j < n; ++j)
+      for (std::size_t i = 0; i < n; ++i) {
+        const std::array<double, 3> p{(i + 0.5) / n, (j + 0.5) / n,
+                                      (k + 0.5) / n};
+        rvegen::phase_id expect = 0;
+        for (std::size_t s = 0; s < shapes.size(); ++s) {
+          if (shapes[s]->is_inside(p)) { expect = rvegen::phase_id(s + 1); break; }
+        }
+        if (grid[(k * n + j) * n + i] != expect) ++mismatches;
+      }
+  REQUIRE(mismatches == 0);
+}
+
+// nbins == 0 used to index hist[nbins - 1] out of bounds.
+void test_rdf_zero_bins() {
+  shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.3, 0.3, 0.3, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.6, 0.6, 0.6, 0.1));
+  REQUIRE(rvegen::radial_distribution_3d(shapes, {1.0, 1.0, 1.0}, 0).empty());
+  shape_vector c;
+  c.emplace_back(std::make_unique<rvegen::circle<double>>(0.3, 0.3, 0.1));
+  REQUIRE(rvegen::radial_distribution_2d(c, {1.0, 1.0, 0.0}, 0).empty());
+}
+
 } // namespace
 
 int main() {
+  test_voxel_matches_brute_force();
+  test_rdf_zero_bins();
   test_nz1_samples_mid_plane();
   test_s2_3d_limits();
   test_rdf_3d_poisson();

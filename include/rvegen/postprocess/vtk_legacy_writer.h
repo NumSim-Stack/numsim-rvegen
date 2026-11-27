@@ -153,13 +153,12 @@ public:
     // The VTK legacy format's title-line is also pressed into service
     // as a short scheme note for the same reason.
     //
-    // rvegen-vtk-format v2: the SCALARS field was renamed from a
-    // single fixed name ("phase") in v1 to one of
-    // "phase_id" / "shape_index" depending on writer state. The token
-    // "rvegen-vtk-format: v2" embedded in the title line lets a
-    // downstream parser detect the schema change unambiguously.
-    //
-    // rvegen-vtk-format v3: voxels moved from POINT_DATA on an
+    // The title line carries a "[rvegen-vtk-format: vN]" token so a
+    // downstream parser can detect schema changes unambiguously.
+    //   v1: single fixed SCALARS name ("phase").
+    //   v2: SCALARS renamed to "phase_id" / "shape_index" depending on
+    //       writer state.
+    //   v3 (current): voxels moved from POINT_DATA on an
     // nx × ny × nz point lattice (which ParaView drew half a voxel off,
     // with extent (n−1)·d) to CELL_DATA on an (nx+1) × (ny+1) × (nz+1)
     // point lattice, so each voxel occupies its true box in [0, L].
