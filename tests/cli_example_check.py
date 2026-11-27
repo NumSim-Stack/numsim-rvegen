@@ -20,8 +20,6 @@ declares, this script verifies the output file itself:
   .html  contains a script and >= N shapes
   .csv   (statistics) header volume fraction in (0, 1), 3 columns, r
          increasing, 0 <= S2(r) <= phi, S2 not constant, g(r) >= 0 and not 0
-  .yaml  (damask_material_config) every declared phase under phase:, one
-         material entry per voxel id 0..P
 
 Voxel ids (.vox / .vtk) are read in one of three modes:
   shapes        ids in 0..N, both matrix and inclusion voxels, at least
@@ -418,39 +416,6 @@ def check_csv(path):
     return f"{len(rows)} bins, phi {phi:.3f}"
 
 
-def check_damask_yaml(path, mode):
-    """material.yaml from damask_material_config: one material per voxel id."""
-    if mode.phases is None:
-        fail(f"{path.name}: DAMASK material config for a config without phases")
-    text = path.read_text()
-    section = None
-    names, materials = [], 0
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if not line.startswith(" "):
-            section = line.split(":", 1)[0].strip()
-            continue
-        if section == "phase":
-            m = re.match(r'^  "?([^":\s]+)"?:\s*$', line)
-            if m:
-                names.append(m.group(1))
-        elif section == "material" and re.match(r"^  - ", line):
-            materials += 1
-    for key in ("homogenization", "phase", "material"):
-        if not re.search(rf"^{key}:", text, re.M):
-            fail(f"{path.name}: missing top-level '{key}:' section")
-    missing = [n for n in mode.phases if n not in names]
-    if missing:
-        fail(f"{path.name}: phases {missing} not under 'phase:' (found {names})")
-    # Material index k is voxel id k, 0 = matrix gap, 1..P = phases.
-    want = len(mode.phases) + 1
-    if materials != want:
-        fail(f"{path.name}: {materials} material entries, voxel ids 0..{want - 1} "
-             f"need {want}")
-    return f"{len(names)} phases, {materials} materials"
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rvegen", required=True)
@@ -514,8 +479,6 @@ def main():
                 msg = check_html(p, nshapes)
             elif ext == ".csv":
                 msg = check_csv(p)
-            elif ext == ".yaml" and pp["type"] == "damask_material_config":
-                msg = check_damask_yaml(p, mode)
             else:
                 fail(f"{out}: no checker for extension {ext}")
             print(f"  {out}: {msg}")
