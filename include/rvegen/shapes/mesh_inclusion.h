@@ -56,6 +56,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -88,6 +89,205 @@ template <typename T>
   const T r = (x - lo) / ext * static_cast<T>(n);
   if (!(r > T{0})) return 0;
   return std::min(static_cast<std::size_t>(r), n - 1);
+}
+
+// Slightly off-axis +x ray direction shared by `mesh_inclusion::is_inside`
+// and the component interpenetration check. The tiny y/z slope dodges the
+// parity bug when the ray grazes a shared edge of an axis-aligned face.
+inline constexpr double mesh_ray_slope_y = 0.000721;
+inline constexpr double mesh_ray_slope_z = 0.000349;
+
+// Candidate-triangle lookup for +x rays (direction (1, sy, sz)) cast from
+// points inside the AABB of a triangle set. Triangles are binned in a
+// uniform 2D grid over (y, z). A ray from origin o reaches y in
+// [o.y, o.y + sy * extent_x] (and likewise z), so a triangle can only be
+// hit if o.y lies in [ymin - sy * extent_x, ymax]; registering each
+// triangle over that padded range lets a query read ONE bin and still see
+// every triangle the ray could hit, with no duplicates. Pure pre-filter:
+// the exact intersection test stays with the caller.
+template <typename T>
+class mesh_ray_grid {
+public:
+  mesh_ray_grid(std::vector<gte::Triangle3<T>> const& tris,
+                std::vector<std::size_t> const& ids,
+                std::array<T, 3> const& lo, std::array<T, 3> const& hi)
+      : _lo{lo}, _hi{hi} {
+    const std::size_t n = ids.size();
+    _r = std::clamp<std::size_t>(
+        static_cast<std::size_t>(std::ceil(std::sqrt(static_cast<double>(n)))),
+        1, 256);
+    const T ext = std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]});
+    const T pad = ext * T{1e-6};
+    const T dy = static_cast<T>(mesh_ray_slope_y) * (hi[0] - lo[0]) * T{1.01} + pad;
+    const T dz = static_cast<T>(mesh_ray_slope_z) * (hi[0] - lo[0]) * T{1.01} + pad;
+    struct range { std::size_t y0, y1, z0, z1; };
+    std::vector<range> rg(n);
+    // A mesh that is very long along x relative to its y/z size makes the
+    // padded footprints cover most bins; then the grid would not pay off
+    // (and would blow up memory), so `usable()` is false.
+    const std::size_t budget = 16 * n + 1024;
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      auto const& t = tris[ids[i]];
+      std::array<T, 3> mn = {t.v[0][0], t.v[0][1], t.v[0][2]}, mx = mn;
+      for (int c = 1; c < 3; ++c) {
+        for (int k = 0; k < 3; ++k) {
+          mn[k] = std::min(mn[k], t.v[c][k]);
+          mx[k] = std::max(mx[k], t.v[c][k]);
+        }
+      }
+      rg[i] = {mesh_grid_cell(mn[1] - dy, lo[1], hi[1], _r),
+               mesh_grid_cell(mx[1] + pad, lo[1], hi[1], _r),
+               mesh_grid_cell(mn[2] - dz, lo[2], hi[2], _r),
+               mesh_grid_cell(mx[2] + pad, lo[2], hi[2], _r)};
+      total += (rg[i].y1 - rg[i].y0 + 1) * (rg[i].z1 - rg[i].z0 + 1);
+      if (total > budget) return;
+    }
+    _usable = true;
+    _start.assign(_r * _r + 1, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+      for (auto y = rg[i].y0; y <= rg[i].y1; ++y)
+        for (auto z = rg[i].z0; z <= rg[i].z1; ++z) ++_start[y * _r + z + 1];
+    }
+    for (std::size_t b = 0; b < _r * _r; ++b) _start[b + 1] += _start[b];
+    _ids.resize(_start.back());
+    std::vector<std::size_t> cursor(_start.begin(), _start.end() - 1);
+    for (std::size_t i = 0; i < n; ++i) {
+      for (auto y = rg[i].y0; y <= rg[i].y1; ++y)
+        for (auto z = rg[i].z0; z <= rg[i].z1; ++z)
+          _ids[cursor[y * _r + z]++] = ids[i];
+    }
+  }
+
+  [[nodiscard]] bool usable() const noexcept { return _usable; }
+
+  // Triangle ids that a +x ray from (any x, y, z) may hit.
+  [[nodiscard]] std::pair<std::size_t const*, std::size_t const*>
+  candidates(T y, T z) const {
+    const auto b = mesh_grid_cell(y, _lo[1], _hi[1], _r) * _r +
+                   mesh_grid_cell(z, _lo[2], _hi[2], _r);
+    return {_ids.data() + _start[b], _ids.data() + _start[b + 1]};
+  }
+
+private:
+  std::array<T, 3> _lo, _hi;
+  std::size_t _r{1};
+  bool _usable{false};
+  std::vector<std::size_t> _start, _ids;
+};
+
+// Reject components that interpenetrate. For every pair of components
+// whose AABBs overlap, each vertex of one is classified against the
+// other as inside / outside / on-surface (within 1e-7 of the container's
+// largest AABB extent). The pair is rejected when it has vertices of
+// both kinds inside and outside: fully disjoint and fully nested pairs
+// pass, and components that merely touch (the shared vertices / edges
+// classify as on-surface and are ignored) keep working. Known limit:
+// crossing bodies none of whose vertices lie inside the other (a "+"
+// of two slabs) are not detected.
+template <typename T>
+void mesh_inclusion_reject_interpenetration(
+    std::vector<gte::Triangle3<T>> const& tris,
+    std::vector<std::size_t> const& comp,
+    std::vector<char> const& degenerate, std::size_t n_comp,
+    std::vector<std::array<T, 3>> const& bb_min,
+    std::vector<std::array<T, 3>> const& bb_max) {
+  if (n_comp < 2) return;
+  const std::size_t m = tris.size();
+
+  // Sweep along x for overlapping AABB pairs.
+  std::vector<std::size_t> order(n_comp);
+  for (std::size_t c = 0; c < n_comp; ++c) order[c] = c;
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    return bb_min[a][0] < bb_min[b][0];
+  });
+  std::vector<std::pair<std::size_t, std::size_t>> pairs;
+  for (std::size_t i = 0; i < n_comp; ++i) {
+    const auto a = order[i];
+    for (std::size_t j = i + 1; j < n_comp; ++j) {
+      const auto b = order[j];
+      if (bb_min[b][0] > bb_max[a][0]) break;
+      bool overlap = true;
+      for (int k = 1; k < 3; ++k) {
+        if (bb_min[b][k] > bb_max[a][k] || bb_min[a][k] > bb_max[b][k]) {
+          overlap = false;
+          break;
+        }
+      }
+      if (overlap) pairs.emplace_back(std::min(a, b), std::max(a, b));
+    }
+  }
+  if (pairs.empty()) return;
+
+  // Faces per component (CSR).
+  std::vector<std::size_t> start(n_comp + 1, 0);
+  for (std::size_t f = 0; f < m; ++f) {
+    if (!degenerate[f]) ++start[comp[f] + 1];
+  }
+  for (std::size_t c = 0; c < n_comp; ++c) start[c + 1] += start[c];
+  std::vector<std::size_t> faces(start[n_comp]);
+  {
+    std::vector<std::size_t> cursor(start.begin(), start.end() - 1);
+    for (std::size_t f = 0; f < m; ++f) {
+      if (!degenerate[f]) faces[cursor[comp[f]]++] = f;
+    }
+  }
+
+  std::vector<std::unique_ptr<mesh_ray_grid<T>>> grids(n_comp);
+  gte::TIQuery<T, gte::Ray3<T>, gte::Triangle3<T>> query;
+  gte::DCPQuery<T, gte::Vector3<T>, gte::Triangle3<T>> dist_query;
+  std::vector<std::size_t> own;
+
+  // true when some vertex of `a` is inside `b` and another is outside.
+  auto mixed = [&](std::size_t a, std::size_t b) {
+    std::vector<std::size_t> b_faces(faces.begin() + start[b],
+                                     faces.begin() + start[b + 1]);
+    if (!grids[b] && b_faces.size() > 32) {
+      grids[b] = std::make_unique<mesh_ray_grid<T>>(tris, b_faces, bb_min[b], bb_max[b]);
+    }
+    auto const* grid = (grids[b] && grids[b]->usable()) ? grids[b].get() : nullptr;
+    T extent = T{0};
+    for (int k = 0; k < 3; ++k) extent = std::max(extent, bb_max[b][k] - bb_min[b][k]);
+    const T eps2 = (extent * T{1e-7}) * (extent * T{1e-7});
+    gte::Ray3<T> ray;
+    ray.direction = {T{1}, static_cast<T>(mesh_ray_slope_y),
+                     static_cast<T>(mesh_ray_slope_z)};
+    bool any_in = false, any_out = false;
+    for (std::size_t i = start[a]; i < start[a + 1] && !(any_in && any_out); ++i) {
+      auto const& t = tris[faces[i]];
+      for (int c = 0; c < 3; ++c) {
+        auto const& p = t.v[c];
+        bool in_box = true;
+        for (int k = 0; k < 3; ++k) {
+          if (p[k] < bb_min[b][k] || p[k] > bb_max[b][k]) in_box = false;
+        }
+        if (!in_box) { any_out = true; continue; }
+        ray.origin = p;
+        std::size_t const* first = b_faces.data();
+        std::size_t const* last = first + b_faces.size();
+        if (grid) std::tie(first, last) = grid->candidates(p[1], p[2]);
+        int hits = 0;
+        bool on_surface = false;
+        for (auto it = first; it != last; ++it) {
+          if (dist_query(p, tris[*it]).sqrDistance <= eps2) { on_surface = true; break; }
+          if (query(ray, tris[*it]).intersect) ++hits;
+        }
+        if (on_surface) continue;
+        (hits % 2 ? any_in : any_out) = true;
+      }
+    }
+    return any_in && any_out;
+  };
+
+  for (auto const& [a, b] : pairs) {
+    if (mixed(a, b) || mixed(b, a)) {
+      throw std::runtime_error{
+          "mesh_inclusion: connected components " + std::to_string(a) +
+          " and " + std::to_string(b) +
+          " interpenetrate (some vertices of one lie inside the other, "
+          "others outside); components must be disjoint or fully nested"};
+    }
+  }
 }
 
 // For each connected component c of a closed mesh, decide whether its
@@ -524,6 +724,9 @@ template <typename T>
     }
   }
 
+  mesh_inclusion_reject_interpenetration<T>(tris, comp, degenerate,
+                                                    n_comp, bb_min, bb_max);
+
   // Desired sign per component: + for a solid, - for a cavity (nested
   // inside an odd number of other components). See
   // `mesh_inclusion_nesting_parity` for how nesting is detected.
@@ -567,8 +770,9 @@ public:
   // closed, manifold, orientable — see
   // `detail::mesh_inclusion_orientation_flips`) and inconsistently
   // wound triangles are re-oriented in place before sharing. Throws
-  // std::runtime_error on an invalid mesh.
+  // std::runtime_error on an invalid mesh (including an empty list).
   explicit mesh_inclusion(triangle_list triangles) {
+    if (triangles.empty()) throw_empty();
     apply_flips(triangles, detail::mesh_inclusion_orientation_flips(triangles));
     _base = std::make_shared<triangle_list const>(std::move(triangles));
     init_cache();
@@ -582,13 +786,12 @@ public:
   // (refcount bump + cached AABB/volume; no validation), as
   // `mesh_inclusion_input` does.
   explicit mesh_inclusion(shared_triangles base) : _base{std::move(base)} {
-    if (_base && !_base->empty()) {
-      const auto flips = detail::mesh_inclusion_orientation_flips(*_base);
-      if (std::find(flips.begin(), flips.end(), char{1}) != flips.end()) {
-        triangle_list fixed = *_base;
-        apply_flips(fixed, flips);
-        _base = std::make_shared<triangle_list const>(std::move(fixed));
-      }
+    if (!_base || _base->empty()) throw_empty();
+    const auto flips = detail::mesh_inclusion_orientation_flips(*_base);
+    if (std::find(flips.begin(), flips.end(), char{1}) != flips.end()) {
+      triangle_list fixed = *_base;
+      apply_flips(fixed, flips);
+      _base = std::make_shared<triangle_list const>(std::move(fixed));
     }
     init_cache();
   }
@@ -731,15 +934,31 @@ public:
     if (!_base || _base->empty()) return false;
     gte::Ray3<T> ray;
     ray.origin = to_local(point);
+    // A point outside the cached base AABB (compared in the base frame,
+    // i.e. after undoing translation, rotation and scale) is outside
+    // the closed mesh.
+    for (int k = 0; k < 3; ++k) {
+      if (!(ray.origin[k] >= _base_min[k] && ray.origin[k] <= _base_max[k])) {
+        return false;
+      }
+    }
     // Slightly off-axis direction to dodge the parity bug when the ray
     // grazes a shared edge between two triangles of an axis-aligned face.
     ray.direction[0] = T{1};
-    ray.direction[1] = T{0.000721};
-    ray.direction[2] = T{0.000349};
+    ray.direction[1] = static_cast<T>(detail::mesh_ray_slope_y);
+    ray.direction[2] = static_cast<T>(detail::mesh_ray_slope_z);
     gte::TIQuery<T, gte::Ray3<T>, gte::Triangle3<T>> query;
     int hits = 0;
-    for (auto const& tri : *_base) {
-      if (query(ray, tri).intersect) ++hits;
+    if (_grid) {
+      // Only triangles whose (y, z) footprint the ray can reach.
+      auto const [first, last] = _grid->candidates(ray.origin[1], ray.origin[2]);
+      for (auto it = first; it != last; ++it) {
+        if (query(ray, (*_base)[*it]).intersect) ++hits;
+      }
+    } else {
+      for (auto const& tri : *_base) {
+        if (query(ray, tri).intersect) ++hits;
+      }
     }
     return (hits % 2) == 1;
   }
@@ -778,6 +997,12 @@ public:
   }
 
 private:
+  [[noreturn]] static void throw_empty() {
+    throw std::runtime_error{
+        "mesh_inclusion: empty triangle list (a mesh inclusion needs at "
+        "least one closed surface)"};
+  }
+
   static void apply_flips(triangle_list& tris, std::vector<char> const& flips) {
     for (std::size_t f = 0; f < flips.size(); ++f) {
       if (flips[f]) std::swap(tris[f].v[1], tris[f].v[2]);
@@ -792,7 +1017,7 @@ private:
   // get_middle_point have stable semantics regardless of how the mesh
   // was originally positioned in the source file).
   void init_cache() {
-    if (!_base || _base->empty()) return;
+    if (!_base || _base->empty()) throw_empty();
     auto const& tris = *_base;
     _base_min = {tris[0].v[0][0], tris[0].v[0][1], tris[0].v[0][2]};
     _base_max = _base_min;
@@ -827,6 +1052,14 @@ private:
           "mesh_inclusion: closed mesh encloses (near-)zero volume (" +
           std::to_string(_volume) + ", bounding-box extent " +
           std::to_string(extent) + ") — degenerate or doubled-up surface"};
+    }
+    // Large meshes: bin the triangles so is_inside reads one small bucket.
+    if (tris.size() > 32) {
+      std::vector<std::size_t> ids(tris.size());
+      for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = i;
+      auto grid = std::make_shared<detail::mesh_ray_grid<T> const>(
+          tris, ids, _base_min, _base_max);
+      if (grid->usable()) _grid = std::move(grid);
     }
   }
 
@@ -877,6 +1110,7 @@ private:
   bool _identity_rotation{true};
   T _scale{1};
   T _volume{0};
+  std::shared_ptr<detail::mesh_ray_grid<T> const> _grid;   // null for small meshes
 };
 
 } // namespace rvegen
