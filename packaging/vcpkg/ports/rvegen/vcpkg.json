@@ -3,7 +3,7 @@
   "version-string": "0.1.0",
   "description": "RVE (Representative Volume Element) generator for FFT/FEM homogenization",
   "homepage": "https://github.com/NumSim-Stack/numsim-rvegen",
-  "license": "GPL-3.0-or-later",
+  "license": "BSD-3-Clause",
   "supports": "!uwp",
   "dependencies": [
     "boost-container",
