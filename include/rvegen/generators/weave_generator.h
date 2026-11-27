@@ -2,29 +2,41 @@
 
 // Deterministic woven-fabric generator (the #3 / #109 headline).
 //
-// Produces a plain-weave layout: N_warp yarns running along +x at
+// Produces a woven layout: N_warp yarns running along +x at
 // evenly-spaced y, interlacing with N_weft yarns running along +y
 // at evenly-spaced x. Each yarn is a `polyline_tube` whose
-// centerline is sampled along its primary axis with a sinusoidal
-// z-undulation (crimp). With s_x = Lx/N_weft, s_y = Ly/N_warp the yarn
-// spacings and z_c the mid-plane,
+// centerline is sampled along its primary axis with a z-undulation
+// (crimp). With s_x = Lx/N_weft, s_y = Ly/N_warp the yarn spacings,
+// z_c the mid-plane and crossings at x_j = (j+½)·s_x, y_i = (i+½)·s_y:
 //
-//   warp_i(x) = z_c + A·(−1)^i · sin(π x / s_x)
-//   weft_j(y) = z_c − A·(−1)^j · sin(π y / s_y)
+// Interlacing. The pattern is a matrix P(i, j) ∈ {+1, −1} with
+// P = +1 when warp i passes OVER weft j, periodic with repeat R in
+// both indices (`weave_pattern`):
+//   * plain      R = 2  P = +1 iff (i + j) mod 2 = 0      (1 over 1)
+//   * twill_2_2  R = 4  P = +1 iff (j − i) mod 4 ∈ {0, 1} (2 over 2,
+//                       shifted one weft per warp → diagonal rib)
+//   * satin_5    R = 5  P = −1 iff j ≡ 2i (mod 5)         (warp-faced:
+//                       over 4, under 1; interlacing points never
+//                       adjacent, step 2)
+// At crossing (i, j) the warp sits at z_c + A·P(i, j) and the weft at
+// z_c − A·P(i, j), so the centrelines are 2A apart and the topology is
+// exactly P.
 //
-// Crossings sit at x_j = (j+½)·s_x, y_i = (i+½)·s_y, where
-// warp_i(x_j) = z_c + A·(−1)^(i+j) and weft_j(y_i) = z_c − A·(−1)^(i+j):
-// warp i passes OVER weft j when (i+j) is even and UNDER otherwise, the
-// centrelines are 2A apart in z at every crossing, and the over/under
-// sign alternates along both i and j (1×1 plain-weave topology).
+// Profile. Between two consecutive crossings (local t ∈ [0, 1]) a yarn
+// with crossing values p0, p1 follows
+//   z = z_c + A·[ (p0 + p1)/2 + (p0 − p1)/2 · cos(π t) ],
+// i.e. a half-cosine transition when the sign changes and a flat
+// float when it doesn't. For plain weave this IS the sinusoid
+// warp_i(x) = z_c + A·(−1)^i·sin(π x/s_x) (weft: minus sign, j, y).
+// The profile is C¹ (zero slope at every crossing) with
+// |z''| ≤ A·π²/s² everywhere — the same bound as the plain sinusoid,
+// because floats only add zero-curvature stretches.
 //
-// Periodicity: each profile has period 2s, so it tiles the domain only
-// when the yarn count across it is even. This is topological, not a
-// choice of phase: travelling once across a periodic cell a warp passes
-// N_weft crossings and flips over/under at each, so it returns to its
-// start state only if N_weft is even (same for wefts and N_warp). Both
-// counts must therefore be even (≥ 2); odd counts are rejected rather
-// than producing a seam where the alternation breaks.
+// Periodicity: P has repeat R, so each yarn count must be a multiple
+// of R (even for plain, 4 for twill_2_2, 5 for satin_5). For plain
+// weave this is topological, not a choice of phase: travelling once
+// across a periodic cell a warp flips over/under at every crossing,
+// so it returns to its start state only if the count is even.
 //
 // This is a deterministic tessellation, NOT a sampling generator —
 // hence it does NOT inherit `rve_generator_base` (which takes
@@ -56,6 +68,14 @@
 //     centreline clearance is ≥ 2m for every (i, j) pair, including
 //     periodic images. (m > r also implies s > 2r, so parallel
 //     neighbours never touch.)
+//     The proof holds for every pattern. Write the warp near crossing
+//     (i, j) as z_c + A·P·g(u), u = π(x − x_j)/s_x, and the weft as
+//     z_c − A·P·h(v). Then g(0) = h(0) = 1, and the fastest any
+//     profile leaves ±A is the half-cosine, so 1 − g(u) ≤ 1 − cos u
+//     ≤ u²/2 on |u| ≤ π, and 1 − g ≤ 2 ≤ u²/2 beyond. With
+//     c = (g + h)/2: 4A² − A²(g + h)² = 4A²(1 − c)(1 + c)
+//     ≤ 8A²(1 − c) ≤ 2A²(u² + v²) ≤ (s/π)²(u² + v²) when A ≤ s/(π√2),
+//     so the squared distance is ≥ 4A². Floats never reduce clearance.
 //   * Polyline clearance. The emitted polylines are inscribed in the
 //     curves, and linear interpolation deviates from a curve by at
 //     most h²·max|z''|/8 = A·π²/(32·q²) (h = s/(2q) per segment). Each
@@ -82,8 +102,8 @@
 //     generators; weave is deterministic and doesn't fit the
 //     `compute(inputs, termination, box)` shape — needs a separate
 //     registry or a generator-base relaxation).
-//   * Twill / satin weaves (different over/under patterns at
-//     intersection points).
+//   * Other patterns (twill 3/1, satin 8, basket weave) — add a case
+//     to `interlacing()`; the clearance argument covers any ±1 matrix.
 //   * Non-circular (lenticular) yarn cross-sections, which are what
 //     let real fabrics pack tighter than the r ≤ s/(π√2) bound.
 //   * Tow + yarn hierarchy (each warp/weft as a bundle of fibres
@@ -108,24 +128,42 @@
 
 namespace rvegen {
 
+// Interlacing pattern of a `weave_generator` (see the header comment
+// for the matrices and their repeats).
+enum class weave_pattern { plain, twill_2_2, satin_5 };
+
+// Repeat of a pattern: the yarn counts must be multiples of it. Throws
+// std::invalid_argument for a value outside the enum.
+[[nodiscard]] constexpr std::size_t
+weave_pattern_repeat(weave_pattern p) {
+  switch (p) {
+    case weave_pattern::plain: return 2;
+    case weave_pattern::twill_2_2: return 4;
+    case weave_pattern::satin_5: return 5;
+  }
+  throw std::invalid_argument{"weave_pattern: unknown pattern value"};
+}
+
 template <typename T = double>
 class weave_generator {
 public:
   using value_type = T;
   using shape_vector = std::vector<std::unique_ptr<shape_base<T>>>;
 
-  // Construct a plain weave on the given domain. `amplitude` is the
-  // peak-to-zero z-displacement of each yarn's sinusoidal
+  // Construct a weave on the given domain (plain by default).
+  // `amplitude` is the peak-to-zero z-displacement of each yarn's
   // centerline (so total z-extent is 2·amplitude + 2·yarn_radius).
-  // Throws std::runtime_error on odd yarn counts or a configuration
-  // that would make yarns interpenetrate or leave the domain (see the
-  // feasibility list in the header comment).
+  // Throws std::runtime_error when a yarn count is not a multiple of
+  // the pattern repeat, or for a configuration that would make yarns
+  // interpenetrate or leave the domain (see the feasibility list in
+  // the header comment).
   weave_generator(std::array<value_type, 3> const& domain_box,
                   std::size_t n_warp_yarns,
                   std::size_t n_weft_yarns,
                   value_type yarn_radius,
                   value_type amplitude,
-                  std::size_t n_segments_per_yarn = 32)
+                  std::size_t n_segments_per_yarn = 32,
+                  weave_pattern pattern = weave_pattern::plain)
       : _domain{domain_box},
         _n_warp{n_warp_yarns},
         _n_weft{n_weft_yarns},
@@ -133,7 +171,8 @@ public:
         _amplitude{amplitude},
         _n_segments{n_segments_per_yarn},
         _n_seg_warp{0},
-        _n_seg_weft{0} {
+        _n_seg_weft{0},
+        _pattern{pattern} {
     if (n_warp_yarns == 0 || n_weft_yarns == 0) {
       throw std::runtime_error{
           "weave_generator: n_warp_yarns and n_weft_yarns must both be ≥ 1"};
@@ -172,12 +211,15 @@ public:
           "weave_generator: 2D domain (Lz == 0) requires amplitude = 0; "
           "for an undulating weave use a 3D domain with positive Lz"};
     }
-    if (n_warp_yarns % 2 != 0 || n_weft_yarns % 2 != 0) {
+    const std::size_t repeat = weave_pattern_repeat(pattern);
+    if (n_warp_yarns % repeat != 0 || n_weft_yarns % repeat != 0) {
       throw std::runtime_error{
           "weave_generator: n_warp_yarns and n_weft_yarns must both be "
-          "even — a periodic plain weave flips over/under at every "
-          "crossing, so an odd count breaks the alternation at the "
-          "periodic seam"};
+          "multiples of the pattern repeat ("
+          + std::to_string(repeat) + " for "
+          + (pattern == weave_pattern::twill_2_2 ? "twill_2_2"
+             : pattern == weave_pattern::satin_5 ? "satin_5" : "plain")
+          + ") so the interlacing tiles the periodic cell"};
     }
     // Segment multiplier q needed for polyline clearance (3D only;
     // a flat 2D weave has no crimp to resolve, but still needs the
@@ -211,6 +253,20 @@ public:
 
   [[nodiscard]] std::size_t n_warp_yarns() const noexcept { return _n_warp; }
   [[nodiscard]] std::size_t n_weft_yarns() const noexcept { return _n_weft; }
+  [[nodiscard]] weave_pattern pattern() const noexcept { return _pattern; }
+
+  // Interlacing matrix: +1 when warp i passes OVER weft j, −1 when it
+  // passes under. Periodic in i and j with the pattern repeat.
+  [[nodiscard]] int interlacing(std::size_t i, std::size_t j) const noexcept {
+    switch (_pattern) {
+      case weave_pattern::twill_2_2:
+        return ((j + 4 - i % 4) % 4 < 2) ? +1 : -1;
+      case weave_pattern::satin_5:
+        return (j % 5 == (2 * i) % 5) ? -1 : +1;
+      case weave_pattern::plain: break;
+    }
+    return ((i + j) % 2 == 0) ? +1 : -1;
+  }
 
   // Segments actually emitted per warp / weft centerline (≥ the
   // requested n_segments_per_yarn; see the header comment).
@@ -247,7 +303,7 @@ public:
       for (std::size_t k = 0; k <= n_seg_warp; ++k) {
         const value_type x = Lx * static_cast<value_type>(k)
                               / static_cast<value_type>(n_seg_warp);
-        centerline.push_back({x, y, zc + crimp(i, x, Lx, _n_weft)});
+        centerline.push_back({x, y, zc + crimp(i, x, Lx, _n_weft, true)});
       }
       auto tube = std::make_unique<polyline_tube<value_type>>(
           centerline, _yarn_radius);
@@ -267,7 +323,7 @@ public:
       for (std::size_t k = 0; k <= n_seg_weft; ++k) {
         const value_type y = Ly * static_cast<value_type>(k)
                               / static_cast<value_type>(n_seg_weft);
-        centerline.push_back({x, y, zc - crimp(j, y, Ly, _n_warp)});
+        centerline.push_back({x, y, zc - crimp(j, y, Ly, _n_warp, false)});
       }
       auto tube = std::make_unique<polyline_tube<value_type>>(
           centerline, _yarn_radius);
@@ -288,6 +344,7 @@ private:
   std::size_t _n_segments;
   std::size_t _n_seg_warp;
   std::size_t _n_seg_weft;
+  weave_pattern _pattern;
   std::string _warp_phase;
   std::string _weft_phase;
 
@@ -304,15 +361,34 @@ private:
            / (value_type{2} * static_cast<value_type>(n));
   }
 
-  // Signed crimp offset A·(−1)^idx·sin(π t / s) of yarn `idx` at
-  // coordinate `t` along its axis, where s = L / n_crossing is the
-  // spacing of the yarns it crosses.
+  // Signed crimp offset of yarn `idx` at coordinate `t` along its axis
+  // (warp: x, weft: y), where s = L / n_crossing is the spacing of the
+  // yarns it crosses. Returns A·P along the warp's row of the
+  // interlacing matrix (warp) or its column (weft), half-cosine
+  // between crossings of opposite sign, flat between equal ones.
   [[nodiscard]] value_type crimp(std::size_t idx, value_type t, value_type L,
-                                 std::size_t n_crossing) const noexcept {
+                                 std::size_t n_crossing,
+                                 bool is_warp) const noexcept {
     using std::numbers::pi_v;
     const value_type spacing = L / static_cast<value_type>(n_crossing);
-    const value_type sign = (idx % 2 == 0) ? value_type{1} : value_type{-1};
-    return sign * _amplitude * std::sin(pi_v<value_type> * t / spacing);
+    // Crossings at integer u; u ∈ [−½, n_crossing − ½] over [0, L].
+    const value_type u = t / spacing - value_type{0.5};
+    const value_type k_floor = std::floor(u);
+    const value_type frac = u - k_floor;
+    const auto n = static_cast<long long>(n_crossing);
+    const long long k = static_cast<long long>(k_floor);
+    const auto wrap = [n](long long c) {
+      return static_cast<std::size_t>(((c % n) + n) % n);
+    };
+    const std::size_t c0 = wrap(k);
+    const std::size_t c1 = wrap(k + 1);
+    const value_type p0 = static_cast<value_type>(
+        is_warp ? interlacing(idx, c0) : interlacing(c0, idx));
+    const value_type p1 = static_cast<value_type>(
+        is_warp ? interlacing(idx, c1) : interlacing(c1, idx));
+    return _amplitude * ((p0 + p1) * value_type{0.5}
+                         + (p0 - p1) * value_type{0.5}
+                               * std::cos(pi_v<value_type> * frac));
   }
 
   // Segments for a yarn that crosses `n_crossing` others: 2·n_crossing·q

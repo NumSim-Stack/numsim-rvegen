@@ -2393,13 +2393,13 @@ void test_cluster_seeds_2d_seeds_cluster_around_centers() {
 void test_cluster_seeds_2d_validation_throws() {
   std::mt19937 e{1};
   bool t1 = false; try { rvegen::cluster_seeds_2d<double>(0.0, 1.0, 2, 5, 0.1, e); }
-                   catch (std::runtime_error const&) { t1 = true; } REQUIRE(t1);
+                   catch (std::invalid_argument const&) { t1 = true; } REQUIRE(t1);
   bool t2 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 0, 5, 0.1, e); }
-                   catch (std::runtime_error const&) { t2 = true; } REQUIRE(t2);
+                   catch (std::invalid_argument const&) { t2 = true; } REQUIRE(t2);
   bool t3 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 2, 0, 0.1, e); }
-                   catch (std::runtime_error const&) { t3 = true; } REQUIRE(t3);
+                   catch (std::invalid_argument const&) { t3 = true; } REQUIRE(t3);
   bool t4 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 2, 5, 0.0, e); }
-                   catch (std::runtime_error const&) { t4 = true; } REQUIRE(t4);
+                   catch (std::invalid_argument const&) { t4 = true; } REQUIRE(t4);
 }
 
 // voronoi_generator_3d (#114 phase 2): bounded 3D Voronoi by
