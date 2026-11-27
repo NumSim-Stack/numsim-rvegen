@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every PR, whatever its base: stacked PRs target another PR's branch.
   pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
