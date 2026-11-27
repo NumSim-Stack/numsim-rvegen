@@ -10,10 +10,12 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
 #include "../phase/phase.h"
+#include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
 
 namespace rvegen {
@@ -125,9 +127,14 @@ sample_voxel_grid_with_ids(
 } // namespace detail
 
 // Sample a regular voxel grid: for each voxel centre point, ask each shape
-// in turn whether the point is inside; mark with the (1-based) shape index
-// or 0 if no shape contains it. First-match wins; later shapes don't
+// in turn whether the point is inside; mark with the (1-based) inclusion
+// index or 0 if no shape contains it. First-match wins; later shapes don't
 // overwrite earlier ones.
+//
+// Inclusion index: shapes are numbered 1, 2, ... in order of first
+// appearance, except that shapes sharing an `inclusion_id` (a periodic
+// primary and its wraps, linked by periodic_generator) share one number.
+// Without periodic wraps this is the plain 1-based shape index.
 //
 // 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz_eff = 1)
 // at z = 0. 3D RVEs sample voxel centres along z as well, so nz = 1 gives
@@ -139,8 +146,17 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::array<T, 3> const& domain_box,
                   std::size_t nx, std::size_t ny, std::size_t nz) {
   std::vector<phase_id> shape_to_id(shapes.size());
+  std::unordered_map<std::size_t, phase_id> id_of_inclusion;
+  phase_id next_id = 0;
   for (std::size_t s = 0; s < shapes.size(); ++s) {
-    shape_to_id[s] = static_cast<phase_id>(s + 1);
+    if (auto const inc = inclusion_id(*shapes[s])) {
+      auto const [it, inserted] =
+          id_of_inclusion.try_emplace(*inc, next_id + 1);
+      if (inserted) ++next_id;
+      shape_to_id[s] = it->second;
+    } else {
+      shape_to_id[s] = ++next_id;
+    }
   }
   return detail::sample_voxel_grid_with_ids(
       shapes, domain_box, nx, ny, nz, shape_to_id);

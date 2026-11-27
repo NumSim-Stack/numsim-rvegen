@@ -167,7 +167,7 @@ public:
     const char* const field_name  = _phases ? "phase_id" : "shape_index";
     const char* const title_suffix = _phases
         ? " (phase_id from phase_collection, 0 = matrix/untagged)"
-        : " (1-based shape index, 0 = matrix)";
+        : " (1-based inclusion index, wraps share their primary's id, 0 = matrix)";
 
     // SPACING is written with round-trip precision (17 significant
     // digits) so L = n · spacing holds in the reader; the caller's stream
