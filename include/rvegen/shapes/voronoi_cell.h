@@ -119,12 +119,16 @@ public:
     return std::abs(sum) / T{6};
   }
 
-  // Half-extents of the AABB on each axis (shape_base contract).
+  // Per-axis largest one-sided extent from get_middle_point() (the volume
+  // centroid), so middle +/- max_expansion() always encloses the cell (#79).
   [[nodiscard]] std::array<T, 3> max_expansion() const override {
     auto bb = compute_bb_extents();
-    return {(bb[1][0] - bb[0][0]) * T{0.5},
-            (bb[1][1] - bb[0][1]) * T{0.5},
-            (bb[1][2] - bb[0][2]) * T{0.5}};
+    std::array<T, 3> r{};
+    for (int k = 0; k < 3; ++k) {
+      r[k] = std::max(bb[1][k] - _volume_centroid[k],
+                      _volume_centroid[k] - bb[0][k]);
+    }
+    return r;
   }
 
   // Volume centroid (not the vertex mean; #79).
