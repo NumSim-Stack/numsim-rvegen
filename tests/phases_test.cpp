@@ -3,7 +3,10 @@
 
 #include <array>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <map>
+#include <string>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -183,9 +186,183 @@ void test_by_index_overlap_and_order() {
   REQUIRE(s[8]->phase_name().empty());
 }
 
+// ---- matrix phase ids, read back from the written files ------------------
+
+struct parsed_grid {
+  std::map<std::size_t, std::string> table;   // header "# phase N = name"
+  std::string matrix_line;                    // "# matrix phase: ..." or ""
+  std::string scheme_line;                    // "# id scheme: ..."
+  std::vector<std::size_t> ids;
+};
+
+parsed_grid read_voxel_text(std::istream& in) {
+  parsed_grid g;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty()) continue;
+    if (line[0] == '#') {
+      if (line.rfind("# phase ", 0) == 0) {
+        auto eq = line.find(" = ");
+        g.table[std::stoull(line.substr(8, eq - 8))] = line.substr(eq + 3);
+      } else if (line.rfind("# matrix phase:", 0) == 0) {
+        g.matrix_line = line;
+      } else if (line.rfind("# id scheme:", 0) == 0) {
+        g.scheme_line = line;
+      }
+      continue;
+    }
+    g.ids.push_back(std::stoull(line));
+  }
+  return g;
+}
+
+parsed_grid read_vtk_body(std::string const& path) {
+  parsed_grid g;
+  std::ifstream in{path};
+  std::string line;
+  bool body = false;
+  while (std::getline(in, line)) {
+    if (body) { if (!line.empty()) g.ids.push_back(std::stoull(line)); }
+    else if (line.rfind("LOOKUP_TABLE", 0) == 0) body = true;
+  }
+  return g;
+}
+
+std::map<std::size_t, std::size_t> histogram(std::vector<std::size_t> const& v) {
+  std::map<std::size_t, std::size_t> h;
+  for (auto id : v) ++h[id];
+  return h;
+}
+
+void test_matrix_phase_in_memory() {
+  auto phases = make_phases();   // matrix = 1, fibre = 2, filler = 3
+  auto s = sample_shapes();
+  rvegen::phase_assignment<double>::from_json(
+      json::parse(R"({"all_inclusions": "fibre", "matrix": "matrix"})"), phases)
+      .apply(s);
+  rvegen::voxel_writer<double> w{16, 16, 1};
+  w.set_phases(&phases);
+
+  // No matrix declared: behaviour as before, uncovered voxels are 0.
+  auto const before = w.sample(s, {1.0, 1.0, 0.0});
+  std::size_t zeros = 0;
+  for (auto v : before) if (v == 0) ++zeros;
+  REQUIRE(zeros > 0);
+
+  phases.set_matrix("matrix");
+  auto const after = w.sample(s, {1.0, 1.0, 0.0});
+  std::size_t matrix_count = 0, fibre_count = 0, other = 0;
+  for (auto v : after) {
+    if (v == 1) ++matrix_count; else if (v == 2) ++fibre_count; else ++other;
+  }
+  REQUIRE(matrix_count == zeros);   // uncovered voxels take the matrix id
+  REQUIRE(fibre_count > 0);
+  REQUIRE(other == 0);              // no id 0 any more
+
+  // A shape without a phase stays untagged (0) even with a matrix declared.
+  s.push_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.05));
+  s.back()->info().set_phase_name("");
+  bool has_zero = false;
+  for (auto v : w.sample(s, {1.0, 1.0, 0.0})) if (v == 0) has_zero = true;
+  REQUIRE(has_zero);
+
+  // Shape-index mode (no phases attached) is unchanged.
+  rvegen::voxel_writer<double> idx{16, 16, 1};
+  auto const g = idx.sample(sample_shapes(), {1.0, 1.0, 0.0});
+  std::size_t idx_zero = 0;
+  for (auto v : g) if (v == 0) ++idx_zero;
+  REQUIRE(idx_zero == zeros);
+
+  bool threw = false;
+  try { phases.set_matrix("nope"); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw);
+}
+
+void test_matrix_phase_files_from_example(char const* cli, char const* example) {
+  // Run the CLI on the shipped example (outputs redirected to private
+  // names so this does not race the other CLI test) and read both grids
+  // back from disk.
+  std::ifstream cfg_in{example};
+  auto cfg = json::parse(cfg_in);
+  cfg["postprocess"][0]["output_path"] = "phases_files_test.vox";
+  cfg["postprocess"][1]["output_path"] = "phases_files_test.vtk";
+  { std::ofstream o{"phases_files_test.json"}; o << cfg.dump(); }
+  const std::string cmd = std::string{"\""} + cli +
+                          "\" phases_files_test.json > phases_files_test.log";
+  REQUIRE(std::system(cmd.c_str()) == 0);
+
+  std::ifstream vox{"phases_files_test.vox"};
+  auto const v = read_voxel_text(vox);
+  auto const k = read_vtk_body("phases_files_test.vtk");
+  REQUIRE(v.ids.size() == 64 * 64);
+  REQUIRE(v.ids == k.ids);   // voxel and VTK agree voxel by voxel
+
+  REQUIRE(v.table.size() == 3);
+  REQUIRE(v.table.at(1) == "matrix");
+  REQUIRE(v.table.at(2) == "fibre");
+  REQUIRE(v.table.at(3) == "filler");
+  REQUIRE(v.matrix_line == "# matrix phase: matrix (id 1)");
+  REQUIRE(v.scheme_line.find("matrix phase id") != std::string::npos);
+
+  auto const h = histogram(v.ids);
+  for (auto const& [id, n] : h) { (void)n; REQUIRE(v.table.count(id) == 1); }
+  REQUIRE(h.count(0) == 0);          // no untagged voxel
+  REQUIRE(h.count(1) == 1 && h.at(1) > 0);   // matrix voxels exist
+  REQUIRE(h.count(2) == 1 && h.count(3) == 1);
+  // Matrix count equals the uncovered count: voxels in shape-index
+  // terms (id 0) are not available here, but fibre+filler+matrix must
+  // add up to the whole grid with nothing else present.
+  REQUIRE(h.at(1) + h.at(2) + h.at(3) == v.ids.size());
+
+  // Sidecar name table matches the header table.
+  std::ifstream side{"phases_files_test.vox.phases.json"};
+  REQUIRE(static_cast<bool>(side));
+  auto const sj = json::parse(side);
+  REQUIRE(sj.at("matrix") == "matrix");
+  REQUIRE(sj.at("phases").size() == 3);
+  for (auto const& p : sj.at("phases"))
+    REQUIRE(v.table.at(p.at("id").get<std::size_t>()) == p.at("name").get<std::string>());
+  std::ifstream side_vtk{"phases_files_test.vtk.phases.json"};
+  REQUIRE(static_cast<bool>(side_vtk));
+  REQUIRE(json::parse(side_vtk) == sj);
+
+  // The VTK file stays loadable: single title line within 256 chars.
+  std::ifstream vtk{"phases_files_test.vtk"};
+  std::string l1, title;
+  std::getline(vtk, l1);
+  std::getline(vtk, title);
+  REQUIRE(l1 == "# vtk DataFile Version 3.0");
+  REQUIRE(title.size() <= 256);
+  REQUIRE(title.find(".phases.json") != std::string::npos);
+}
+
+void test_empty_phase_names_rejected() {
+  bool threw = false;
+  try {
+    (void)rvegen::load_phases_from_json<double>(json::parse(R"([{"name": ""}])"));
+  } catch (std::exception const& e) {
+    threw = std::string{e.what()}.find("empty") != std::string::npos;
+  }
+  REQUIRE(threw);
+
+  auto phases = make_phases();
+  for (char const* text : {R"({"all_inclusions": ""})",
+                           R"({"matrix": ""})",
+                           R"({"by_shape_type": {"circle": ""}})",
+                           R"({"by_index": {"0": ""}})"}) {
+    threw = false;
+    try {
+      (void)rvegen::phase_assignment<double>::from_json(json::parse(text), phases);
+    } catch (std::exception const& e) {
+      threw = std::string{e.what()}.find("empty") != std::string::npos;
+    }
+    REQUIRE(threw);
+  }
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
   test_phases_reject_material_and_unknown_keys();
   test_by_index_unique_inclusions();
   test_by_index_overlap_and_order();
@@ -194,6 +371,9 @@ int main() {
   test_by_index_ranges();
   test_assignment_errors();
   test_set_phases_hook_reaches_writers();
+  test_matrix_phase_in_memory();
+  test_empty_phase_names_rejected();
+  if (argc >= 3) test_matrix_phase_files_from_example(argv[1], argv[2]);
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "phases_test OK\n";
   return EXIT_SUCCESS;

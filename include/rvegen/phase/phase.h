@@ -13,11 +13,12 @@
 //   * Shapes carry a phase NAME, so multiple shapes share a phase by name.
 //
 // Convention on phase ids:
-//   User-defined phases get monotonic ids starting at 1. Id 0 is held
-//   in reserve for "void" / matrix gaps so a future voxel writer can
-//   use it as the default-fill marker without colliding with a real
-//   phase. Today no writer consumes this convention; it is a
-//   forward-looking reservation.
+//   User-defined phases get monotonic ids starting at 1 (gmsh physical
+//   tags must be positive, so a phase can never be id 0). Id 0 means
+//   "untagged". If the config declares which phase is the matrix
+//   (`phase_assignment.matrix`, recorded via `set_matrix`), the voxel and
+//   VTK writers give cells that no shape covers THAT phase's id; without
+//   a declared matrix phase, uncovered cells stay 0 (matrix / untagged).
 
 #include <cstddef>
 #include <stdexcept>
@@ -82,6 +83,22 @@ public:
     return at(name).id;
   }
 
+  // Declare which phase is the matrix (the region no shape covers).
+  // Throws if the phase is unknown.
+  void set_matrix(std::string const& name) {
+    (void)at(name);
+    _matrix = name;
+  }
+  [[nodiscard]] bool has_matrix() const noexcept { return !_matrix.empty(); }
+  [[nodiscard]] std::string const& matrix_name() const noexcept {
+    return _matrix;
+  }
+  // Id carried by uncovered cells: the matrix phase's id, or 0 when no
+  // matrix phase is declared.
+  [[nodiscard]] std::size_t matrix_id() const {
+    return _matrix.empty() ? std::size_t{0} : id_of(_matrix);
+  }
+
   [[nodiscard]] std::size_t size() const noexcept { return _ordered.size(); }
   [[nodiscard]] bool empty() const noexcept { return _ordered.empty(); }
 
@@ -98,6 +115,7 @@ private:
   std::unordered_map<std::string, phase_type> _by_name;
   std::vector<phase_type const*> _ordered;
   std::size_t _next_id{1};
+  std::string _matrix;
 };
 
 // Parses a JSON `"phases"` array into a phase_collection.
@@ -107,7 +125,7 @@ private:
 //
 // Validation:
 //   * `phases_array` must be an array.
-//   * Each entry must be an object with a string `"name"` and no other
+//   * Each entry must be an object with a non-empty string `"name"` and no other
 //     keys. A `"material"` key is rejected explicitly: material
 //     properties are out of scope for rvegen and belong to the
 //     downstream solver, keyed by phase name or id.
@@ -128,6 +146,10 @@ inline phase_collection<T> load_phases_from_json(nlohmann::json const& phases_ar
           "load_phases_from_json: each phase must have a string 'name'"};
     }
     auto name = entry["name"].get<std::string>();
+    if (name.empty()) {
+      throw std::runtime_error{
+          "load_phases_from_json: phase 'name' must not be empty"};
+    }
     for (auto const& [key, value] : entry.items()) {
       if (key == "name") continue;
       if (key == "material") {

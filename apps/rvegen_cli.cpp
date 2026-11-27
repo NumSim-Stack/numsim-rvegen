@@ -254,10 +254,10 @@ int run(int argc, char** argv) {
       throw std::runtime_error{
           "\"phase_assignment\" given without a \"phases\" array"};
     }
-    const auto assigned =
-        rvegen::phase_assignment<double>::from_json(
-            config.at("phase_assignment"), *phases)
-            .apply(shapes, domain_box);
+    const auto assignment = rvegen::phase_assignment<double>::from_json(
+        config.at("phase_assignment"), *phases);
+    if (assignment.matrix()) phases->set_matrix(*assignment.matrix());
+    const auto assigned = assignment.apply(shapes, domain_box);
     std::cout << "rvegen: phase_assignment tagged " << assigned << " shape"
               << (assigned == 1 ? "" : "s") << '\n';
   }
