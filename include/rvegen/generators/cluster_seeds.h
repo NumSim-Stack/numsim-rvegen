@@ -19,9 +19,11 @@
 // returned vector.
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace rvegen {
@@ -34,17 +36,27 @@ template <typename T = double, typename Engine = std::mt19937>
     T cluster_spread,
     Engine& engine,
     std::size_t max_attempts_per_seed = 100) {
-  if (Lx <= T{0} || Ly <= T{0}) {
-    throw std::runtime_error{
-        "cluster_seeds_2d: Lx and Ly must both be positive"};
+  // Argument validation (std::invalid_argument). The NaN-safe `!(x > 0)`
+  // form matters: std::uniform_real_distribution / std::normal_distribution
+  // have undefined behaviour for non-finite bounds or stddev <= 0.
+  if (!(Lx > T{0}) || !(Ly > T{0}) || !std::isfinite(Lx) ||
+      !std::isfinite(Ly)) {
+    throw std::invalid_argument{
+        "cluster_seeds_2d: Lx and Ly must both be finite and positive (got Lx=" +
+        std::to_string(Lx) + ", Ly=" + std::to_string(Ly) + ")"};
   }
   if (n_clusters == 0 || n_per_cluster == 0) {
-    throw std::runtime_error{
+    throw std::invalid_argument{
         "cluster_seeds_2d: n_clusters and n_per_cluster must both be ≥ 1"};
   }
-  if (cluster_spread <= T{0}) {
-    throw std::runtime_error{
-        "cluster_seeds_2d: cluster_spread must be positive"};
+  if (!(cluster_spread > T{0}) || !std::isfinite(cluster_spread)) {
+    throw std::invalid_argument{
+        "cluster_seeds_2d: cluster_spread must be finite and positive (got " +
+        std::to_string(cluster_spread) + ")"};
+  }
+  if (max_attempts_per_seed == 0) {
+    throw std::invalid_argument{
+        "cluster_seeds_2d: max_attempts_per_seed must be ≥ 1"};
   }
 
   std::uniform_real_distribution<T> ux{T{0}, Lx};

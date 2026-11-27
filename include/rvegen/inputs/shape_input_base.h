@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cmath>
+#include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
+#include "../distributions/distribution_base.h"
 #include "../metadata/info.h"
 #include "../shapes/shape_base.h"
 #include "../types.h"
@@ -25,6 +29,34 @@ namespace rvegen {
 //   implementations. The shape carries the metadata through clone /
 //   translate operations; output writers consume it (per-phase gmsh
 //   Physical groups, voxel grid ids, DAMASK material.config).
+//
+// Draw order (reproducibility):
+//   Concrete inputs draw every value into a named local, one statement
+//   per draw, in the order documented on their `new_shape()`: position
+//   (x, y[, z]) first, then sizes, then rotation. Never pass distribution
+//   calls as function arguments — argument evaluation order is
+//   unspecified, so the same seed would map draws to different fields on
+//   different compilers.
+//
+// Size truncation:
+//   Size parameters (radii, extents, semi-axes, tube lengths) are drawn
+//   through `draw_positive()`, which truncates the size distribution to
+//   (0, inf): a non-positive or non-finite draw is discarded and the same
+//   distribution is sampled again, before the next parameter is drawn.
+//
+//   Hopeless distributions are rejected up front: each input's
+//   constructor calls `require_positive_support()` on every size
+//   distribution, which throws std::invalid_argument when
+//   `distribution_base::positive_probability()` reports
+//   P(X > 0) < `min_positive_probability` (constant <= 0, uniform with
+//   b <= 0, a normal whose mass is almost all <= 0, ...).
+//
+//   Distributions that cannot report P(X > 0) skip that check. For them
+//   (and as a backstop for everything else) `draw_positive()` throws
+//   std::runtime_error naming the input and the parameter after
+//   `max_size_draws` consecutive rejections. The cap is large enough that
+//   a distribution passing the constructor check (P >= 1e-3) exhausts it
+//   with probability <= (1 - 1e-3)^100000 ~ e^-100.
 template <typename T>
 class shape_input_base {
 public:
@@ -36,6 +68,13 @@ public:
   shape_input_base& operator=(shape_input_base const&) = default;
   shape_input_base& operator=(shape_input_base&&) noexcept = default;
   virtual ~shape_input_base() = default;
+
+  // Smallest P(X > 0) a size distribution may have; see "Size
+  // truncation" above.
+  static constexpr double min_positive_probability = 1e-3;
+
+  // Backstop cap on consecutive rejected draws in `draw_positive()`.
+  static constexpr std::size_t max_size_draws = 100000;
 
   // Sample a new candidate shape from this input's distributions. The shape
   // is returned without a bounding box computed; the caller is responsible
@@ -95,6 +134,37 @@ protected:
   // metadata blob onto the shape before returning it.
   void tag(shape_base<T>& shape) const {
     shape.set_info(_info);
+  }
+
+  // Constructor-time check for a size distribution; see "Size
+  // truncation" above.
+  static void require_positive_support(distribution_base<T> const& dist,
+                                       char const* input_name,
+                                       char const* param_name) {
+    const auto p = dist.positive_probability();
+    if (p && !(static_cast<double>(*p) >= min_positive_probability)) {
+      throw std::invalid_argument{
+          std::string{input_name} + ": distribution for '" + param_name +
+          "' has P(x > 0) = " + std::to_string(static_cast<double>(*p)) +
+          " < " + std::to_string(min_positive_probability) +
+          "; a size distribution must put its mass on (0, inf)."};
+    }
+  }
+
+  // Draw a size parameter from `dist`, truncated to (0, inf). See the
+  // "Size truncation" note above.
+  [[nodiscard]] static T draw_positive(distribution_base<T>& dist,
+                                       char const* input_name,
+                                       char const* param_name) {
+    for (std::size_t i = 0; i < max_size_draws; ++i) {
+      const T v = dist();
+      if (v > T{0} && std::isfinite(v)) return v;
+    }
+    throw std::runtime_error{
+        std::string{input_name} + ": distribution for '" + param_name +
+        "' produced no positive finite value in " +
+        std::to_string(max_size_draws) +
+        " consecutive draws; its support must include (0, inf)."};
   }
 
   rvegen::info _info;

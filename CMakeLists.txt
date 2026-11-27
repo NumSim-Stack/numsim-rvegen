@@ -149,6 +149,13 @@ target_link_libraries(rvegen_registry_smoke PRIVATE
 )
 add_test(NAME registry_smoke COMMAND rvegen_registry_smoke)
 
+add_executable(rvegen_input_validation_test tests/input_validation_test.cpp)
+target_link_libraries(rvegen_input_validation_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME input_validation_test COMMAND rvegen_input_validation_test)
+
 add_executable(rvegen_full_registry_smoke tests/full_registry_smoke.cpp)
 target_link_libraries(rvegen_full_registry_smoke PRIVATE
     rvegen_lib
@@ -331,6 +338,48 @@ set_tests_properties(cli_spheres_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# Top-level "seed" / "domain_box" validation. Each case writes a minimal
+# config with the given fragment and expects the CLI to reject it (message
+# naming the key) or, for the *_ok cases, to run.
+function(rvegen_add_cli_toplevel_test name fragment regex)
+  set(cfg ${CMAKE_CURRENT_BINARY_DIR}/cli_${name}.json)
+  file(WRITE ${cfg} "{ ${fragment},
+  \"distributions\": { \"u\": { \"type\": \"uniform_real\", \"a\": 0.2, \"b\": 0.8 },
+                      \"r\": { \"type\": \"uniform_real\", \"a\": 0.03, \"b\": 0.05 } },
+  \"shapes\": [ { \"type\": \"circle_input\", \"pos_x_dist\": \"u\",
+                 \"pos_y_dist\": \"u\", \"radius_dist\": \"r\" } ],
+  \"generator\": { \"type\": \"only_inside\", \"max_attempts\": 1000 },
+  \"termination\": { \"type\": \"number_of_inclusions\", \"target\": 2 } }
+")
+  add_test(NAME cli_${name} COMMAND rvegen ${cfg})
+  set_tests_properties(cli_${name} PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+
+rvegen_add_cli_toplevel_test(seed_negative   "\"seed\": -1"
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_fractional "\"seed\": 1.5"
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_string     "\"seed\": \"7\""
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_too_large  "\"seed\": 4294967296"
+    "seed must be <= 4294967295")
+rvegen_add_cli_toplevel_test(seed_max_ok     "\"seed\": 4294967295"
+    "generated 2 shapes")
+rvegen_add_cli_toplevel_test(domain_box_zero "\"domain_box\": [0, 0, 0]"
+    "domain_box x and y extents must be > 0")
+rvegen_add_cli_toplevel_test(domain_box_negative "\"domain_box\": [-1, 1, 0]"
+    "domain_box x and y extents must be > 0")
+rvegen_add_cli_toplevel_test(domain_box_negative_z "\"domain_box\": [1, 1, -1]"
+    "domain_box z extent must be >= 0")
+rvegen_add_cli_toplevel_test(domain_box_length "\"domain_box\": [1]"
+    "domain_box must be an array of 2 or 3 numbers")
+rvegen_add_cli_toplevel_test(domain_box_type "\"domain_box\": [1, \"a\"]"
+    "domain_box entries must be numbers")
+rvegen_add_cli_toplevel_test(domain_box_two_ok "\"domain_box\": [1, 1]"
+    "generated 2 shapes")
 
 add_test(
     NAME cli_periodic_circles_example

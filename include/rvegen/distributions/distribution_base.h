@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 namespace rvegen {
 
 // Polymorphic random scalar source. Concrete implementations
@@ -29,6 +31,14 @@ public:
   virtual ~distribution_base() = default;
 
   [[nodiscard]] virtual value_type operator()() = 0;
+
+  // P(X > 0) for one draw, or std::nullopt when the distribution cannot
+  // compute it cheaply (the default). Inputs use it at construction to
+  // reject size distributions that (almost) never produce a positive
+  // value, instead of failing mid-run; see shape_input_base.
+  [[nodiscard]] virtual std::optional<value_type> positive_probability() const {
+    return std::nullopt;
+  }
 };
 
 } // namespace rvegen
