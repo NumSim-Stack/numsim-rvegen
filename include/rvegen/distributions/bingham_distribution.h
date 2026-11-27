@@ -29,53 +29,45 @@
 //   tracked as a follow-up — until then, 3D fibre inputs that want
 //   Bingham orientations construct this directly in C++.
 //
-// What this header lands today (3D companion to PR #14's 2D von-Mises):
+// What this header provides (3D companion to the 2D von-Mises):
 //   * `bingham_distribution<T, Engine>` — ctor taking (mean_axis,
-//     kappa, engine).
+//     kappa, engine), plus a schema-driven ctor for the JSON registry.
 //   * `sample()` returning a unit `gte::Vector<3, T>`.
-//   * Naive rejection sampling on a uniform `cos θ` proposal for the
-//     axisymmetric case in both κ > 0 and κ < 0 regimes.
+//   * Exact rejection samplers with O(1) expected cost per draw for every
+//     supported kappa (one branch per regime, below).
 //
-// On the sampling algorithm and its useful range:
-//   This is not Wood (1994) — Wood uses a tailored proposal density
-//   that gives near-100 % acceptance even at very high |κ|. The naive
-//   uniform proposal here accepts ∫₀¹ exp(κ(x² − 1)) dx ≈ 1 / (2κ) of
-//   candidates for prolate κ > 0, and ∫₀¹ exp(κx²) dx ≈ ½ √(π / |κ|)
-//   for oblate κ < 0. Rigorous lower bounds (checked by quadrature over
-//   κ ∈ [1e-6, 1e10]): p ≥ 1 / (1 + 2κ) prolate, p ≥ 1 / (3(1 + √|κ|))
-//   oblate. Measured with 200k samples: κ = 5 → 11.6 %, κ = 50 → 1.0 %,
-//   κ = 200 → 0.25 %; κ = −5 → 39.6 %, κ = −50 → 12.5 %, κ = −200 →
-//   6.3 %. These figures are for the plain uniform proposal; the κ > 0 and κ ≤ −1
-//   branches use the O(1) envelopes described below instead.
-//
-// Prolate fast path (κ > 0):
+// Prolate branch (κ > 0):
 //   Let t = 1 − |cos θ|. The target exp(−κ t (2 − t)) is bounded by the
 //   truncated exponential exp(−κ t) on [0, 1], which is sampled exactly by
-//   inversion; the sign of cos θ is a fair coin. Acceptance probability is
-//   exp(−κ t (1 − t)) with overall rate ≥ (1 + e^−κ)/2 ≥ 1/2, so a draw
-//   costs O(1) candidates for any κ (the aligned-A2, κ = 1e5 case used to
-//   cost ~11 ms).
+//   inversion (log1p/expm1, so there is no loss of precision for tiny or
+//   huge κ); the sign of cos θ is a fair coin. Acceptance probability is
+//   exp(−κ t (1 − t)), overall rate ≥ (1 + e^−κ)/2 ≥ 1/2. sin²θ is formed
+//   as t (2 − t) rather than 1 − cos²θ, so the transverse spread ~ 1/κ is
+//   not lost to cancellation when κ is large.
 //
-// Oblate fast path (κ ≤ −1): cos θ is exactly a normal with variance
+// Oblate branch (κ ≤ −1): cos θ is exactly a normal with variance
 //   1/(2|κ|) truncated to [−1, 1]; rejecting |x| > 1 has acceptance
-//   erf(√|κ|) ≥ 0.84, so draws are O(1) down to κ = −1e10. For −1 < κ < 0
-//   the uniform envelope (acceptance ≥ 0.37) is used.
+//   erf(√|κ|) ≥ 0.84.
+//
+// Weakly oblate branch (−1 < κ < 0): uniform cos θ envelope with
+//   acceptance ∫₀¹ exp(κx²) dx ≥ 0.37.
 //
 // Supported κ range and iteration cap:
-//   * κ ∈ [−1e10, 1e5] (`min_kappa` / `max_kappa`); anything outside
-//     throws std::invalid_argument at construction. The upper bound is a
-//     validation limit only; both ends are O(1) per draw (see the fast paths above).
-//   * Each sample() is capped at 40× the bound-implied expected trial
-//     count, so a spurious std::runtime_error has probability
-//     ≤ (1 − p)^cap ≤ e⁻⁴⁰ for every accepted κ. The cap only fires on a
-//     genuine numerical breakdown. `set_max_iterations` overrides it
-//     (tests use a tiny cap to exercise the throw path).
+//   * κ ∈ [−1e10, 1e10] (`min_kappa` / `max_kappa`); anything outside
+//     (or non-finite) throws std::invalid_argument at construction. The
+//     bounds are not sampler limits (both branches are O(1) and stable
+//     beyond them) but the range that was verified against quadrature
+//     (second moment, and the transverse spread sin²θ ≈ 1/κ at the prolate
+//     end, with no overflow or loss of 1/κ precision) and that is
+//     physically meaningful: at |κ| = 1e10 the angular spread is already
+//     ~1e-5 rad, far finer than any orientation input needs.
+//   * Each sample() is capped at a number of candidates derived from the
+//     branch's acceptance lower bound p, so that (1 − p)^cap ≤ e⁻¹⁰⁰: a
+//     spurious std::runtime_error cannot happen in practice and the cap
+//     only fires on a genuine numerical breakdown. `set_max_iterations`
+//     overrides it (tests use a tiny cap to exercise the throw path).
 //
-// Out of scope here, ships in follow-up PRs against #6:
-//   * Generic 3×3 Bingham (Kume-Walker sampler) — also fixes the
-//     high-|κ| performance cliff above.
-//   * `direction_distribution_base` hierarchy + JSON registry entry.
-//   * 3D fibre input that consumes this for tube orientation.
+// Not covered: the general 3×3 Bingham (Kume-Walker sampler).
 
 #include <algorithm>
 #include <array>
@@ -117,29 +109,28 @@ public:
     }
     if (_kappa > max_kappa) {
       throw std::invalid_argument{
-          "bingham_distribution: prolate kappa above 1e5 needs a better "
-          "proposal than the uniform cos(theta) envelope (supported range "
-          "[-1e10, 1e5]); see #77"};
+          "bingham_distribution: kappa above 1e10 is outside the supported "
+          "range [-1e10, 1e10] (angular spread already ~1e-5 rad at the "
+          "bound)"};
     }
     if (_kappa < min_kappa) {
       throw std::invalid_argument{
-          "bingham_distribution: oblate kappa below -1e10 needs a better "
-          "proposal than the uniform cos(theta) envelope (supported range "
-          "[-1e10, 1e5]); see #77"};
+          "bingham_distribution: kappa below -1e10 is outside the supported "
+          "range [-1e10, 1e10] (girdle thickness already ~1e-5 rad at the "
+          "bound)"};
     }
     set_mean_axis(mean_axis);
-    // 40× the expected trial count implied by the acceptance lower bound
-    // (header comment): spurious throw probability ≤ e⁻⁴⁰. At the range
-    // ends this is ~8e6 (prolate) / ~1.2e7 (oblate) candidates.
-    const T expected = _kappa >= T{0}
-                           ? T{1} + T{2} * _kappa
-                           : T{3} * (T{1} + std::sqrt(-_kappa));
-    _max_iterations =
-        static_cast<std::size_t>(std::ceil(T{40} * expected)) + 64;
+    // Acceptance lower bound p of the branch used (header comment); the
+    // cap is 100 / -ln(1 - p) candidates, i.e. (1 - p)^cap <= e^-100.
+    const T p_min = _kappa > T{0}    ? T{0.5}
+                    : _kappa <= T{-1} ? T{0.84}
+                                      : T{0.37};
+    _max_iterations = static_cast<std::size_t>(
+        std::ceil(T{100} / -std::log1p(-p_min)));
   }
 
   // Supported concentration range; see the header comment.
-  static constexpr T max_kappa = T{1e5};
+  static constexpr T max_kappa = T{1e10};
   static constexpr T min_kappa = T{-1e10};
 
   // Convenience overload accepting std::array — most callers don't
@@ -156,7 +147,7 @@ public:
       field<"mean_axis_z", T, true,
             numsim_core::description_label<"z-component of the Bingham mean axis (renormalised internally)">>,
       field<"kappa", T, true,
-            numsim_core::description_label<"Bingham concentration: κ > 0 = prolate (samples cluster on ±mean_axis), κ < 0 = oblate (samples lie near the great circle perpendicular to mean_axis), κ ≈ 0 = uniform on the sphere. Supported range [-1e10, 1e5]; values outside are rejected">>>;
+            numsim_core::description_label<"Bingham concentration: κ > 0 = prolate (samples cluster on ±mean_axis), κ < 0 = oblate (samples lie near the great circle perpendicular to mean_axis), κ ≈ 0 = uniform on the sphere. Supported range [-1e10, 1e10]; values outside are rejected">>>;
 
   // Schema-driven ctor for the JSON registry path. Mean axis is
   // declared as three scalar fields rather than a vector field
@@ -173,13 +164,10 @@ public:
     return fields::schema();
   }
 
-  // Draws one unit 3-vector. Uses rejection sampling: for κ > 0 (prolate)
-  // and κ < 0 (oblate) the marginal density of x = cos(θ) is exp(κ·x²)
-  // up to normalisation, with θ measured from the mean axis. Sample
-  // a candidate x uniform on [-1, 1] and accept with probability
-  // exp(κ(x² − 1)) for κ > 0, or exp(κ·x²) for κ < 0 (each scaled to
-  // a max of 1). Once x is accepted, φ is uniform on [0, 2π) and the
-  // 3-vector is built in the mean-axis-aligned frame and rotated.
+  // Draws one unit 3-vector: x = cos(θ) (θ measured from the mean axis)
+  // has density ∝ exp(κ·x²) and is drawn by the branch for the regime of κ
+  // (header comment); φ is uniform on [0, 2π) and the 3-vector is built in
+  // the mean-axis-aligned frame and rotated.
   // Polymorphic entry from `direction_distribution_base<T>` — same
   // sample as `sample()` but returned as `std::array<T, 3>` to match
   // the abstract base's signature. Callers that need the native
@@ -196,6 +184,7 @@ public:
       return sample_uniform_sphere();
     }
     T x = T{0};
+    T sin2 = T{0};   // sin²θ, formed without cancellation where possible
     std::size_t it = 0;
     while (true) {
       if (++it > _max_iterations) {
@@ -214,6 +203,7 @@ public:
         x = (u0 < T{0.5}) ? -ax : ax;
         // target exp(-k t (2 - t)) / envelope exp(-k t)
         accept = std::exp(-_kappa * t * (T{1} - t));
+        sin2 = std::min(t, T{1}) * (T{2} - std::min(t, T{1}));
       } else {
         if (_kappa <= T{-1}) {
           // Oblate, |κ| ≥ 1: x ~ N(0, 1/(2|κ|)) truncated to [-1, 1] is
@@ -230,8 +220,9 @@ public:
       const T u2 = (accept >= T{1}) ? T{0} : _uniform(_engine.get());
       if (u2 <= accept) break;
     }
+    if (_kappa <= T{0}) sin2 = std::max(T{0}, T{1} - x * x);
     const T phi = T{2} * std::numbers::pi_v<T> * _uniform(_engine.get());
-    const T sin_theta = std::sqrt(std::max(T{0}, T{1} - x * x));
+    const T sin_theta = std::sqrt(sin2);
     vector_type v_local;
     v_local[0] = sin_theta * std::cos(phi);
     v_local[1] = sin_theta * std::sin(phi);
