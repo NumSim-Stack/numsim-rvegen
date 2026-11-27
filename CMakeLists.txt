@@ -391,6 +391,8 @@ rvegen_cli_msg_test(seed_too_large seed_too_large.json "'seed' must be an intege
 rvegen_cli_msg_test(seed_negative seed_negative.json "'seed' must be an integer")
 rvegen_cli_msg_test(deterministic_ignored_keys deterministic_ignored_keys.json
     "\"shapes\" is ignored.*\"termination\" is ignored")
+rvegen_cli_msg_test(generator_unknown_key generator_unknown_key.json
+    "unknown key 'n_seedz' for generator 'voronoi_2d' is ignored")
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 

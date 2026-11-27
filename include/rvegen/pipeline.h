@@ -177,8 +177,12 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
   // Generator + termination. Deterministic generators ignore the
   // termination predicate (#73), so the section is optional for them; a
   // placeholder keeps the compute() signature uniform.
-  auto generator = build_from_json(generator_registry_t<>::instance(),
-                                   config.at("generator"));
+  auto generator = build_from_json_checked(
+      generator_registry_t<>::instance(), config.at("generator"),
+      [&](std::string const& type, std::string const& key) {
+        opts.warn("rvegen: warning - unknown key '" + key +
+                  "' for generator '" + type + "' is ignored");
+      });
   const bool deterministic =
       dynamic_cast<deterministic_generator<double>*>(generator.get()) !=
       nullptr;

@@ -112,6 +112,10 @@ void test_seed_and_warnings() {
   REQUIRE(has("\"shapes\" is ignored"));
   REQUIRE(has("\"termination\" is ignored"));
   REQUIRE(has("unknown top-level key 'bogus'"));
+  det["generator"]["n_seedz"] = 5;
+  warns.clear();
+  (void)rvegen::generate(det, o);
+  REQUIRE(has("unknown key 'n_seedz' for generator 'voronoi_2d'"));
 }
 
 void test_schema_to_json() {
