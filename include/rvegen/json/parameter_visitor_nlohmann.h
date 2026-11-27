@@ -2,6 +2,7 @@
 
 #include <any>
 #include <cstdint>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <typeindex>
@@ -34,10 +35,12 @@ namespace rvegen {
 //   std::vector<double>, std::vector<int>, std::vector<std::string>
 //
 // Integral targets (including the elements of std::vector<int>) are
-// strict: the JSON value must be an integer number (`5.9`, `"5"` and
-// `true` are rejected), unsigned targets reject negative values, and
-// values outside the target type's range are rejected. Each failure
-// throws std::runtime_error naming the key and the offending value —
+// strict: the JSON value must be a number with an integral value. Integer
+// literals and integral-valued floats (`5.0`, `1e5`, `100000.0`) are
+// accepted; non-integral floats (`5.9`), strings and booleans are
+// rejected, unsigned targets reject negative values, and values outside
+// the target type's range are rejected. Each failure throws
+// std::invalid_argument naming the key and the offending value —
 // nlohmann's own get<> would silently static_cast instead (-1 → SIZE_MAX,
 // 5.9 → 5).
 //
@@ -79,7 +82,7 @@ public:
       return std::any{node.get<std::vector<double>>()};
     if (tid == typeid(std::vector<int>)) {
       if (!node.is_array()) {
-        throw std::runtime_error(
+        throw std::invalid_argument(
             std::string{"parameter_visitor_nlohmann: key '"} + key +
             "' expects an array of integers, got " + node.dump());
       }
@@ -103,12 +106,29 @@ private:
                                       nlohmann::json const& node) {
     static_assert(std::is_integral_v<I>);
     auto fail = [&](char const* why) -> I {
-      throw std::runtime_error(
+      throw std::invalid_argument(
           std::string{"parameter_visitor_nlohmann: key '"} + key +
           "' expects " + why + ", got " + node.dump());
     };
     const char* expected = std::is_unsigned_v<I> ? "a non-negative integer"
                                                  : "an integer";
+    if (node.is_number_float()) {
+      const double d = node.get<double>();
+      if (!std::isfinite(d) || d != std::trunc(d)) return fail(expected);
+      constexpr double two63 = 9223372036854775808.0;
+      constexpr double two64 = 18446744073709551616.0;
+      if (d < 0.0) {
+        if (std::is_unsigned_v<I>) return fail(expected);
+        if (d < -two63) return fail("an integer within the target type's range");
+        const auto v = static_cast<std::int64_t>(d);
+        if (!std::in_range<I>(v)) return fail("an integer within the target type's range");
+        return static_cast<I>(v);
+      }
+      if (d >= two64) return fail("an integer within the target type's range");
+      const auto v = static_cast<std::uint64_t>(d);
+      if (!std::in_range<I>(v)) return fail("an integer within the target type's range");
+      return static_cast<I>(v);
+    }
     if (!node.is_number_integer()) return fail(expected);
     if (node.is_number_unsigned()) {
       const auto v = node.get<std::uint64_t>();

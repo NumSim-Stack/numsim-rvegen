@@ -474,8 +474,8 @@ void test_json_integral_strictness() {
     return v.read("max_attempts", tid);
   };
   auto rejects = [&](char const* json, std::type_info const& tid) {
-    return throws_runtime_error_containing([&] { (void)read(json, tid); },
-                                           "'max_attempts'");
+    return throws_invalid_argument_containing([&] { (void)read(json, tid); },
+                                              "'max_attempts'");
   };
 
   REQUIRE(std::any_cast<std::size_t>(read(R"({"max_attempts": 5})",
@@ -484,7 +484,18 @@ void test_json_integral_strictness() {
   REQUIRE(rejects(R"({"max_attempts": 5.9})", typeid(std::size_t)));
   REQUIRE(rejects(R"({"max_attempts": "5"})", typeid(std::size_t)));
   REQUIRE(rejects(R"({"max_attempts": true})", typeid(std::size_t)));
-  REQUIRE(rejects(R"({"max_attempts": 5.0})", typeid(std::size_t)));
+  // Integral-valued floats are accepted; non-integral / out-of-range are not.
+  REQUIRE(std::any_cast<std::size_t>(read(R"({"max_attempts": 5.0})",
+                                          typeid(std::size_t))) == 5);
+  REQUIRE(std::any_cast<std::size_t>(read(R"({"max_attempts": 1e5})",
+                                          typeid(std::size_t))) == 100000);
+  REQUIRE(std::any_cast<int>(read(R"({"max_attempts": 100000.0})",
+                                  typeid(int))) == 100000);
+  REQUIRE(std::any_cast<int>(read(R"({"max_attempts": -3.0})", typeid(int))) == -3);
+  REQUIRE(rejects(R"({"max_attempts": -3.0})", typeid(std::size_t)));
+  REQUIRE(rejects(R"({"max_attempts": 1e30})", typeid(std::size_t)));
+  REQUIRE(rejects(R"({"max_attempts": 1e10})", typeid(int)));
+  REQUIRE(rejects(R"({"max_attempts": 0.5})", typeid(int)));
 
   // Signed targets keep negatives, but still range-check.
   REQUIRE(std::any_cast<int>(read(R"({"max_attempts": -1})", typeid(int))) == -1);
@@ -574,24 +585,24 @@ void test_distribution_parameters() {
   using U = rvegen::uniform_real_distribution<double>;
   using N = rvegen::normal_distribution<double>;
 
-  REQUIRE(throws_runtime_error_containing([&] { U{1.0, 0.0, engine}; },
+  REQUIRE(throws_invalid_argument_containing([&] { U{1.0, 0.0, engine}; },
                                           "uniform_real_distribution"));
-  REQUIRE(throws_runtime_error_containing([&] { U{0.0, inf, engine}; }, "uniform"));
-  REQUIRE(throws_runtime_error_containing([&] { U{nan, 1.0, engine}; }, "uniform"));
-  REQUIRE(throws_runtime_error_containing([&] { U{-big, big, engine}; }, "uniform"));
+  REQUIRE(throws_invalid_argument_containing([&] { U{0.0, inf, engine}; }, "uniform"));
+  REQUIRE(throws_invalid_argument_containing([&] { U{nan, 1.0, engine}; }, "uniform"));
+  REQUIRE(throws_invalid_argument_containing([&] { U{-big, big, engine}; }, "uniform"));
   {
     U u{0.0, 1.0, engine};
-    REQUIRE(throws_runtime_error_containing([&] { u.set_parameter(2.0, 1.0); },
+    REQUIRE(throws_invalid_argument_containing([&] { u.set_parameter(2.0, 1.0); },
                                             "uniform"));
     const double v = u();
     REQUIRE(v >= 0.0 && v < 1.0);
   }
 
-  REQUIRE(throws_runtime_error_containing([&] { N{0.0, 0.0, engine}; },
+  REQUIRE(throws_invalid_argument_containing([&] { N{0.0, 0.0, engine}; },
                                           "normal_distribution"));
-  REQUIRE(throws_runtime_error_containing([&] { N{0.0, -1.0, engine}; }, "normal"));
-  REQUIRE(throws_runtime_error_containing([&] { N{nan, 1.0, engine}; }, "normal"));
-  REQUIRE(throws_runtime_error_containing([&] { N{0.0, inf, engine}; }, "normal"));
+  REQUIRE(throws_invalid_argument_containing([&] { N{0.0, -1.0, engine}; }, "normal"));
+  REQUIRE(throws_invalid_argument_containing([&] { N{nan, 1.0, engine}; }, "normal"));
+  REQUIRE(throws_invalid_argument_containing([&] { N{0.0, inf, engine}; }, "normal"));
   {
     N n{0.0, 1.0, engine};
     REQUIRE(std::isfinite(n()));

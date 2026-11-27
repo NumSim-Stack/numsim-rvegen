@@ -18,7 +18,7 @@ namespace rvegen {
 //
 // Validation: `a` and `b` must be finite, `a <= b`, and `b - a` must not
 // overflow; otherwise the ctor (and set_parameter) throws
-// std::runtime_error. std::uniform_real_distribution has undefined
+// std::invalid_argument. std::uniform_real_distribution has undefined
 // behaviour for those inputs.
 template <typename T = double, typename Engine = std::mt19937>
 class uniform_real_distribution final : public distribution_base<T> {
@@ -70,7 +70,7 @@ private:
   [[nodiscard]] static param_type checked_param(value_type a, value_type b) {
     if (!std::isfinite(a) || !std::isfinite(b) || !(a <= b) ||
         !std::isfinite(b - a)) {
-      throw std::runtime_error{
+      throw std::invalid_argument{
           "uniform_real_distribution: invalid bounds a=" + std::to_string(a) +
           ", b=" + std::to_string(b) +
           " (need finite a <= b with finite b - a)"};
