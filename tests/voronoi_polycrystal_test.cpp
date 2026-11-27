@@ -392,8 +392,10 @@ void test_gmsh_clips_periodic_polygons() {
   std::string line;
   std::size_t points = 0;
   while (std::getline(in, line)) {
-    if (line.rfind("Point(", 0) != 0) continue;
-    const auto b = line.find('{');
+    // Plain `Point(N) = {x, y, 0};` or `_pK = newp; Point(_pK) = {x, y, 0};`.
+    const auto pp = line.find("Point(");
+    if (pp == std::string::npos) continue;
+    const auto b = line.find('{', pp);
     double x, y;
     char c1;
     std::istringstream ls{line.substr(b + 1)};

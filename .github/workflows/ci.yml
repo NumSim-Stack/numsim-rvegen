@@ -40,11 +40,14 @@ jobs:
       # back to FetchContent, but the FetchContent'd target isn't in
       # any export set, so `install(EXPORT rvegenTargets)` fails.
       # libeigen3-dev keeps Eigen3 on the same find_package-only path.
+      # gmsh enables gmsh_geo_roundtrip_test, which meshes the writer's
+      # .geo output with a real gmsh (#74).
       - name: Install toolchain + system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y g++-14 ninja-build \
             libboost-dev nlohmann-json3-dev libeigen3-dev
+          sudo apt-get install -y --no-install-recommends gmsh
 
       - name: Configure rvegen
         working-directory: numsim-rvegen/rvegen
