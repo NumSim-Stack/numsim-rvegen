@@ -233,8 +233,54 @@ void test_gmsh_skips_empty_polygon() {
       std::vector<std::array<double, 2>>{{0, 0}, {1, 0}, {1, 1}}));
   std::ostringstream out;
   rvegen::gmsh_geo_writer<double>{}.write(out, shapes, {1.0, 1.0, 0.0});
-  REQUIRE(out.str().find("= {};") == std::string::npos);
+  REQUIRE(out.str().find("Line Loop(_ll) = {};") == std::string::npos);
   REQUIRE(out.str().find("Plane Surface") != std::string::npos);
+}
+
+void test_max_expansion_encloses_asymmetric_shapes() {
+  // middle +/- max_expansion must contain every vertex even when the
+  // centroid is far from the AABB centre (#79 review).
+  const std::vector<std::array<double, 2>> tri{{0.1, 0.2}, {0.7, 0.5}, {0.1, 0.8}};
+  const std::vector<std::array<double, 2>> sliver{{0, 0}, {10, 0}, {0.1, 0.1}};
+  for (auto const& pts : {tri, sliver}) {
+    rvegen::convex_polygon<double> p{pts};
+    const auto m = p.get_middle_point();
+    const auto e = p.max_expansion();
+    for (auto const& v : pts) {
+      REQUIRE(v[0] >= m[0] - e[0] - 1e-14 && v[0] <= m[0] + e[0] + 1e-14);
+      REQUIRE(v[1] >= m[1] - e[1] - 1e-14 && v[1] <= m[1] + e[1] + 1e-14);
+    }
+    p.make_bounding_box();   // the bounding box stays the exact AABB
+    auto const* bb = p.bounding_box();
+    REQUIRE(bb != nullptr);
+    double mnx = 1e300, mxx = -1e300;
+    for (auto const& v : pts) { mnx = std::min(mnx, v[0]); mxx = std::max(mxx, v[0]); }
+    REQUIRE(bb->bottom_point()[0] == mnx && bb->top_point()[0] == mxx);
+  }
+
+  // Strongly asymmetric 3D cell: a tetrahedron with a long spike along x.
+  using vec = gte::Vector<3, double>;
+  auto mk = [](double x, double y, double z) { vec v; v[0] = x; v[1] = y; v[2] = z; return v; };
+  std::vector<vec> verts{mk(0, 0, 0), mk(10, 0, 0), mk(0, 1, 0), mk(0, 0, 1)};
+  rvegen::voronoi_cell<double> c{verts, {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}}};
+  const auto m = c.get_middle_point();
+  const auto e = c.max_expansion();
+  for (auto const& v : verts)
+    for (int k = 0; k < 3; ++k)
+      REQUIRE(v[k] >= m[k] - e[k] - 1e-14 && v[k] <= m[k] + e[k] + 1e-14);
+}
+
+void test_gmsh_overlap_detected_for_asymmetric_polygons() {
+  // Triangle apex at x = 0.7 overlaps a rectangle starting at x = 0.65; the
+  // centroid-based extent used to miss the overlap.
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.push_back(std::make_unique<rvegen::convex_polygon<double>>(
+      std::vector<std::array<double, 2>>{{0.1, 0.2}, {0.7, 0.5}, {0.1, 0.8}}));
+  shapes.push_back(std::make_unique<rvegen::convex_polygon<double>>(
+      std::vector<std::array<double, 2>>{{0.65, 0.4}, {0.95, 0.4}, {0.95, 0.6}, {0.65, 0.6}}));
+  std::ostringstream out;
+  rvegen::gmsh_geo_writer<double>{}.write(out, shapes, {1.0, 1.0, 0.0});
+  REQUIRE(out.str().find("_tool()") != std::string::npos);
 }
 
 int main() {
@@ -249,6 +295,8 @@ int main() {
   test_voronoi_cell_volume_centroid();
   test_thin_slab_and_jittered_lattice();
   test_gmsh_skips_empty_polygon();
+  test_max_expansion_encloses_asymmetric_shapes();
+  test_gmsh_overlap_detected_for_asymmetric_polygons();
   if (failures) {
     std::cerr << failures << " failure(s)\n";
     return 1;
