@@ -160,7 +160,8 @@ public:
             << "stroke=\"#222\" stroke-width=\"" << stroke_w << "\"/>\n";
       } else {
         // 2D writer: 3D / unknown shapes cannot be drawn. Warn once per type.
-        warn_unrendered_once(*raw, "svg_writer");
+        warn_unrendered_once(*raw, "svg_writer",
+                             "the 2D writer cannot draw a 3D shape; use svg_3d or three_js");
         out << "  <!-- (skipped 3D / unsupported shape) -->\n";
       }
       ++idx;

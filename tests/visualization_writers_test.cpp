@@ -52,6 +52,113 @@ std::size_t count_of(std::string const& s, std::string const& what) {
   return n;
 }
 
+double mesh_signed_volume(rvegen::triangle_mesh<double> const& m) {
+  double vol = 0;
+  for (auto const& t : m.tris) {
+    auto const& a = m.verts[t[0]];
+    auto const& b = m.verts[t[1]];
+    auto const& c = m.verts[t[2]];
+    vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) -
+            a[1] * (b[0] * c[2] - b[2] * c[0]) +
+            a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0;
+  }
+  return vol;
+}
+
+bool mesh_finite(rvegen::triangle_mesh<double> const& m) {
+  for (auto const& v : m.verts)
+    for (double x : v) if (!std::isfinite(x)) return false;
+  return true;
+}
+
+void test_tube_repeated_vertex_and_reversal() {
+  using cl_t = std::vector<std::array<double, 3>>;
+  const double r = 0.1;
+  // Duplicate interior vertex: same volume as without the duplicate.
+  rvegen::polyline_tube<double> dup{
+      cl_t{{0, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 1, 0}}, r};
+  rvegen::polyline_tube<double> nodup{
+      cl_t{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}}, r};
+  const double vd = mesh_signed_volume(rvegen::to_mesh(dup, 16));
+  REQUIRE(std::abs(vd - mesh_signed_volume(rvegen::to_mesh(nodup, 16))) < 1e-12);
+  REQUIRE(vd > 0.055);   // was 0.0102 with the collapsed tail
+  // Duplicate first vertex.
+  rvegen::polyline_tube<double> dup0{cl_t{{0, 0, 0}, {0, 0, 0}, {1, 0, 0}}, r};
+  const auto m0 = rvegen::to_mesh(dup0, 16);
+  REQUIRE(mesh_signed_volume(m0) > 0.9 * std::numbers::pi * r * r * 0.97);
+  // All points coincide: empty mesh (reported as "not rendered").
+  rvegen::polyline_tube<double> same{cl_t{{1, 1, 1}, {1, 1, 1}, {1, 1, 1}}, r};
+  REQUIRE(rvegen::to_mesh(same, 16).empty());
+  // 180-degree reversal: finite, non-degenerate frame (no zero/NaN).
+  rvegen::polyline_tube<double> rev{cl_t{{0, 0, 0}, {1, 0, 0}, {0, 0, 0.0001}}, r};
+  const auto mr = rvegen::to_mesh(rev, 16);
+  REQUIRE(mesh_finite(mr));
+  rvegen::polyline_tube<double> rev2{cl_t{{0, 0, 0}, {1, 0, 0}, {0, 0, 0}}, 0.05};
+  const auto m2 = rvegen::to_mesh(rev2, 16);
+  REQUIRE(mesh_finite(m2));
+  for (std::size_t k = 0; k < 16; ++k) {   // last ring keeps radius 0.05
+    auto const& v = m2.verts[2 * 16 + k];
+    REQUIRE(std::abs(std::hypot(v[1], v[2]) - 0.05) < 1e-9);
+  }
+}
+
+void test_tube_mitred_bends_keep_volume() {
+  using cl_t = std::vector<std::array<double, 3>>;
+  const double r = 0.1;
+  rvegen::polyline_tube<double> bent{
+      cl_t{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {1, 1, 1}}, r};
+  const double vol = mesh_signed_volume(rvegen::to_mesh(bent, 16));
+  const double analytic = std::numbers::pi * r * r * 3.0;   // 0.0942
+  REQUIRE(vol > 0.95 * analytic * 0.975);   // 16-gon is ~2.5 % under a disc
+  REQUIRE(vol < 1.02 * analytic);
+  // Straight tube: vertices unchanged by the mitre code (rings coaxial).
+  rvegen::polyline_tube<double> st{cl_t{{0, 0, 0}, {0.5, 0, 0}, {1, 0, 0}}, r};
+  const auto ms = rvegen::to_mesh(st, 16);
+  for (std::size_t i = 0; i < 3; ++i)
+    for (std::size_t k = 0; k < 16; ++k) {
+      auto const& v = ms.verts[i * 16 + k];
+      REQUIRE(std::abs(v[0] - 0.5 * static_cast<double>(i)) < 1e-12);
+      REQUIRE(std::abs(std::hypot(v[1], v[2]) - r) < 1e-12);
+    }
+  // Very sharp bend stays bounded.
+  rvegen::polyline_tube<double> sharp{cl_t{{0, 0, 0}, {1, 0, 0}, {0, 0.02, 0}}, r};
+  const auto msh = rvegen::to_mesh(sharp, 16);
+  REQUIRE(mesh_finite(msh));
+  for (auto const& v : msh.verts)
+    REQUIRE(std::abs(v[0]) < 2.0 && std::abs(v[1]) < 2.0 && std::abs(v[2]) < 2.0);
+}
+
+void test_2d_writer_message_for_3d_shape_and_large_output_warning() {
+  shapes_t s;
+  s.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  rvegen::reset_unrendered_warnings();
+  std::ostringstream eb, o;
+  auto* old = std::cerr.rdbuf(eb.rdbuf());
+  rvegen::svg_writer<double>{}.write(o, s, {1, 1, 0});
+  std::cerr.rdbuf(old);
+  REQUIRE(eb.str().find("2D writer cannot draw a 3D shape") != std::string::npos);
+  REQUIRE(eb.str().find("sphere") != std::string::npos);
+  REQUIRE(eb.str().find("svg_3d") != std::string::npos);
+  REQUIRE(eb.str().find("no mesh registered") == std::string::npos);
+
+  // Large-output warning: once per run, only above the threshold.
+  shapes_t many;
+  for (int i = 0; i < 20001; ++i)
+    many.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.001));
+  std::ostringstream e3, js;
+  old = std::cerr.rdbuf(e3.rdbuf());
+  rvegen::three_js_writer<double>{}.write(js, many, {1, 1, 1});
+  std::cerr.rdbuf(old);
+  REQUIRE(count_of(e3.str(), "three_js_writer: 20001 shapes") == 1);
+  shapes_t few;
+  few.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  std::ostringstream e4, js2;
+  old = std::cerr.rdbuf(e4.rdbuf());
+  rvegen::three_js_writer<double>{}.write(js2, few, {1, 1, 1});
+  std::cerr.rdbuf(old);
+  REQUIRE(e4.str().empty());
+}
+
 void test_tube_winding_outward() {
   // Straight and bent centerlines; closed mesh => signed volume > 0 and
   // every side triangle's normal points away from the axis.
@@ -263,6 +370,9 @@ int main() {
   test_warning_uses_readable_type_name();
   test_concurrent_writers_auto_register();
   test_tube_winding_outward();
+  test_tube_repeated_vertex_and_reversal();
+  test_tube_mitred_bends_keep_volume();
+  test_2d_writer_message_for_3d_shape_and_large_output_warning();
   test_camera_scales_with_domain();
   test_tube_rendered_via_dispatcher();
   test_unrenderable_shape_warns_once();

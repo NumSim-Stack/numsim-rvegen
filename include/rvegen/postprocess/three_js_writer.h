@@ -174,6 +174,9 @@ const shapes = [
     };
     constexpr std::size_t palette_size = std::size(palette);
 
+    // ~2.5 KB per mesh shape: warn above ~50 MB (20000 shapes).
+    warn_large_output("three_js_writer", shapes.size(), 20000, 2500);
+
     std::size_t idx = 0;
     for (auto const& shape : shapes) {
       auto const* raw = shape.get();

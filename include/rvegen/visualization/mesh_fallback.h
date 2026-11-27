@@ -60,14 +60,30 @@ inline void reset_unrendered_warnings() {
 // Warn (once per writer + dynamic type) that `shape` is not rendered.
 template <typename T>
 inline void warn_unrendered_once(shape_base<T> const& shape,
-                                 char const* writer_name) {
+                                 char const* writer_name,
+                                 char const* reason =
+                                     "no mesh registered / not drawable") {
   auto& r = detail::unrendered_registry::instance();
   std::lock_guard<std::mutex> lk{r.mtx};
   if (!r.seen.emplace(writer_name, std::type_index{typeid(shape)}).second) return;
   std::cerr << "rvegen: " << writer_name << ": skipping unsupported shape type '"
             << detail::readable_type_name(typeid(shape))
-            << "' (no mesh registered / not drawable); further shapes of this"
+            << "' (" << reason << "); further shapes of this"
                " type are skipped silently\n";
+}
+
+// Warn on stderr that a writer was handed a very large number of shapes
+// (call once per writer run). `bytes_per_shape` is the measured output size.
+inline void warn_large_output(char const* writer_name, std::size_t n_shapes,
+                              std::size_t threshold,
+                              std::size_t bytes_per_shape) {
+  if (n_shapes <= threshold) return;
+  std::cerr << "rvegen: " << writer_name << ": " << n_shapes
+            << " shapes (above " << threshold << "); expect roughly "
+            << (n_shapes * bytes_per_shape) / (1024 * 1024)
+            << " MB of output (~" << bytes_per_shape
+            << " bytes per shape, warning threshold ~50 MB); the file may be"
+               " slow or impossible to open\n";
 }
 
 // Mesh `shape` via the dispatcher (auto-registering built-ins if the

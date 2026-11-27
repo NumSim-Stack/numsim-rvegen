@@ -155,6 +155,9 @@ public:
       return std::string{buf};
     };
 
+    // ~14 KB per tube: warn above ~50 MB (3500 shapes).
+    warn_large_output("svg_3d_writer", shapes.size(), 3500, 14000);
+
     std::size_t idx = 0;
     for (auto const& shape : shapes) {
       auto const* raw = shape.get();
