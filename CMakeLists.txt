@@ -269,7 +269,7 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py
                 --rvegen $<TARGET_FILE:rvegen>
-                --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery
+                --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery --index
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples
         DEPENDS rvegen
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -422,6 +422,8 @@ if(Python3_Interpreter_FOUND)
   # Gallery smoke: render every example into a scratch directory. Needs
   # numpy + matplotlib; Inkscape / Chrome / gmsh are optional and skipped
   # by the script when absent (--browser none: no Chrome in the test).
+  # gallery_script_check covers the script itself: a failing renderer
+  # must give a non-zero exit, and same-stem configs must not collide.
   execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import numpy, matplotlib"
     RESULT_VARIABLE _rvegen_py_plot_rc
@@ -435,8 +437,14 @@ if(Python3_Interpreter_FOUND)
               --no-index --browser none
               ${CMAKE_CURRENT_SOURCE_DIR}/examples)
     set_tests_properties(gallery_smoke PROPERTIES TIMEOUT 1800 LABELS "cli")
+    add_test(NAME gallery_script_check
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tests/gallery_script_check.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    set_tests_properties(gallery_script_check PROPERTIES TIMEOUT 900 LABELS "cli")
   else()
-    message(STATUS "numpy/matplotlib not found - skipping gallery_smoke")
+    message(STATUS "numpy/matplotlib not found - skipping gallery_smoke and gallery_script_check")
   endif()
 else()
   message(STATUS "Python 3 not found - skipping CLI output checks")
