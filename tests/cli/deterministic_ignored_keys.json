@@ -1,0 +1,4 @@
+{"domain_box":[1,1,0],"generator":{"type":"voronoi_2d","n_seeds":5,"seed":3,"periodic":true},
+ "distributions":{"x":{"type":"uniform_real","a":0,"b":1},"r":{"type":"uniform_real","a":0.01,"b":0.02}},
+ "shapes":[{"type":"circle_input","pos_x_dist":"x","pos_y_dist":"x","radius_dist":"r"}],
+ "termination":{"type":"number_of_inclusions","target":50}}
