@@ -175,8 +175,12 @@ int run(int argc, char** argv) {
   }
 
   // ---- 6. Generator + termination ---------------------------------------
-  auto generator = rvegen::build_from_json(
-      rvegen::generator_registry_t<>::instance(), config.at("generator"));
+  auto generator = rvegen::build_from_json_checked(
+      rvegen::generator_registry_t<>::instance(), config.at("generator"),
+      [](std::string const& type, std::string const& key) {
+        std::cerr << "rvegen: warning - unknown key '" << key
+                  << "' for generator '" << type << "' is ignored\n";
+      });
   // Deterministic generators ignore the termination predicate (#73), so
   // the "termination" section is optional for them; a placeholder keeps
   // the compute() signature uniform. Sampling generators still need it.
