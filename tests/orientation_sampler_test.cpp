@@ -189,23 +189,30 @@ void test_bingham_kappa_range_and_default_cap() {
   using arr = std::array<double, 3>;
   std::mt19937 engine{6};
   // Outside the supported range: explicit construction-time rejection.
-  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, 1e5 * 1.01, engine}; }));
-  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, 1e9, engine}; }));
+  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, 1e10 * 1.01, engine}; }));
+  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, 1e11, engine}; }));
+  REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, dist_t::max_kappa * 2, engine}; }));
   REQUIRE(throws_invalid_argument([&] { dist_t d{arr{0, 0, 1}, -1e11, engine}; }));
-  // The default cap keeps the spurious-throw bound exp(-p·cap) ≤ e⁻³⁰,
-  // using the documented acceptance lower bounds p.
-  for (double kappa : {1e-3, 1.0, 50.0, 1e3, 1e5, -1.0, -50.0, -1e6, -1e10}) {
+  REQUIRE(dist_t::max_kappa == 1e10);
+  REQUIRE(dist_t::min_kappa == -1e10);
+  // The default cap keeps the spurious-throw bound (1-p)^cap <= e^-30 for
+  // the true acceptance lower bound p of each branch (1/2 prolate, 0.84
+  // oblate for kappa <= -1, 0.37 for -1 < kappa < 0), and stays small
+  // (the old uniform-envelope sizing gave ~1e7 candidates).
+  for (double kappa : {1e-3, 1.0, 50.0, 1e3, 1e5, 1e10, -1e-3, -0.5, -1.0,
+                       -50.0, -1e6, -1e10}) {
     dist_t d{arr{0, 0, 1}, kappa, engine};
-    const double p = kappa > 0 ? 1.0 / (1.0 + 2.0 * kappa)
-                               : 1.0 / (3.0 * (1.0 + std::sqrt(-kappa)));
-    REQUIRE(p * static_cast<double>(d.max_iterations()) >= 30.0);
+    const double p = kappa > 0 ? 0.5 : (kappa <= -1 ? 0.84 : 0.37);
+    REQUIRE(-std::log1p(-p) * static_cast<double>(d.max_iterations()) >= 30.0);
+    REQUIRE(d.max_iterations() < 1000);
   }
-  // Valid large prolate κ still samples (no random throws) — a few
-  // draws at κ = 1e4 cost ~2e4 candidates each.
-  dist_t d{arr{0, 0, 1}, 1e4, engine};
-  for (int i = 0; i < 5; ++i) {
-    const auto v = d.sample();
-    REQUIRE(std::abs(v[2]) > 0.99);
+  // The bounds themselves are accepted and sample.
+  for (double kappa : {dist_t::max_kappa, dist_t::min_kappa}) {
+    dist_t d{arr{0, 0, 1}, kappa, engine};
+    for (int i = 0; i < 5; ++i) {
+      const auto v = d.sample();
+      REQUIRE(std::abs(gte::Length(v) - 1.0) < 1e-9);
+    }
   }
 }
 
@@ -214,34 +221,47 @@ void test_bingham_prolate_high_kappa_is_fast_and_correct() {
   // draw. With the exponential envelope a cap of 64 candidates never
   // trips (old sampler would throw) and E[cos²θ] matches quadrature.
   using arr = std::array<double, 3>;
-  for (double kappa : {1.0, 50.0, 1e3, 1e5}) {
+  for (double kappa : {1.0, 50.0, 1e3, 1e5, 1e8, 1e10}) {
     std::mt19937 engine{11};
     rvegen::bingham_distribution<double> d{arr{0, 0, 1}, kappa, engine};
     d.set_max_iterations(64);
     const int n = 20000;
-    double m2 = 0;
+    double m2 = 0, tr = 0;
     const auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < n; ++i) {
       const auto v = d.sample();
       m2 += v[2] * v[2];
+      tr += v[0] * v[0] + v[1] * v[1];
     }
+    tr /= n;
     const double secs = std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t0).count();
     REQUIRE(secs < 1.0);
     m2 /= n;
     // quadrature of E[x²] under exp(κ(x²-1)) on [0,1]; substitution
     // x = 1 - t resolves the boundary layer for large κ.
-    double num = 0, den = 0;
+    double num = 0, den = 0, numt = 0;
     const int q = 2000000;
     const double tmax = std::min(1.0, 40.0 / kappa);
     for (int i = 0; i < q; ++i) {
       const double t = (i + 0.5) / q * tmax;
       const double w = std::exp(-kappa * t * (2 - t));
       num += w * (1 - t) * (1 - t);
+      numt += w * t * (2 - t);   // sin^2(theta), cancellation-free
       den += w;
     }
     const double expect = num / den;
+    const double expect_tr = numt / den;
     const double sd = std::sqrt(0.25 / n);  // loose bound on var(x²) <= 1/4
+    // Transverse spread sin²θ ~ 1/κ must keep its relative accuracy at
+    // large κ (1 - m2 alone is below double resolution of m2 sampling
+    // noise there): exponential-like law, so sd(sin²θ) ~ mean.
+    if (std::abs(tr - expect_tr) > 6 * expect_tr / std::sqrt(double(n))) {
+      std::cerr << "kappa=" << kappa << " sin2=" << tr
+                << " expect=" << expect_tr << "\n";
+    }
+    REQUIRE(std::abs(tr - expect_tr) <= 6 * expect_tr / std::sqrt(double(n)));
+    REQUIRE(std::abs(tr * kappa - 1.0) < 0.05 || kappa < 100);
     if (std::abs(m2 - expect) > 5 * sd) {
       std::cerr << "kappa=" << kappa << " m2=" << m2 << " expect=" << expect
                 << "\n";
