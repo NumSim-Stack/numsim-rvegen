@@ -94,9 +94,12 @@ inline float le_f32(unsigned char const* p) {
 // Binary-STL sniff on a seekable stream (non-seekable streams return
 // false — callers must then pick the explicit reader). Binary when
 // either:
-//   * the stream size is exactly 84 + 50·n for the header's count n —
+//   * the header's count n is non-zero and 84 + 50·n fits in the
+//     stream (exact size, or trailing padding after the last facet) —
 //     this catches binary files whose 80-byte header begins with
-//     "solid" and is otherwise printable; or
+//     "solid" and is otherwise printable. ASCII text cannot satisfy
+//     it: its bytes 80..83 form a count >= 0x09090909, i.e. a file
+//     of > 7 GB; or
 //   * more than 5 % of the first 256 bytes are non-text (outside
 //     printable ASCII + whitespace). Real ASCII STL is text-only.
 // The checks are ASCII-only and do not depend on the C locale.
@@ -117,7 +120,8 @@ inline bool looks_like_binary_stl(std::istream& in) {
   if (bytes_read <= 0) return false;
   if (bytes_read >= 84 && size >= 84) {
     const std::uint64_t n = le_u32(head.data() + 80);
-    if (84 + 50 * n == static_cast<std::uint64_t>(size)) return true;
+    const auto sz = static_cast<std::uint64_t>(size);
+    if (84 + 50 * n == sz || (n > 0 && 84 + 50 * n <= sz)) return true;
   }
   std::size_t non_text = 0;
   for (std::streamsize i = 0; i < bytes_read; ++i) {

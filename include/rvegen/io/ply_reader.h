@@ -99,12 +99,15 @@ namespace rvegen {
 
 // Caller-tunable output limits for the PLY readers.
 struct ply_read_limits {
-  // Cap on the fan-triangulated output (default ~720 MB as
+  // Cap on the fan-triangulated output (default ~360 MB as
   // Triangle3<double>). Lower than the 1e8 element cap because fan
   // triangulation of long polygon lists amplifies a small file into
-  // many triangles, and a mesh_inclusion's is_inside is O(triangles)
-  // per query anyway. Raise it for genuinely huge meshes.
-  std::uint64_t max_triangles = 10'000'000;
+  // many triangles (tens of bytes out per byte in), and a
+  // mesh_inclusion's is_inside is O(triangles) per query anyway. Raise
+  // it for genuinely huge meshes: `read_ply_file` / `read_mesh_file`
+  // take a `ply_read_limits`, and `mesh_inclusion_input` exposes it as
+  // the optional `max_triangles` JSON key.
+  std::uint64_t max_triangles = 5'000'000;
 };
 
 namespace detail {
@@ -791,12 +794,12 @@ template <typename T = double>
 
 template <typename T = double>
 [[nodiscard]] std::vector<gte::Triangle3<T>> read_ply_file(
-    std::string const& path) {
+    std::string const& path, ply_read_limits const& limits = {}) {
   std::ifstream in{path, std::ios::binary};
   if (!in) {
     throw std::runtime_error{"read_ply_file: cannot open '" + path + "'"};
   }
-  return read_ply<T>(in);
+  return read_ply<T>(in, limits);
 }
 
 } // namespace rvegen
