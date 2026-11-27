@@ -412,19 +412,20 @@ void test_vtk_legacy_writer_header_and_size() {
 // ----------------------------------------------------------------------------
 void test_gmsh_geo_writer_periodic_2d() {
   rvegen::gmsh_geo_writer<double>::shape_vector shapes;
-  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.25, 0.1));
 
   rvegen::gmsh_geo_writer<double> writer{"", true};   // periodic = true
   std::stringstream out;
-  writer.write(out, shapes, {2.0, 1.0, 0.0});
+  // largest extent 1: written unscaled, so the shifts are the box edges
+  writer.write(out, shapes, {1.0, 0.5, 0.0});
 
   const auto txt = out.str();
   REQUIRE(txt.find("OCCBoundsUseStl") == std::string::npos);  // 2D: not needed, 16x slower
   REQUIRE(txt.find("no periodic partner") != std::string::npos);
   REQUIRE(txt.find("Curve In BoundingBox") != std::string::npos);
-  REQUIRE(txt.find("Periodic Curve{_hi(_j)} = {_lo(_i)} Translate{2, 0, 0};") !=
+  REQUIRE(txt.find("Periodic Curve{_hi(_j)} = {_lo(_i)} Translate{1, 0, 0};") !=
           std::string::npos);
-  REQUIRE(txt.find("Periodic Curve{_hi(_j)} = {_lo(_i)} Translate{0, 1, 0};") !=
+  REQUIRE(txt.find("Periodic Curve{_hi(_j)} = {_lo(_i)} Translate{0, 0.5, 0};") !=
           std::string::npos);
   REQUIRE(txt.find("Periodic Surface") == std::string::npos);  // 2D
   REQUIRE(txt.find("Coherence") == std::string::npos);
@@ -432,20 +433,20 @@ void test_gmsh_geo_writer_periodic_2d() {
 
 void test_gmsh_geo_writer_periodic_3d() {
   rvegen::gmsh_geo_writer<double>::shape_vector shapes;
-  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.25, 0.125, 0.1));
 
   rvegen::gmsh_geo_writer<double> writer{"", true};
   std::stringstream out;
-  writer.write(out, shapes, {1.0, 2.0, 3.0});
+  writer.write(out, shapes, {1.0, 0.5, 0.25});
 
   const auto txt = out.str();
   REQUIRE(txt.find("Geometry.OCCBoundsUseStl = 1;") != std::string::npos);
   REQUIRE(txt.find("Surface In BoundingBox") != std::string::npos);
   REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{1, 0, 0};") !=
           std::string::npos);
-  REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{0, 2, 0};") !=
+  REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{0, 0.5, 0};") !=
           std::string::npos);
-  REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{0, 0, 3};") !=
+  REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{0, 0, 0.25};") !=
           std::string::npos);
   REQUIRE(txt.find("Coherence") == std::string::npos);
 }
@@ -512,8 +513,9 @@ void test_gmsh_geo_writer_clips_inclusions_leaving_the_domain() {
   writer.write(out, shapes, {1.0, 1.0, 0.0});
   const auto txt = out.str();
 
-  REQUIRE(txt.find("_inc_3() = BooleanIntersection{ Surface{3}; Delete; }"
+  REQUIRE(txt.find("_r() = BooleanIntersection{ Surface{3}; Delete; }"
                    "{ Surface{1}; };") != std::string::npos);
+  REQUIRE(txt.find("_inc_3() += _r(_k);") != std::string::npos);
   REQUIRE(txt.find("_inc_2()") == std::string::npos);
   REQUIRE(txt.find("_inc() = {2, _inc_3()};") != std::string::npos);
   REQUIRE(txt.find("Physical Surface(\"fibre\", 1) = {2, _inc_3()};") !=
