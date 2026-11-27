@@ -250,7 +250,7 @@ int run(int argc, char** argv) {
     const auto assigned =
         rvegen::phase_assignment<double>::from_json(
             config.at("phase_assignment"), *phases)
-            .apply(shapes);
+            .apply(shapes, domain_box);
     std::cout << "rvegen: phase_assignment tagged " << assigned << " shape"
               << (assigned == 1 ? "" : "s") << '\n';
   }
@@ -261,8 +261,17 @@ int run(int argc, char** argv) {
                  "nothing was written.\n";
   } else {
     for (auto const& spec : config.at("postprocess")) {
+      // phase_assignment's "matrix" names the matrix phase; forward it to
+      // the DAMASK writer unless the writer config already picks one.
+      auto pp_spec = spec;
+      if (config.contains("phase_assignment") &&
+          config.at("phase_assignment").contains("matrix") &&
+          spec.value("type", std::string{}) == "damask_material_config" &&
+          !pp_spec.contains("matrix_phase")) {
+        pp_spec["matrix_phase"] = config.at("phase_assignment").at("matrix");
+      }
       auto pp = rvegen::build_from_json(
-          rvegen::post_process_registry_t<>::instance(), spec);
+          rvegen::post_process_registry_t<>::instance(), pp_spec);
       if (phases) pp->set_phases(&*phases);
       pp->run(shapes, domain_box);
       std::cout << "rvegen: post-process '"

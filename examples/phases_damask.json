@@ -1,5 +1,5 @@
 {
-  "_comment": "Phases + phase_assignment + DAMASK material.yaml. Circles become 'fibre' (by_shape_type), rectangles 'filler' (by_shape_type); material blobs are opaque to rvegen, the damask writer converts K/G to Hooke constants. Cells no shape covers stay id 0 (matrix gap, no material entry).",
+  "_comment": "Phases + phase_assignment + DAMASK material.yaml. Circles become 'fibre' (by_shape_type), rectangles 'filler' (by_shape_type); material blobs are opaque to rvegen, the damask writer converts K/G to Hooke constants. Cells no shape covers stay id 0 (matrix gap: DAMASK material index 0 uses the 'matrix' phase).",
 
   "domain_box": [1.0, 1.0, 0.0],
   "seed": 42,
@@ -22,6 +22,8 @@
   ],
 
   "phases": [
+    { "name": "matrix",
+      "material": { "type": "linear_elasticity", "K": 4.0e9, "G": 1.5e9 } },
     { "name": "fibre",
       "material": { "type": "linear_elasticity", "E": 240.0e9, "nu": 0.25 } },
     { "name": "filler",
@@ -29,6 +31,7 @@
   ],
 
   "phase_assignment": {
+    "matrix": "matrix",
     "by_shape_type": { "circle": "fibre", "rectangle": "filler" }
   },
 

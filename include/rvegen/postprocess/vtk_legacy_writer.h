@@ -86,7 +86,7 @@ public:
   // 1..N from `phase_collection`) instead of the legacy 1-based shape
   // index. Caller retains ownership; pointer must outlive the next
   // run()/write() call. Pass nullptr to clear.
-  void set_phases(phase_collection<value_type> const* phases) noexcept {
+  void set_phases(phase_collection<value_type> const* phases) noexcept override {
     _phases = phases;
   }
   [[nodiscard]] phase_collection<value_type> const* phases() const noexcept {
