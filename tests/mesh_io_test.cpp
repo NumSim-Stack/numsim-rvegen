@@ -6,7 +6,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -220,6 +222,44 @@ void test_stl_binary_exact_and_trailing_bytes_ok() {
     std::stringstream ss{out.str()};
     REQUIRE(rvegen::read_stl_binary<double>(ss).size() == 1);
   }
+}
+
+void test_stl_binary_with_solid_header_and_padding_sniffs_binary() {
+  // Printable "solid ..." 80-byte header; the size is exactly 84+50n, then
+  // 84+50n plus trailing padding. Both must take the binary path.
+  auto make = [](bool pad) {
+    std::ostringstream out;
+    std::string h = "solid exported by some CAD tool, all printable text here.....";
+    h.resize(80, ' ');
+    out << h;
+    write_le_u32(out, 1);
+    for (int i = 0; i < 3; ++i) write_le_f32(out, 0.f);
+    for (float c : {0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f}) write_le_f32(out, c);
+    out.put('\0'); out.put('\0');
+    if (pad) out << std::string(37, ' ');   // printable padding
+    return out.str();
+  };
+  for (bool pad : {false, true}) {
+    std::stringstream ss{make(pad)};
+    REQUIRE(rvegen::read_stl<double>(ss).size() == 1);
+  }
+}
+
+void test_read_mesh_file_ply_limits() {
+  const std::string path = "/tmp/rvegen_mesh_io_limits.ply";
+  {
+    std::ofstream o{path};
+    o << "ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\n"
+         "property float y\nproperty float z\nelement face 1\n"
+         "property list uchar int vertex_indices\nend_header\n"
+         "0 0 0\n1 0 0\n1 1 0\n0 1 0\n4 0 1 2 3\n";   // quad -> 2 tris
+  }
+  REQUIRE(rvegen::read_mesh_file<double>(path).size() == 2);
+  REQUIRE_THROWS_WITH(
+      rvegen::read_mesh_file<double>(path, rvegen::ply_read_limits{1}),
+      "triangles");
+  REQUIRE(rvegen::read_ply_file<double>(path, rvegen::ply_read_limits{2}).size() == 2);
+  std::remove(path.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -730,6 +770,8 @@ int main() {
   test_stl_mixed_case_keywords_parse();
   test_stl_binary_count_exceeds_data_throws();
   test_stl_binary_exact_and_trailing_bytes_ok();
+  test_stl_binary_with_solid_header_and_padding_sniffs_binary();
+  test_read_mesh_file_ply_limits();
 
   test_ply_huge_element_count_throws();
   test_ply_header_element_flood_is_bounded();

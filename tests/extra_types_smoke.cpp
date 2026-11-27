@@ -2903,6 +2903,43 @@ void test_mesh_inclusion_input_accepts_canonical_mesh_path() {
   std::remove(tmp_path.c_str());
 }
 
+void test_mesh_inclusion_input_max_triangles_key() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  const std::string tmp_path = "/tmp/rvegen_test_mesh_max_tris.ply";
+  {
+    std::ofstream out{tmp_path};
+    out << "ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\n"
+           "property float y\nproperty float z\nelement face 1\n"
+           "property list uchar int vertex_indices\nend_header\n"
+           "0 0 0\n1 0 0\n1 1 0\n0 1 0\n4 0 1 2 3\n";
+  }
+  std::mt19937 engine{33};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto spec = nlohmann::json::parse(std::string{R"({
+    "type": "mesh_inclusion_input", "max_triangles": 1,
+    "mesh_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "p", "position_y_dist": "p", "position_z_dist": "p"
+  })");
+  bool threw = false;
+  std::string what;
+  try {
+    (void)rvegen::build_from_json(rvegen::input_registry_t<>::instance(), spec, dists);
+  } catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("triangles") != std::string::npos);
+  std::remove(tmp_path.c_str());
+}
+
 void test_mesh_inclusion_input_rejects_both_mesh_and_stl_path() {
   rvegen::register_all_distributions<>();
   rvegen::register_all_inputs<>();
@@ -3783,6 +3820,7 @@ int main() {
   test_stl_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_input_via_registry();
   test_mesh_inclusion_input_accepts_canonical_mesh_path();
+  test_mesh_inclusion_input_max_triangles_key();
   test_mesh_inclusion_input_rejects_both_mesh_and_stl_path();
   test_mesh_inclusion_input_rejects_neither_mesh_nor_stl_path();
   test_mesh_inclusion_input_missing_file_throws();

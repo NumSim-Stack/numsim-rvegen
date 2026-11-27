@@ -80,9 +80,10 @@ public:
   mesh_inclusion_input(std::string mesh_path,
                        distribution_base<value_type>& px,
                        distribution_base<value_type>& py,
-                       distribution_base<value_type>& pz)
+                       distribution_base<value_type>& pz,
+                       ply_read_limits limits = {})
       : _mesh_path{std::move(mesh_path)},
-        _prototype{load_prototype(_mesh_path)},
+        _prototype{load_prototype(_mesh_path, limits)},
         _px{px}, _py{py}, _pz{pz} {}
 
   mesh_inclusion_input(parameter_handler_t const& handler,
@@ -91,7 +92,8 @@ public:
             resolve_mesh_path(handler),
             *d.at(handler.template get<std::string>("position_x_dist")),
             *d.at(handler.template get<std::string>("position_y_dist")),
-            *d.at(handler.template get<std::string>("position_z_dist"))) {
+            *d.at(handler.template get<std::string>("position_z_dist")),
+            read_limits(handler)) {
     apply_transform_options(handler, d);
   }
 
@@ -121,6 +123,10 @@ public:
         .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias)">>();
     s.template insert<std::string>("stl_path")
         .template add<numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>();
+    s.template insert<std::size_t>("max_triangles")
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::unit_label<"triangles">>()
+        .template add<numsim_core::description_label<"optional cap on the triangle count read from a PLY file (fan-triangulated output; default 5000000). Raise it for genuinely huge meshes">>();
     s.template insert<std::string>("position_x_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre x-coordinate">>();
@@ -197,8 +203,17 @@ private:
   // generator's volume_fraction termination would then never satisfy
   // and the run would loop until `max_attempts` (silent timeout) —
   // fail fast instead.
-  static mesh_inclusion<value_type> load_prototype(std::string const& path) {
-    auto triangles = read_mesh_file<value_type>(path);
+  static ply_read_limits read_limits(parameter_handler_t const& h) {
+    ply_read_limits l;
+    if (h.contains("max_triangles")) {
+      l.max_triangles = h.template get<std::size_t>("max_triangles");
+    }
+    return l;
+  }
+
+  static mesh_inclusion<value_type> load_prototype(
+      std::string const& path, ply_read_limits const& limits) {
+    auto triangles = read_mesh_file<value_type>(path, limits);
     if (triangles.empty()) {
       throw std::runtime_error{
           "mesh_inclusion_input: mesh file '" + path +
