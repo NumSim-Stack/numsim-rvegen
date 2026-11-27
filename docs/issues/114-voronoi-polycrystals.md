@@ -60,7 +60,7 @@ modes; Neper uses a custom routine.
 
 - gmsh emits `Volume(...)` per cell with `Physical Volume("grain_N")`
   per-grain tags.
-- Grain-id voxel grid; per-grain orientations are tracked in #114.
+- Grain-id voxel grid; per-grain orientations are tracked in GitHub issue #114 (per-grain crystal orientations).
 
 ### Acceptance
 
