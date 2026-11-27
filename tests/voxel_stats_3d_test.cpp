@@ -497,9 +497,41 @@ void test_rdf_zero_bins() {
   REQUIRE(rvegen::radial_distribution_2d(c, {1.0, 1.0, 0.0}, 0).empty());
 }
 
+// Inclusion ids live outside info(): a user "rvegen_inclusion_id" metadata
+// key (even a non-integer one) is harmless, wrap-less shapes carry no id,
+// and ids stay unique across generate() calls.
+void test_inclusion_id_isolation() {
+  shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.25, 0.5, 0.1));
+  shapes.back()->info().set("rvegen_inclusion_id", std::string{"user"});
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.75, 0.5, 0.1));
+  REQUIRE(!rvegen::inclusion_id(*shapes[0]).has_value());
+  const auto grid = rvegen::sample_voxel_grid(shapes, {1.0, 1.0, 0.0}, 8, 8, 1);
+  REQUIRE(grid[3 * 8 + 1] == 1 && grid[3 * 8 + 5] == 2);
+
+  auto run = [](unsigned seed) {
+    std::mt19937 engine{seed};
+    rvegen::constant_distribution<double> corner{0.95};
+    rvegen::constant_distribution<double> r{0.1};
+    rvegen::periodic_generator<double>::input_vector inputs;
+    inputs.push_back(
+        std::make_unique<rvegen::circle_input<double>>(corner, corner, r));
+    rvegen::periodic_generator<double> g{200};
+    rvegen::number_of_inclusions<double> term{4};
+    return g.compute(inputs, term, {1.0, 1.0, 0.0});
+  };
+  const auto a = run(1), b = run(2);
+  std::set<std::size_t> ida, idb;
+  for (auto const& s : a) if (auto i = rvegen::inclusion_id(*s)) ida.insert(*i);
+  for (auto const& s : b) if (auto i = rvegen::inclusion_id(*s)) idb.insert(*i);
+  REQUIRE(!ida.empty() && !idb.empty());
+  for (auto i : ida) REQUIRE(idb.count(i) == 0);
+}
+
 } // namespace
 
 int main() {
+  test_inclusion_id_isolation();
   test_voxel_matches_brute_force();
   test_rdf_zero_bins();
   test_nz1_samples_mid_plane();

@@ -66,7 +66,6 @@ public:
     std::size_t attempts = 0;
     std::size_t input_idx = 0;
     std::size_t last_emit = 0;
-    std::size_t n_primaries = 0;
 
     while (!termination(accepted) && attempts < _max_attempts) {
       if (opts.cancel()) return accepted;
@@ -83,11 +82,15 @@ public:
       // has its own periodic image overlapping itself.
       if (self_periodic_collides(*prim_bb, domain_box)) continue;
 
-      // Build the periodic equivalence class — primary + wraps. The
-      // inclusion id (count of primaries accepted so far) is stamped on
-      // the primary first so every wrap clone inherits the same id.
-      set_inclusion_id(*primary, n_primaries);
+      // Build the periodic equivalence class — primary + wraps. Only a
+      // multi-piece class gets an inclusion id (shared by all members);
+      // a primary without wraps is an ordinary single shape.
       auto wraps = generate_periodic_wraps(*primary, domain_box);
+      if (!wraps.empty()) {
+        const auto id = next_inclusion_id();
+        primary->set_inclusion_id(id);
+        for (auto& w : wraps) w->set_inclusion_id(id);
+      }
 
       // Check every class member vs every accepted shape. The accepted
       // vector already contains all previously-inserted primaries AND
@@ -115,7 +118,6 @@ public:
       // by their middle_point, not by insertion role.
       accepted.push_back(std::move(primary));
       for (auto& w : wraps) accepted.push_back(std::move(w));
-      ++n_primaries;
 
       if (accepted.size() - last_emit >= opts.emit_every) {
         opts.on_progress({accepted.size(),

@@ -18,13 +18,13 @@
 // full equivalence class so subsequent collision checks can use the
 // non-periodic (faster) dispatch.
 //
-// Wraps are clones, so they copy the primary's `info`. periodic_generator
-// stamps the primary with an inclusion id (set_inclusion_id) before
-// generating its wraps, which gives every member of the equivalence
-// class the same id. Shape-index voxel output uses that id to number one
+// Wraps are clones, so they copy the primary's inclusion id.
+// periodic_generator stamps the primary and all its wraps with one id
+// (shape_base::set_inclusion_id) when the class has more than one member. Shape-index voxel output uses that id to number one
 // physical inclusion once, however many periodic pieces it has.
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -34,22 +34,21 @@
 
 namespace rvegen {
 
-// `info` key linking a primary and its periodic wraps. Namespaced with the
-// `rvegen_` prefix so it cannot collide with user metadata keys.
-inline constexpr char const* inclusion_id_key = "rvegen_inclusion_id";
-
-template <typename T>
-void set_inclusion_id(shape_base<T>& shape, std::size_t id) {
-  shape.info().set(inclusion_id_key, id);
+// Process-wide unique id for a periodic equivalence class. Unique across
+// generate() calls so results from several runs can be concatenated
+// without unrelated inclusions being merged. Voxel numbering depends only
+// on first appearance, never on the id value, so output stays deterministic.
+[[nodiscard]] inline std::size_t next_inclusion_id() noexcept {
+  static std::atomic<std::size_t> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 // Inclusion id shared by a primary and its wraps, or nullopt for shapes
-// that were not produced by a periodic placement.
+// that were not part of a multi-piece periodic inclusion.
 template <typename T>
 [[nodiscard]] std::optional<std::size_t>
 inclusion_id(shape_base<T> const& shape) {
-  if (!shape.info().contains(inclusion_id_key)) return std::nullopt;
-  return shape.info().template get<std::size_t>(inclusion_id_key);
+  return shape.inclusion_id();
 }
 
 template <typename T>
