@@ -80,8 +80,8 @@ public:
 
   // Build the tow-level RVE. Calls the base weave generator, then
   // expands every yarn into `_n_fibres` parallel fibres.
-  [[nodiscard]] shape_vector build() const {
-    auto yarns = _base.build();
+  [[nodiscard]] shape_vector build(cancel_fn const* cancel = nullptr) const {
+    auto yarns = _base.build(cancel);
     shape_vector out;
     out.reserve(yarns.size() * _n_fibres);
 
@@ -100,6 +100,7 @@ public:
         _n_fibres, yarn_radius - fibre_r);
 
     for (std::size_t y = 0; y < yarns.size(); ++y) {
+      poll_cancel(cancel);
       auto* yarn = dynamic_cast<polyline_tube<T>*>(yarns[y].get());
       if (!yarn) continue;   // base may produce empty / unsupported
       const bool is_warp = y < _base.n_warp_yarns();

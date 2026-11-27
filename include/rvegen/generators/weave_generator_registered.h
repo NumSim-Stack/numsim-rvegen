@@ -80,7 +80,7 @@ public:
 protected:
   [[nodiscard]] typename deterministic_generator<T>::shape_vector
   build(std::array<T, 3> const& domain_box) const override {
-    return detail::make_weave<T>(_handler, domain_box).build();
+    return detail::make_weave<T>(_handler, domain_box).build(this->cancel());
   }
 
 private:
@@ -113,7 +113,7 @@ protected:
         detail::make_weave<T>(_handler, domain_box),
         _handler.template get<std::size_t>("n_fibres_per_tow"),
         _handler.template get<T>("fibre_radius_factor")};
-    return g.build();
+    return g.build(this->cancel());
   }
 
 private:

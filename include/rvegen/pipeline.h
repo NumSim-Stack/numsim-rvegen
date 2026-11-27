@@ -9,9 +9,11 @@
 //   // result.shapes, result.domain_box, result.seed, ...
 //
 // Steps: register types -> domain box / seed -> distributions (scalar +
-// direction) -> inputs -> generator + termination -> compute ->
-// phases / phase_assignment -> post-processes.  `generate()` stops after
-// the phase step; `run_post_processes()` runs the writers.  Messages the
+// direction) -> inputs -> post-processes built and phases parsed (so bad
+// writer / phase blocks fail before any shape is placed) -> generator +
+// termination -> compute -> phase_assignment applied -> post-processes run.
+// `generate()` stops after the phase step; `run_post_processes()` runs the
+// writers built by generate().  Messages the
 // CLI prints ("rvegen: generated N shapes", ...) go through
 // `pipeline_options::info` / `warn` so embedders stay silent by default.
 
@@ -49,6 +51,12 @@ inline void register_all_types() {
   });
 }
 
+// Thrown by generate() when `progress.cancel` reports true after the
+// generator returned: the (partial) result is dropped and no writer runs.
+struct pipeline_cancelled : std::runtime_error {
+  pipeline_cancelled() : std::runtime_error{"rvegen: run cancelled"} {}
+};
+
 struct pipeline_options {
   // Overrides the config's "seed" key when set (default 42 if neither).
   std::optional<std::uint64_t> seed;
@@ -69,7 +77,23 @@ struct pipeline_result {
   std::uint64_t seed{42};
   std::optional<phase_collection<double>> phases;
   std::vector<std::string> post_processes_run;   // "type" of each executed step
+  // Writers built (and schema-validated) by generate() BEFORE the shapes
+  // are placed, so a bad "postprocess" block fails before any work or any
+  // output file; run_post_processes() executes them.
+  std::vector<std::unique_ptr<post_process_base<double>>> pending_post_processes;
+  bool post_processes_built = false;
 };
+
+// Builds the config's "postprocess" writers into `result` (no output yet).
+inline void build_post_processes(nlohmann::json const& config,
+                                 pipeline_result& result) {
+  result.pending_post_processes.clear();
+  result.post_processes_built = true;
+  if (!config.contains("postprocess")) return;
+  for (auto const& spec : config.at("postprocess"))
+    result.pending_post_processes.push_back(
+        build_from_json(post_process_registry_t<>::instance(), spec));
+}
 
 // Steps 1-7b: everything up to (and including) phase assignment.
 [[nodiscard]] inline pipeline_result
@@ -174,6 +198,29 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
         build_from_json(input_registry_t<>::instance(), spec, dists));
   }
 
+  // Build every post-process up front: the writers are schema-validated
+  // here, so a bad block fails before generation instead of after it.
+  // (set_phases happens at run time: `out` may still be moved.)
+  if (opts.run_postprocess) {
+    build_post_processes(config, out);
+  }
+
+  // Phases and phase_assignment are parsed (validated) before generation
+  // too; the assignment is applied once the shapes exist.
+  if (config.contains("phases")) {
+    out.phases.emplace(load_phases_from_json<double>(config.at("phases")));
+  }
+  std::optional<phase_assignment<double>> assignment;
+  if (config.contains("phase_assignment")) {
+    if (!out.phases) {
+      throw std::runtime_error{
+          "\"phase_assignment\" given without a \"phases\" array"};
+    }
+    assignment.emplace(phase_assignment<double>::from_json(
+        config.at("phase_assignment"), *out.phases));
+    if (assignment->matrix()) out.phases->set_matrix(*assignment->matrix());
+  }
+
   // Generator + termination. Deterministic generators ignore the
   // termination predicate (#73), so the section is optional for them; a
   // placeholder keeps the compute() signature uniform.
@@ -183,9 +230,11 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
         opts.warn("rvegen: warning - unknown key '" + key +
                   "' for generator '" + type + "' is ignored");
       });
-  const bool deterministic =
-      dynamic_cast<deterministic_generator<double>*>(generator.get()) !=
-      nullptr;
+  auto* const det_gen =
+      dynamic_cast<deterministic_generator<double>*>(generator.get());
+  const bool deterministic = det_gen != nullptr;
+  // Voronoi generators draw their seed points from the pipeline seed.
+  if (det_gen) det_gen->set_pipeline_seed(out.seed);
   std::unique_ptr<termination_base<double>> termination;
   if (deterministic) {
     auto const gtype = config.at("generator").value("type", std::string{"?"});
@@ -203,22 +252,14 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
 
   out.shapes = generator->compute(inputs, *termination, out.domain_box,
                                   opts.progress);
+  if (opts.progress.cancel()) throw pipeline_cancelled{};
   opts.info("rvegen: generated " + std::to_string(out.shapes.size()) +
             " shape" + (out.shapes.size() == 1 ? "" : "s"));
 
-  // Phases: named regions + shape -> phase assignment. The collection is
-  // handed to every post-process through post_process_base::set_phases.
-  if (config.contains("phases")) {
-    out.phases.emplace(load_phases_from_json<double>(config.at("phases")));
-  }
-  if (config.contains("phase_assignment")) {
-    if (!out.phases) {
-      throw std::runtime_error{
-          "\"phase_assignment\" given without a \"phases\" array"};
-    }
-    const auto assigned = phase_assignment<double>::from_json(
-                              config.at("phase_assignment"), *out.phases)
-                              .apply(out.shapes, out.domain_box);
+  // Shape -> phase assignment. The collection is handed to every
+  // post-process through post_process_base::set_phases.
+  if (assignment) {
+    const auto assigned = assignment->apply(out.shapes, out.domain_box);
     opts.info("rvegen: phase_assignment tagged " + std::to_string(assigned) +
               " shape" + (assigned == 1 ? "" : "s"));
   }
@@ -235,8 +276,12 @@ inline void run_post_processes(nlohmann::json const& config,
               "nothing was written.");
     return;
   }
+  if (!result.post_processes_built) build_post_processes(config, result);
+  auto writers = std::move(result.pending_post_processes);
+  result.pending_post_processes.clear();
+  std::size_t n = 0;
   for (auto const& spec : config.at("postprocess")) {
-    auto pp = build_from_json(post_process_registry_t<>::instance(), spec);
+    auto& pp = writers.at(n++);
     if (result.phases) pp->set_phases(&*result.phases);
     pp->run(result.shapes, result.domain_box);
     auto type = spec.at("type").get<std::string>();

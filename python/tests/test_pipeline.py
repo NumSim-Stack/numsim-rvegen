@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import signal
+import threading
+import time
+import warnings
 
 import numpy as np
 import pytest
@@ -201,3 +205,103 @@ def test_voxelize_run_output_and_shape_reuse():
     assert (grid > 0).any()
     again = rvegen.voxelize(shapes, [1.0, 1.0, 0.0], 32, 32, 1)   # shapes untouched
     assert np.array_equal(grid, again)
+
+
+# ---- interruption, warnings, quiet stdout, domain validation, seeds -------
+
+def _long_config():
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["distributions"]["r"] = {"type": "constant", "value": 0.0005}
+    cfg["generator"]["max_attempts"] = 100_000_000
+    cfg["termination"]["target"] = 3_000_000
+    return cfg
+
+
+@pytest.mark.skipif(not hasattr(signal, "raise_signal"), reason="needs signal.raise_signal")
+def test_run_is_interruptible():
+    # A long run must raise KeyboardInterrupt soon after SIGINT arrives.
+    cfg = _long_config()
+    timer = threading.Timer(0.5, lambda: signal.raise_signal(signal.SIGINT))
+    timer.start()
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            rvegen.run(cfg, postprocess=False)
+    finally:
+        timer.cancel()
+    assert time.monotonic() - t0 < 5.0
+
+
+@pytest.mark.skipif(not hasattr(signal, "raise_signal"), reason="needs signal.raise_signal")
+def test_voxelize_is_interruptible():
+    shapes = [rvegen.Circle(0.5, 0.5, 0.3)]
+    timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT))
+    timer.start()
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            rvegen.voxelize(shapes, [1.0, 1.0, 1.0], 400, 400, 400)
+    finally:
+        timer.cancel()
+    assert time.monotonic() - t0 < 5.0
+
+
+def test_run_not_interrupted_without_signal():
+    assert len(rvegen.run(CIRCLES, postprocess=False)) == 10
+
+
+def test_warnings_as_errors_propagate():
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["bogus_key"] = 1   # unknown top-level key -> UserWarning
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(UserWarning, match="bogus_key"):
+            rvegen.run(cfg, postprocess=False)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rvegen.run(cfg, postprocess=False)
+    assert any("bogus_key" in str(w.message) for w in caught)
+
+
+def test_run_prints_nothing_to_stdout(capfd):
+    cfg = json.loads(json.dumps(CIRCLES))   # relies on defaulted keys
+    rvegen.run(cfg, postprocess=False)
+    out, err = capfd.readouterr()
+    assert out == ""
+    assert "using default" not in err
+
+
+@pytest.mark.parametrize("domain", [
+    [0.0, 0.0, 0.0], [-1.0, 1.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, -0.5],
+    [float("nan"), 1.0, 0.0], [1.0, float("inf"), 0.0],
+])
+def test_voxelize_rejects_invalid_domain(domain):
+    with pytest.raises(ValueError):
+        rvegen.voxelize([rvegen.Circle(0.5, 0.5, 0.25)], domain, 4, 4, 1)
+
+
+def test_voxelize_accepts_2d_and_3d_domain():
+    assert rvegen.voxelize([], [1.0, 1.0, 0.0], 4, 4, 1).shape == (4, 4, 1)
+    assert rvegen.voxelize([], [1.0, 2.0, 0.5], 4, 4, 2).shape == (4, 4, 2)
+
+
+def test_voronoi_follows_run_seed():
+    cfg = {"domain_box": [1.0, 1.0, 0.0],
+           "generator": {"type": "voronoi_2d", "n_seeds": 8}}
+    a = rvegen.run(cfg, seed=1, postprocess=False)
+    b = rvegen.run(cfg, seed=2, postprocess=False)
+    a2 = rvegen.run(cfg, seed=1, postprocess=False)
+    assert a.summary["seed"] == 1 and b.summary["seed"] == 2
+    areas = lambda r: [s.area() for s in r]
+    assert areas(a) != areas(b)
+    assert areas(a) == areas(a2)
+    # An explicit generator seed overrides the run seed.
+    cfg["generator"]["seed"] = 7
+    assert areas(rvegen.run(cfg, seed=1, postprocess=False)) == \
+        areas(rvegen.run(cfg, seed=2, postprocess=False))
+    # Top-level config seed behaves the same way.
+    cfg["generator"].pop("seed")
+    cfg["seed"] = 5
+    c1 = areas(rvegen.run(cfg, postprocess=False))
+    cfg["seed"] = 6
+    assert c1 != areas(rvegen.run(cfg, postprocess=False))

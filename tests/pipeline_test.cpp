@@ -1,12 +1,21 @@
 // rvegen::run_pipeline / generate (the library entry shared by the CLI and
 // the Python bindings) and schema_to_json (#4).
 
+#include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "rvegen/pipeline.h"
 #include "rvegen/schema/schema_to_json.h"
@@ -116,6 +125,104 @@ void test_seed_and_warnings() {
   REQUIRE(has("unknown key 'n_seedz' for generator 'voronoi_2d'"));
 }
 
+// A bad "postprocess" block must fail BEFORE any shape is placed and before
+// earlier writers produce output.
+void test_postprocess_validated_before_generation() {
+  auto cfg = circles_config();
+  std::filesystem::remove("pipeline_early.svg");
+  cfg["postprocess"] = json::array(
+      {json{{"type", "svg"}, {"canvas_width", 200},
+            {"output_path", "pipeline_early.svg"}},
+       json{{"type", "voxel"}, {"nx", 4}, {"ny", 4}, {"nz", 1}}});   // no output_path
+  std::vector<std::string> lines;
+  rvegen::pipeline_options opts;
+  opts.info = [&](std::string const& l) { lines.push_back(l); };
+  bool threw = false;
+  std::string what;
+  try { (void)rvegen::run_pipeline(cfg, opts); }
+  catch (std::exception const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("output_path") != std::string::npos);
+  REQUIRE(lines.empty());                                   // no "generated N shapes"
+  REQUIRE(!std::filesystem::exists("pipeline_early.svg"));  // no output from writer 1
+
+  // Same for an unknown writer type and for a bad phase_assignment.
+  cfg["postprocess"] = json::array({json{{"type", "no_such_writer"}}});
+  threw = false;
+  try { (void)rvegen::run_pipeline(cfg, opts); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw && lines.empty());
+  cfg = circles_config();
+  cfg["phase_assignment"] = json{{"all_inclusions", "nope"}};
+  threw = false;
+  try { (void)rvegen::run_pipeline(cfg, opts); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw && lines.empty());
+
+  // generate() with run_postprocess = false does not build writers.
+  cfg = circles_config();
+  cfg["postprocess"] = json::array({json{{"type", "voxel"}}});
+  rvegen::pipeline_options off;
+  off.run_postprocess = false;
+  REQUIRE(rvegen::run_pipeline(cfg, off).shapes.size() == 6);
+}
+
+// progress.cancel stops the run and no writer runs afterwards.
+void test_cancel_stops_pipeline() {
+  auto cfg = circles_config();
+  std::filesystem::remove("pipeline_cancel.svg");
+  cfg["postprocess"] = json::array({json{{"type", "svg"}, {"canvas_width", 200},
+                                         {"output_path", "pipeline_cancel.svg"}}});
+  rvegen::pipeline_options opts;
+  opts.progress.cancel = [] { return true; };
+  bool cancelled = false;
+  try { (void)rvegen::run_pipeline(cfg, opts); }
+  catch (rvegen::pipeline_cancelled const&) { cancelled = true; }
+  REQUIRE(cancelled);
+  REQUIRE(!std::filesystem::exists("pipeline_cancel.svg"));
+}
+
+// Voronoi generators follow the pipeline seed; an explicit generator seed
+// overrides it.
+void test_voronoi_follows_pipeline_seed() {
+  json cfg = {{"domain_box", {1.0, 1.0, 0.0}},
+              {"generator", {{"type", "voronoi_2d"}, {"n_seeds", 6}}}};
+  auto first_area = [&](std::uint64_t seed) {
+    rvegen::pipeline_options o;
+    o.seed = seed;
+    return rvegen::generate(cfg, o).shapes[0]->area();
+  };
+  REQUIRE(first_area(1) != first_area(2));
+  REQUIRE(first_area(2) == first_area(2));
+  cfg["seed"] = 3;   // top-level seed from the config works as well
+  auto a = rvegen::generate(cfg).shapes[0]->area();
+  cfg["seed"] = 4;
+  REQUIRE(a != rvegen::generate(cfg).shapes[0]->area());
+  cfg["generator"]["seed"] = 11;   // explicit override: top-level seed irrelevant
+  auto b = rvegen::generate(cfg).shapes[0]->area();
+  cfg["seed"] = 3;
+  REQUIRE(b == rvegen::generate(cfg).shapes[0]->area());
+}
+
+// numsim-core must not print "using default" lines on its own (stdout is
+// captured at file-descriptor level).
+void test_no_stdout_noise() {
+#ifndef _WIN32
+  std::fflush(stdout);
+  const int saved = dup(1);
+  const int fd = open("pipeline_stdout.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  REQUIRE(saved >= 0 && fd >= 0);
+  dup2(fd, 1);
+  close(fd);
+  (void)rvegen::generate(circles_config());   // many defaulted keys
+  std::fflush(stdout);
+  dup2(saved, 1);
+  close(saved);
+  std::ifstream in{"pipeline_stdout.txt"};
+  std::string all((std::istreambuf_iterator<char>(in)), {});
+  REQUIRE(all.find("using default") == std::string::npos);
+  REQUIRE(all.empty());
+#endif
+}
+
 void test_schema_to_json() {
   rvegen::register_all_types();
   auto j = rvegen::schema_to_json(
@@ -135,6 +242,10 @@ int main() {
   test_generate();
   test_postprocess_toggle();
   test_seed_and_warnings();
+  test_postprocess_validated_before_generation();
+  test_cancel_stops_pipeline();
+  test_voronoi_follows_pipeline_seed();
+  test_no_stdout_noise();
   test_schema_to_json();
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "pipeline_test OK\n";

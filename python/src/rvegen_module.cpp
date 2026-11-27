@@ -30,6 +30,9 @@
 #include <pybind11/stl.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <functional>
 #include <fstream>
 #include <limits>
 #include <optional>
@@ -109,6 +112,58 @@ nlohmann::json load_config(py::object const& cfg) {
   }
   throw std::invalid_argument{
       "rvegen.run: config must be a dict or a path to a JSON file"};
+}
+
+// Ctrl-C support for long C++ calls running with the GIL released. The
+// cancel hook is polled by the generators / voxel sampler; at most every
+// ~50 ms of wall time it re-acquires the GIL and runs PyErr_CheckSignals().
+// If that reports an exception (KeyboardInterrupt), the exception is parked
+// here, the hook keeps returning true so the C++ side unwinds, and the
+// binding rethrows it with rethrow_if_interrupted().
+class interrupt_watch {
+public:
+  [[nodiscard]] std::function<bool()> hook() {
+    return [this]() -> bool {
+      if (_error) return true;
+      if ((++_calls & 0xF) != 0) return false;   // keep the clock off the hot path
+      auto const now = std::chrono::steady_clock::now();
+      if (now - _last < std::chrono::milliseconds{50}) return false;
+      _last = now;
+      py::gil_scoped_acquire acquire;
+      if (PyErr_CheckSignals() != 0) {
+        _error.emplace();   // fetches + clears the Python error indicator
+        return true;
+      }
+      return false;
+    };
+  }
+  // Call with the GIL held.
+  void rethrow_if_interrupted() {
+    if (_error) {
+      auto e = std::move(*_error);
+      _error.reset();
+      throw e;
+    }
+  }
+
+private:
+  std::optional<py::error_already_set> _error;
+  std::uint32_t _calls{0};
+  std::chrono::steady_clock::time_point _last{std::chrono::steady_clock::now()};
+};
+
+// Runs f(cancel_fn const*) with Ctrl-C support, for bound builders that
+// keep the GIL (so Ctrl-C raises KeyboardInterrupt instead of waiting).
+template <typename F>
+auto interruptible(F&& f) {
+  interrupt_watch watch;
+  rvegen::cancel_fn const cancel = watch.hook();
+  try {
+    return f(&cancel);
+  } catch (rvegen::generation_cancelled const&) {
+    watch.rethrow_if_interrupted();
+    throw;
+  }
 }
 
 // Result of rvegen.run(): a sequence of shapes plus a summary dict.
@@ -384,7 +439,8 @@ PYBIND11_MODULE(_core, m) {
           })
       .def("build_polygons",
            [](rvegen::voronoi_generator_2d<double> const& g) {
-             return g.build();
+             return interruptible(
+                 [&](rvegen::cancel_fn const* c) { return g.build(c); });
            },
            "Returns a list-of-list-of-(x,y) — one CCW polygon per seed.")
       .def("build_cells",
@@ -392,7 +448,8 @@ PYBIND11_MODULE(_core, m) {
              // Iterate the raw polygons and wrap each as a value
              // ConvexPolygon. Degenerate (<3 vertex) cells are skipped
              // — same convention as voronoi_to_shapes on the C++ side.
-             auto polys = g.build();
+             auto polys = interruptible(
+                 [&](rvegen::cancel_fn const* c) { return g.build(c); });
              std::vector<rvegen::convex_polygon<double>> out;
              out.reserve(polys.size());
              for (auto& v : polys) {
@@ -444,7 +501,8 @@ PYBIND11_MODULE(_core, m) {
           })
       .def("build",
            [](rvegen::weave_generator<double> const& g) {
-             auto raw = g.build();
+             auto raw = interruptible(
+                 [&](rvegen::cancel_fn const* c) { return g.build(c); });
              std::vector<rvegen::polyline_tube<double>> out;
              out.reserve(raw.size());
              for (auto& s : raw) {
@@ -496,13 +554,21 @@ PYBIND11_MODULE(_core, m) {
         opts.warn = [&warnings_out](std::string const& w) {
           warnings_out.push_back(w);
         };
+        interrupt_watch watch;
+        opts.progress.cancel = watch.hook();
         rvegen::pipeline_result res;
-        {
+        try {
           py::gil_scoped_release release;   // pure C++ until the result is built
           res = rvegen::run_pipeline(cfg, opts);
+        } catch (rvegen::pipeline_cancelled const&) {
+          watch.rethrow_if_interrupted();   // KeyboardInterrupt from Ctrl-C
+          throw;
         }
-        for (auto const& w : warnings_out)
-          PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1);
+        for (auto const& w : warnings_out) {
+          // -W error turns the warning into an exception: propagate it.
+          if (PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1) < 0)
+            throw py::error_already_set();
+        }
         run_result out;
         py::dict sm;
         sm["seed"] = res.seed;
@@ -534,6 +600,12 @@ PYBIND11_MODULE(_core, m) {
          std::size_t nz) {
         if (nx == 0 || ny == 0 || nz == 0)
           throw py::value_error("rvegen.voxelize: nx, ny and nz must be >= 1");
+        for (double d : domain)
+          if (!std::isfinite(d))
+            throw py::value_error("rvegen.voxelize: domain must be finite");
+        if (!(domain[0] > 0.0) || !(domain[1] > 0.0) || domain[2] < 0.0)
+          throw py::value_error(
+              "rvegen.voxelize: domain needs x > 0, y > 0 and z >= 0");
         constexpr auto lim = std::numeric_limits<std::size_t>::max() / 4;
         if (nx > lim / ny || nx * ny > lim / nz)
           throw py::value_error("rvegen.voxelize: grid size overflows");
@@ -543,9 +615,15 @@ PYBIND11_MODULE(_core, m) {
         owned.reserve(shapes.size());
         for (auto const* s : shapes) owned.push_back(s->clone());
         std::vector<std::uint32_t> flat;
-        {
+        interrupt_watch watch;
+        rvegen::cancel_fn const cancel = watch.hook();
+        try {
           py::gil_scoped_release release;
-          flat = rvegen::sample_voxel_grid<double>(owned, domain, nx, ny, nz);
+          flat = rvegen::sample_voxel_grid<double>(owned, domain, nx, ny, nz,
+                                                   &cancel);
+        } catch (rvegen::generation_cancelled const&) {
+          watch.rethrow_if_interrupted();
+          throw;
         }
         const std::size_t nz_eff = rvegen::effective_nz(domain, nz);
         // Core order is (k, j, i) with i fastest; expose it as an array

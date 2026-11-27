@@ -1,5 +1,5 @@
 {
-  "_comment": "Phases + phase_assignment. Circles become 'fibre' and rectangles 'filler' (by_shape_type); cells no shape covers stay id 0 (matrix). The voxel grid and the VTK file carry the phase ids; materials are assigned downstream by phase name or id.",
+  "_comment": "Phases + phase_assignment. Circles become 'fibre' and rectangles 'filler' (by_shape_type); cells no shape covers belong to the declared matrix phase and carry its id (id 0 would mean an untagged shape). The voxel grid and the VTK file carry the phase ids, and each writes a <output>.phases.json name table next to it; materials are assigned downstream by phase name or id.",
 
   "domain_box": [1.0, 1.0, 0.0],
   "seed": 42,

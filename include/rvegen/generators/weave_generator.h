@@ -58,6 +58,8 @@
 #include <utility>
 #include <vector>
 
+#include "cancel_poll.h"
+
 #include "../shapes/polyline_tube.h"
 #include "../shapes/shape_base.h"
 
@@ -134,7 +136,7 @@ public:
 
   // Build the woven layout. Returns one polyline_tube per yarn,
   // first the warp yarns (along +x) then the weft yarns (along +y).
-  [[nodiscard]] shape_vector build() const {
+  [[nodiscard]] shape_vector build(cancel_fn const* cancel = nullptr) const {
     shape_vector out;
     out.reserve(_n_warp + _n_weft);
 
@@ -168,6 +170,7 @@ public:
 
     // Warp yarns: vary x ∈ [0, Lx], hold y fixed.
     for (std::size_t i = 0; i < _n_warp; ++i) {
+      poll_cancel(cancel);
       const value_type y = Ly * (value_type{2} * static_cast<value_type>(i)
                                   + value_type{1})
                             / (value_type{2} * static_cast<value_type>(_n_warp));
@@ -190,6 +193,7 @@ public:
     // phase with the warp (minus sign on the sinusoid) so the two
     // yarn families interlace.
     for (std::size_t j = 0; j < _n_weft; ++j) {
+      poll_cancel(cancel);
       const value_type x = Lx * (value_type{2} * static_cast<value_type>(j)
                                   + value_type{1})
                             / (value_type{2} * static_cast<value_type>(_n_weft));

@@ -57,12 +57,12 @@ public:
   polyline_tube_oriented_registered_input(
       parameter_handler_t const& handler,
       distribution_map_t<T> const& d)
-      : _inner{*d.at(handler.template get<std::string>("position_x_dist")),
-               *d.at(handler.template get<std::string>("position_y_dist")),
-               *d.at(handler.template get<std::string>("position_z_dist")),
+      : _inner{lookup_distribution(d, handler, "position_x_dist"),
+               lookup_distribution(d, handler, "position_y_dist"),
+               lookup_distribution(d, handler, "position_z_dist"),
                lookup_direction(d, handler.template get<std::string>("direction_dist")),
-               *d.at(handler.template get<std::string>("length_dist")),
-               *d.at(handler.template get<std::string>("radius_dist"))} {
+               lookup_distribution(d, handler, "length_dist"),
+               lookup_distribution(d, handler, "radius_dist")} {
     this->read_metadata(handler);
   }
 

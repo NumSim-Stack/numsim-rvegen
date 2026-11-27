@@ -48,13 +48,13 @@ about:
   home: https://github.com/NumSim-Stack/numsim-rvegen
   license: GPL-3.0-or-later
   license_file: LICENSE
-  summary: RVE generator for FFT/FEM homogenization
+  summary: Geometry generator for representative volume elements (RVEs)
   description: |
     rvegen is a C++23 header-only library for generating Representative
     Volume Elements (random packings of circles, rectangles, ellipses,
-    spheres, boxes, and polyline tubes) used in FFT/FEM-based multiscale
-    homogenization of composite materials. It produces gmsh .geo,
-    voxel grids, VTK, SVG, three.js, and DAMASK-compatible outputs.
+    spheres, boxes, and polyline tubes) together with geometric
+    statistics. It writes the geometry as gmsh .geo, voxel grids, VTK,
+    SVG, and three.js; materials and solvers are out of scope.
 
 extra:
   recipe-maintainers:

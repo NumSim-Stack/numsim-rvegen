@@ -25,9 +25,10 @@
 //     key order is not file order, so overlaps would be ambiguous).
 //   * Shape-type names: circle, ellipse, rectangle, sphere, box,
 //     polyline_tube, convex_polygon, voronoi_cell, mesh_inclusion.
-//   * "matrix" documents which declared phase is the matrix; it is
-//     validated but assigns nothing (the matrix is whatever no shape
-//     covers).
+//   * "matrix" names the declared phase that is the matrix. It assigns
+//     nothing to shapes; the pipeline records it on the phase_collection
+//     (`phase_collection::set_matrix`) and the voxel / VTK writers give
+//     cells no shape covers that phase's id.
 //   * Every referenced phase must exist in the phase_collection; unknown
 //     keys / names / shape types throw at load time, not at write time.
 
@@ -99,6 +100,9 @@ public:
         throw std::runtime_error{"phase_assignment: " + where +
                                  " must name a phase (string)"};
       auto name = v.get<std::string>();
+      if (name.empty())
+        throw std::runtime_error{"phase_assignment: " + where +
+                                 " must not be an empty phase name"};
       if (!phases.contains(name))
         throw std::runtime_error{"phase_assignment: " + where +
                                  " refers to unknown phase '" + name + "'"};
@@ -108,7 +112,7 @@ public:
       if (key == "all_inclusions") {
         a._all = require_phase("all_inclusions", val);
       } else if (key == "matrix") {
-        (void)require_phase("matrix", val);
+        a._matrix = require_phase("matrix", val);
       } else if (key == "by_shape_type") {
         if (!val.is_object())
           throw std::runtime_error{"phase_assignment: by_shape_type must be an object"};
@@ -134,6 +138,11 @@ public:
       }
     }
     return a;
+  }
+
+  // Declared matrix phase (`"matrix"` key), if any.
+  [[nodiscard]] std::optional<std::string> const& matrix() const noexcept {
+    return _matrix;
   }
 
   // Phase for the shape at `index`, or nullopt if no rule applies.
@@ -203,6 +212,7 @@ private:
   }
 
   std::optional<std::string> _all;
+  std::optional<std::string> _matrix;
   std::unordered_map<std::string, std::string> _by_type;
   std::vector<index_range> _by_index;
 };

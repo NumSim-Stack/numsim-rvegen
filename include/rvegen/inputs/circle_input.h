@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -22,6 +23,22 @@ template <typename T = double>
 using distribution_map_t =
     std::unordered_map<std::string, std::shared_ptr<distribution_base<T>>>;
 
+// Resolve the distribution named by schema key `key`. An unknown name
+// raises an error naming both the key and the missing distribution
+// (a std::out_of_range, as unordered_map::at threw, but with a message).
+template <typename T>
+[[nodiscard]] distribution_base<T>&
+lookup_distribution(distribution_map_t<T> const& distributions,
+                    parameter_handler_t const& handler, char const* key) {
+  auto const name = handler.template get<std::string>(key);
+  auto const it = distributions.find(name);
+  if (it == distributions.end() || !it->second)
+    throw std::out_of_range{"shape input: key '" + std::string{key} +
+                             "' refers to unknown distribution '" + name +
+                             "'"};
+  return *it->second;
+}
+
 // Pulls position (x, y) and radius from injected distributions.
 template <typename T = double>
 class circle_input final : public shape_input_base<T> {
@@ -39,9 +56,9 @@ public:
   circle_input(parameter_handler_t const& handler,
                distribution_map_t<value_type> const& distributions)
       : circle_input(
-            *distributions.at(handler.template get<std::string>("pos_x_dist")),
-            *distributions.at(handler.template get<std::string>("pos_y_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+            lookup_distribution(distributions, handler, "pos_x_dist"),
+            lookup_distribution(distributions, handler, "pos_y_dist"),
+            lookup_distribution(distributions, handler, "radius_dist")) {
     this->read_metadata(handler);
   }
 

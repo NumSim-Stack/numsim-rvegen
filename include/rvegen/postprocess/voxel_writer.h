@@ -15,6 +15,7 @@
 #include "post_process_base.h"
 #include "../phase/phase.h"
 #include "../types.h"
+#include "phase_table.h"
 #include "voxel_grid.h"
 
 namespace rvegen {
@@ -85,9 +86,11 @@ public:
     return _output_path;
   }
 
-  // Attach a phase_collection so the writer emits real phase ids (matrix
-  // = 0, fibre = 1, ...) keyed off each shape's `phase_name()` instead of
-  // the 1-based shape index. Caller retains ownership; the pointer must
+  // Attach a phase_collection so the writer emits real phase ids keyed
+  // off each shape's `phase_name()` instead of the 1-based shape index.
+  // Voxels no shape covers carry the declared matrix phase's id
+  // (phase_collection::set_matrix), or 0 when none is declared. run()
+  // also writes the `<output_path>.phases.json` name table. Caller retains ownership; the pointer must
   // outlive the writer's next `run()` / `write()` / `sample()` call.
   // Passing nullptr clears the attachment and restores shape-index mode.
   void set_phases(phase_collection<value_type> const* phases) noexcept override {
@@ -118,6 +121,8 @@ public:
           "voxel_writer: cannot open '" + _output_path + "' for writing"};
     }
     write(out, shapes, domain_box);
+    out.close();
+    if (_phases) write_phase_table_sidecar(_output_path, *_phases);
   }
 
   // Stream-based emit. Public so tests and embedders can capture the output
@@ -143,9 +148,18 @@ public:
         << "# Lx Ly Lz: " << domain_box[0] << ' ' << domain_box[1] << ' '
         << domain_box[2] << '\n';
     if (_phases) {
-      out << "# id scheme: phase ids from phase_collection (0 = matrix / untagged)\n";
+      if (_phases->has_matrix()) {
+        out << "# id scheme: phase ids from phase_collection (uncovered "
+               "voxels carry the matrix phase id; 0 = untagged shape)\n";
+      } else {
+        out << "# id scheme: phase ids from phase_collection (0 = matrix / untagged)\n";
+      }
       for (auto const* p : _phases->ordered()) {
         out << "# phase " << p->id << " = " << p->name << '\n';
+      }
+      if (_phases->has_matrix()) {
+        out << "# matrix phase: " << _phases->matrix_name() << " (id "
+            << _phases->matrix_id() << ")\n";
       }
     } else {
       out << "# id scheme: 1-based shape index (0 = matrix)\n";

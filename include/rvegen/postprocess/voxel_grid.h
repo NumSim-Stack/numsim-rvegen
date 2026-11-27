@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "../generators/cancel_poll.h"
 #include "../phase/phase.h"
 #include "../shapes/shape_base.h"
 
@@ -19,16 +20,18 @@ namespace detail {
 
 // Core scanning loop shared by both `sample_voxel_grid` overloads.
 // `shape_to_id[s]` is the value written to grid voxels that the s-th
-// shape contains. First-match wins; voxels outside every shape stay 0.
+// shape contains. First-match wins; voxels outside every shape keep
+// `fill` (0 unless a matrix phase is declared).
 template <typename T>
 [[nodiscard]] std::vector<phase_id>
 sample_voxel_grid_with_ids(
     std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
     std::array<T, 3> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz,
-    std::vector<phase_id> const& shape_to_id) {
+    std::vector<phase_id> const& shape_to_id,
+    phase_id fill = 0, cancel_fn const* cancel = nullptr) {
   const std::size_t nz_eff = (domain_box[2] > T{0}) ? nz : 1;
-  std::vector<phase_id> grid(nx * ny * nz_eff, 0);
+  std::vector<phase_id> grid(nx * ny * nz_eff, fill);
 
   const auto dx = domain_box[0] / static_cast<T>(nx);
   const auto dy = domain_box[1] / static_cast<T>(ny);
@@ -40,6 +43,7 @@ sample_voxel_grid_with_ids(
         ? (static_cast<T>(k) + T{0.5}) * dz
         : T{0};
     for (std::size_t j = 0; j < ny; ++j) {
+      poll_cancel(cancel);   // once per row of voxels
       const auto y = (static_cast<T>(j) + T{0.5}) * dy;
       for (std::size_t i = 0; i < nx; ++i) {
         const auto x = (static_cast<T>(i) + T{0.5}) * dx;
@@ -70,20 +74,22 @@ template <typename T>
 [[nodiscard]] std::vector<phase_id>
 sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::array<T, 3> const& domain_box,
-                  std::size_t nx, std::size_t ny, std::size_t nz) {
+                  std::size_t nx, std::size_t ny, std::size_t nz,
+                  cancel_fn const* cancel = nullptr) {
   std::vector<phase_id> shape_to_id(shapes.size());
   for (std::size_t s = 0; s < shapes.size(); ++s) {
     shape_to_id[s] = static_cast<phase_id>(s + 1);
   }
   return detail::sample_voxel_grid_with_ids(
-      shapes, domain_box, nx, ny, nz, shape_to_id);
+      shapes, domain_box, nx, ny, nz, shape_to_id, 0, cancel);
 }
 
 // Phase-aware overload: each voxel gets the phase id resolved from
 // `shape.phase_name()` via the supplied `phase_collection`, instead of the
 // 1-based shape index. Voxels outside every shape (and voxels whose
 // containing shape has an empty `phase_name`, i.e. no phase was tagged
-// in the input JSON) stay at 0.
+// in the input JSON) stay at 0 — except that voxels no shape covers take
+// the id of the phase declared as matrix (`phases.set_matrix`), if any.
 //
 // Throws if a shape carries a `phase_name` that does not appear in the
 // `phase_collection` — a likely-typo failure mode worth catching early
@@ -99,7 +105,7 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::array<T, 3> const& domain_box,
                   std::size_t nx, std::size_t ny, std::size_t nz,
                   phase_collection<T> const& phases,
-                  bool strict = false) {
+                  bool strict = false, cancel_fn const* cancel = nullptr) {
   // Pre-resolve phase ids once per shape — avoids re-hashing the name
   // on every voxel and lets us throw early on unknown names.
   std::vector<phase_id> shape_to_id(shapes.size(), 0);
@@ -120,8 +126,14 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
     }
     shape_to_id[s] = static_cast<phase_id>(id);
   }
+  const auto matrix_id = phases.matrix_id();
+  if (matrix_id > std::numeric_limits<phase_id>::max()) {
+    throw std::runtime_error{
+        "sample_voxel_grid: phase id exceeds phase_id range (uint32)"};
+  }
   return detail::sample_voxel_grid_with_ids(
-      shapes, domain_box, nx, ny, nz, shape_to_id);
+      shapes, domain_box, nx, ny, nz, shape_to_id,
+      static_cast<phase_id>(matrix_id), cancel);
 }
 
 // Effective z-dimension of the grid given the domain (collapses to 1 in 2D).

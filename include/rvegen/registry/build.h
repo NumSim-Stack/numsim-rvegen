@@ -27,7 +27,10 @@ auto build_from_json_checked(Registry& registry,
 
   parameter_handler_t handler;
   parameter_visitor_nlohmann visitor{spec};
-  schema.accept(visitor, handler);
+  // log = nullptr: numsim-core would otherwise print "using default" lines
+  // to C stdout, bypassing the pipeline hooks; missing required keys are
+  // still named in the thrown exception.
+  schema.accept(visitor, handler, nullptr);
   for (auto const& k : visitor.unknown_keys()) on_unknown(type_name, k);
 
   return registry.create(type_name, handler, extra_ctor_args...);

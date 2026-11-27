@@ -53,6 +53,7 @@
 #include <Eigen/Dense>
 
 #include "../shapes/shape_base.h"
+#include "cancel_poll.h"
 #include "../shapes/voronoi_cell.h"
 
 namespace rvegen {
@@ -81,11 +82,12 @@ public:
   }
 
   // Build one voronoi_cell per seed. Cell index matches seed index.
-  [[nodiscard]] shape_vector build() const {
+  [[nodiscard]] shape_vector build(cancel_fn const* cancel = nullptr) const {
     shape_vector out;
     out.reserve(_seeds.size());
 
     for (std::size_t i = 0; i < _seeds.size(); ++i) {
+      poll_cancel(cancel);
       out.push_back(build_cell(i));
     }
     return out;

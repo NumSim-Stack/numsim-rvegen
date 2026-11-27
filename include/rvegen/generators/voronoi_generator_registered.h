@@ -12,6 +12,12 @@
 // implementation-defined), so the layout is identical across standard
 // libraries. Same params + seed -> same tessellation.
 //
+// The generator's own `seed` key is an optional explicit override. When
+// absent the engine is seeded from the pipeline's top-level `seed`
+// (delivered via deterministic_generator::set_pipeline_seed; 1 when a
+// library user never sets it), so configs differing only in the
+// top-level seed give different tessellations.
+//
 // Termination and shape inputs are ignored (deterministic generators,
 // see deterministic_generator.h).
 
@@ -41,9 +47,8 @@ inline void add_voronoi_fields(parameter_controller_t& s) {
       .template add<numsim_core::unit_label<"seeds">>()
       .template add<numsim_core::description_label<"number of random seeds (ignored when 'seeds' is given)">>();
   s.template insert<std::uint64_t>("seed")
-      .template add<numsim_core::set_default>(std::uint64_t{1})
       .template add<min_only<std::uint64_t{0}>>()
-      .template add<numsim_core::description_label<"RNG seed for generated seed points">>();
+      .template add<numsim_core::description_label<"optional RNG seed override for generated seed points (default: the top-level 'seed')">>();
   s.template insert<std::vector<double>>("seeds")
       .template add<numsim_core::description_label<"optional explicit seed coordinates, flat [x0,y0,(z0),x1,...]">>();
   s.template insert<std::string>("phase_name")
@@ -55,7 +60,8 @@ inline void add_voronoi_fields(parameter_controller_t& s) {
 template <typename T>
 [[nodiscard]] std::vector<T>
 voronoi_seed_coords(parameter_handler_t const& h, std::size_t dim,
-                    std::array<T, 3> const& box) {
+                    std::array<T, 3> const& box,
+                    std::uint64_t pipeline_seed) {
   std::vector<T> flat;
   if (h.contains("seeds")) {
     for (double v : h.template get<std::vector<double>>("seeds"))
@@ -72,7 +78,9 @@ voronoi_seed_coords(parameter_handler_t const& h, std::size_t dim,
   if (n == 0)
     throw std::runtime_error{
         "voronoi: give 'n_seeds' >= 1 or an explicit 'seeds' list"};
-  std::mt19937_64 eng{h.template get<std::uint64_t>("seed")};
+  std::mt19937_64 eng{h.contains("seed")
+                          ? h.template get<std::uint64_t>("seed")
+                          : pipeline_seed};
   flat.reserve(n * dim);
   for (std::size_t i = 0; i < n; ++i)
     for (std::size_t d = 0; d < dim; ++d)
@@ -102,24 +110,30 @@ public:
     return s;
   }
 
+  void set_pipeline_seed(std::uint64_t seed) override {
+    _pipeline_seed = seed;
+  }
+
 protected:
   [[nodiscard]] typename deterministic_generator<T>::shape_vector
   build(std::array<T, 3> const& box) const override {
     if (box[2] != T{0})
       throw std::runtime_error{
           "voronoi_2d: needs a 2D domain (domain_box z == 0)"};
-    auto const flat = detail::voronoi_seed_coords<T>(_handler, 2, box);
+    auto const flat = detail::voronoi_seed_coords<T>(_handler, 2, box, _pipeline_seed);
     std::vector<std::array<T, 2>> seeds;
     for (std::size_t i = 0; i + 1 < flat.size(); i += 2)
       seeds.push_back({flat[i], flat[i + 1]});
     auto shapes = voronoi_to_shapes<T>(
-        voronoi_generator_2d<T>{box[0], box[1], std::move(seeds)});
+        voronoi_generator_2d<T>{box[0], box[1], std::move(seeds)},
+        this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;
   }
 
 private:
   parameter_handler_t _handler;
+  std::uint64_t _pipeline_seed{1};
 };
 
 template <typename T = double>
@@ -135,25 +149,30 @@ public:
     return s;
   }
 
+  void set_pipeline_seed(std::uint64_t seed) override {
+    _pipeline_seed = seed;
+  }
+
 protected:
   [[nodiscard]] typename deterministic_generator<T>::shape_vector
   build(std::array<T, 3> const& box) const override {
     if (box[2] <= T{0})
       throw std::runtime_error{
           "voronoi_3d: needs a 3D domain (domain_box z > 0)"};
-    auto const flat = detail::voronoi_seed_coords<T>(_handler, 3, box);
+    auto const flat = detail::voronoi_seed_coords<T>(_handler, 3, box, _pipeline_seed);
     std::vector<std::array<T, 3>> seeds;
     for (std::size_t i = 0; i + 2 < flat.size(); i += 3)
       seeds.push_back({flat[i], flat[i + 1], flat[i + 2]});
     auto shapes =
         voronoi_generator_3d<T>{box[0], box[1], box[2], std::move(seeds)}
-            .build();
+            .build(this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;
   }
 
 private:
   parameter_handler_t _handler;
+  std::uint64_t _pipeline_seed{1};
 };
 
 } // namespace rvegen
