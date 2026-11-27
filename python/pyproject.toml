@@ -47,5 +47,5 @@ test-command = "pytest {package}/tests"
 # rvegen needs C++23 <print>: the manylinux_2_28 image's default
 # gcc-toolset is >= 14. Boost headers come from the distro; Eigen and
 # nlohmann_json fall back to CMake FetchContent.
-before-all = "yum install -y boost-devel"
+before-all = "yum install -y boost-devel && g++ -dumpversion | awk -F. '$1 < 14 { print \"rvegen needs g++ >= 14 (C++23 <print>), found \" $0; exit 1 }'"
 environment = { CMAKE_ARGS = "-DCMAKE_CXX_FLAGS=-I/project/_deps/numsim-core/include -DBUILD_TESTING=OFF" }

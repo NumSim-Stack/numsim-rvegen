@@ -71,12 +71,47 @@ void test_postprocess_toggle() {
   cfg["postprocess"] = json::array({json{{"type", "damask_material_config"},
                                          {"output_path", "pipeline_test.yaml"}}});
   cfg["phases"][0]["material"] = json{{"E", 1.0e9}, {"nu", 0.3}};
+  cfg["phases"].push_back(json{{"name", "matrix"},
+                               {"material", json{{"E", 1.0e8}, {"nu", 0.3}}}});
   rvegen::pipeline_options off;
   off.run_postprocess = false;
   REQUIRE(rvegen::run_pipeline(cfg, off).post_processes_run.empty());
   auto on = rvegen::run_pipeline(cfg);
   REQUIRE(on.post_processes_run.size() == 1);
   REQUIRE(on.post_processes_run[0] == "damask_material_config");
+}
+
+void test_seed_and_warnings() {
+  auto cfg = circles_config();
+  cfg["seed"] = 4294967296ULL;            // would silently truncate in mt19937
+  bool threw = false;
+  try { (void)rvegen::generate(cfg); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  cfg["seed"] = -3;
+  threw = false;
+  try { (void)rvegen::generate(cfg); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  rvegen::pipeline_options big;
+  big.seed = 1ULL << 40;                  // override path is checked too
+  threw = false;
+  try { (void)rvegen::generate(circles_config(), big); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+
+  // Deterministic generator + shapes/termination + unknown key -> warnings.
+  auto det = circles_config();
+  det["generator"] = json{{"type", "voronoi_2d"}, {"n_seeds", 3}, {"seed", 1}};
+  det["bogus"] = 1;
+  std::vector<std::string> warns;
+  rvegen::pipeline_options o;
+  o.warn = [&](std::string const& w) { warns.push_back(w); };
+  (void)rvegen::generate(det, o);
+  auto has = [&](char const* t) {
+    for (auto const& w : warns) if (w.find(t) != std::string::npos) return true;
+    return false;
+  };
+  REQUIRE(has("\"shapes\" is ignored"));
+  REQUIRE(has("\"termination\" is ignored"));
+  REQUIRE(has("unknown top-level key 'bogus'"));
 }
 
 void test_schema_to_json() {
@@ -97,6 +132,7 @@ void test_schema_to_json() {
 int main() {
   test_generate();
   test_postprocess_toggle();
+  test_seed_and_warnings();
   test_schema_to_json();
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "pipeline_test OK\n";

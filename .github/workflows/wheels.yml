@@ -39,7 +39,7 @@ jobs:
           path: _deps/numsim-core
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.22.0
+        uses: pypa/cibuildwheel@v4.3.5
         with:
           package-dir: python
           output-dir: wheelhouse
