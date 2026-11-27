@@ -86,9 +86,10 @@ int run(int argc, char** argv) {
   }
   // Warn about unknown top-level keys (typos would otherwise be ignored).
   for (auto const& [key, value] : config.items()) {
-    static constexpr std::array<char const*, 8> known{
+    static constexpr std::array<char const*, 10> known{
         "domain_box", "seed", "distributions", "direction_distributions",
-        "shapes", "generator", "termination", "postprocess"};
+        "shapes", "generator", "termination", "postprocess", "phases",
+        "phase_assignment"};
     if (key.starts_with('_')) continue;   // "_comment" style annotations
     if (std::find_if(known.begin(), known.end(), [&](char const* k) {
           return key == k;
