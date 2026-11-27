@@ -19,7 +19,7 @@ namespace rvegen {
 // Normal distribution N(mean, stddev^2).
 //
 // Validation: `mean` and `stddev` must be finite and `stddev > 0`;
-// otherwise the ctor throws std::runtime_error.
+// otherwise the ctor throws std::invalid_argument.
 //
 // Reproducibility: draws use rvegen::portable_normal (Marsaglia polar
 // method on 53-bit uniforms, with an in-house logarithm; see
@@ -64,7 +64,7 @@ private:
       value_type mean, value_type stddev) {
     if (!std::isfinite(mean) || !std::isfinite(stddev) ||
         !(stddev > value_type{0})) {
-      throw std::runtime_error{
+      throw std::invalid_argument{
           "normal_distribution: invalid parameters mean=" +
           std::to_string(mean) + ", stddev=" + std::to_string(stddev) +
           " (need finite mean and finite stddev > 0)"};

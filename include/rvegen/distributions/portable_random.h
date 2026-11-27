@@ -21,10 +21,11 @@
 //   exact scaling by powers of two are used; logarithms come from
 //   `portable_log` below rather than the platform libm.
 //   FMA contraction would change the last bits, so it is blocked here
-//   regardless of -march / -mfma: Clang via `#pragma clang fp
-//   contract(off)`, GCC via an empty asm barrier that forces every
-//   product feeding an addition to be rounded first (see
-//   `portable_detail::rounded`). MSVC does not contract under its
+//   regardless of -march / -mfma (including Clang with
+//   -ffp-contract=fast): an empty asm barrier forces every product
+//   feeding an addition to be rounded first (see
+//   `portable_detail::rounded`), plus `#pragma clang fp contract(off)`
+//   on Clang. MSVC does not contract under its
 //   default /fp:precise.
 //   Outside the guarantee: -ffast-math (or /fp:fast), x87 arithmetic
 //   (32-bit x86 without SSE2), and anything that consumes these values
@@ -89,12 +90,14 @@ template <typename Engine>
              : std::countr_one(max);
 }
 
-// Returns `v` unchanged, but prevents GCC from fusing the product that
-// produced it into a following add/sub (FMA contraction). Clang is
-// handled by the pragma in RVEGEN_PORTABLE_FP_BEGIN.
+// Returns `v` unchanged, but prevents GCC and Clang from fusing the
+// product that produced it into a following add/sub (FMA contraction).
+// Clang's `#pragma clang fp contract(off)` (RVEGEN_PORTABLE_FP_BEGIN) is
+// not honoured once the function is inlined under -ffp-contract=fast, so
+// the asm barrier is applied on Clang as well.
 template <typename T>
 [[nodiscard]] inline T rounded(T v) noexcept {
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__)
   asm("" : "+m"(v));
 #endif
   return v;

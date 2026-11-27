@@ -19,7 +19,7 @@ namespace rvegen {
 //
 // Validation: `a` and `b` must be finite, `a <= b`, and `b - a` must not
 // overflow; otherwise the ctor (and set_parameter) throws
-// std::runtime_error.
+// std::invalid_argument.
 //
 // Reproducibility: draws use rvegen::portable_uniform_real (53-bit
 // mantissa method, see portable_random.h), not
@@ -73,7 +73,7 @@ private:
       value_type a, value_type b) {
     if (!std::isfinite(a) || !std::isfinite(b) || !(a <= b) ||
         !std::isfinite(b - a)) {
-      throw std::runtime_error{
+      throw std::invalid_argument{
           "uniform_real_distribution: invalid bounds a=" + std::to_string(a) +
           ", b=" + std::to_string(b) +
           " (need finite a <= b with finite b - a)"};
