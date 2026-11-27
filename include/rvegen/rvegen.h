@@ -57,6 +57,10 @@
 #include "distributions/normal_distribution.h"
 #include "distributions/constant_distribution.h"
 #include "distributions/bingham_distribution.h"
+#include "distributions/oriented_uniform_distribution.h"
+#include "distributions/orientation_tensor_fit.h"
+#include "distributions/von_mises_a2_distribution.h"
+#include "distributions/bingham_a2_distribution.h"
 
 // registry (opt-in: pulls in object_registry)
 #include "registry/register_distributions.h"

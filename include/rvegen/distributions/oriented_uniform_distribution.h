@@ -16,11 +16,12 @@
 //   * S2 → κ:    for the density f(θ) ∝ exp(κ·cos(θ−μ)) drawn here,
 //     S2 = ⟨cos 2(θ−μ)⟩ = I2(κ)/I0(κ); not closed-form, but
 //     S2 ≈ κ²/8 for small κ and S2 ≈ 1 − 2/κ for large κ.
-// Users with raw A2 should compute kappa once via a small helper and
-// pass kappa here.
+// Users with raw A2 can use von_mises_a2_distribution (registered as
+// "von_mises_a2"), which does this fit; see orientation_tensor_fit.h.
+// This type is registered as both "von_mises" and, for existing
+// configs, "oriented_uniform".
 //
-// 3D extension: Bingham distribution on the unit sphere, parameterised
-// by 3×3 A2 directly. Deferred — see issue #6 for the design.
+// 3D: bingham_distribution / bingham_a2_distribution ("bingham_a2").
 
 #include <cmath>
 #include <cstddef>
