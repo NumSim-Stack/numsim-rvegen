@@ -142,6 +142,14 @@ target_link_libraries(rvegen_json_visitor_smoke PRIVATE
 )
 add_test(NAME json_visitor_smoke COMMAND rvegen_json_visitor_smoke)
 
+add_executable(rvegen_orientation_sampler_test tests/orientation_sampler_test.cpp)
+target_link_libraries(rvegen_orientation_sampler_test PRIVATE rvegen_lib)
+add_test(NAME orientation_sampler_test COMMAND rvegen_orientation_sampler_test)
+
+add_executable(rvegen_orientation_a2_test tests/orientation_a2_test.cpp)
+target_link_libraries(rvegen_orientation_a2_test PRIVATE rvegen_lib)
+add_test(NAME orientation_a2_test COMMAND rvegen_orientation_a2_test)
+
 add_executable(rvegen_registry_smoke tests/registry_smoke.cpp)
 target_link_libraries(rvegen_registry_smoke PRIVATE
     rvegen_lib
@@ -190,13 +198,21 @@ add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
 add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
 
-add_executable(rvegen_orientation_sampler_test tests/orientation_sampler_test.cpp)
-target_link_libraries(rvegen_orientation_sampler_test PRIVATE rvegen_lib)
-add_test(NAME orientation_sampler_test COMMAND rvegen_orientation_sampler_test)
-
-add_executable(rvegen_orientation_a2_test tests/orientation_a2_test.cpp)
-target_link_libraries(rvegen_orientation_a2_test PRIVATE rvegen_lib)
-add_test(NAME orientation_a2_test COMMAND rvegen_orientation_a2_test)
+# gmsh round-trip (#74): meshes gmsh_geo_writer output with a real gmsh
+# and checks validity, conformity, clipping and periodic node matching.
+# Only registered when gmsh is on the PATH (or RVEGEN_GMSH_EXECUTABLE is
+# set explicitly).
+find_program(RVEGEN_GMSH_EXECUTABLE gmsh)
+if(RVEGEN_GMSH_EXECUTABLE)
+  add_executable(rvegen_gmsh_geo_roundtrip_test tests/gmsh_geo_roundtrip_test.cpp)
+  target_link_libraries(rvegen_gmsh_geo_roundtrip_test PRIVATE rvegen_lib)
+  target_compile_definitions(rvegen_gmsh_geo_roundtrip_test PRIVATE
+      RVEGEN_GMSH_EXECUTABLE="${RVEGEN_GMSH_EXECUTABLE}")
+  add_test(NAME gmsh_geo_roundtrip_test COMMAND rvegen_gmsh_geo_roundtrip_test
+           WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+else()
+  message(STATUS "gmsh not found — skipping gmsh_geo_roundtrip_test")
+endif()
 
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
