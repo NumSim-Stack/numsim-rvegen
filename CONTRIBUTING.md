@@ -23,6 +23,15 @@ To reproduce the sanitizer job locally add
 `-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined"`.
 `cli_check_*` tests (Python 3) run the CLI on every `examples/*.json` and
 inspect the files written, so a new example config is tested automatically.
+They report *Skipped* (not Passed) when a config writes a `.geo` and gmsh is
+missing; CI configures with `-DRVEGEN_REQUIRE_GMSH=ON` so that cannot happen
+there.
+
+The Clang job needs a numsim-core whose `static_indexing` draws ids lazily.
+With the older eager version clang gives every shape type id 0; the
+collision and mesh dispatchers then throw at registration ("share
+static_indexing id 0") and `shape_id_unique_test` fails, instead of
+dispatching circles as box x sphere.
 After adding a registered type, refresh the README list with
 `tests/readme_types_check.py --rvegen build/rvegen --readme README.md --update`.
 
@@ -59,7 +68,8 @@ See `docs/extending.md` for the full walkthrough. Short version:
 1. Add the shape header under `include/rvegen/shapes/`. Inherit
    `numsim_core::static_indexing<your_shape<T>, shape_base<T>>` and
    implement the `shape_base<T>` virtuals.
-2. Add a unit test in `tests/extra_types_smoke.cpp`.
+2. Add a unit test in `tests/extra_types_smoke.cpp`, and the type to the
+   id set in `tests/shape_id_unique_test.cpp`.
 3. If you want it driven from JSON config, add an input under
    `include/rvegen/inputs/` and register it in
    `include/rvegen/registry/register_inputs.h`.

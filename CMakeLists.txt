@@ -121,15 +121,23 @@ target_compile_features(rvegen_lib INTERFACE cxx_std_23)
 # numsim-core::numsim-core, shipped since numsim-core ef6d2ac). Point
 # CMAKE_PREFIX_PATH / numsim-core_DIR at the install prefix. If no package
 # is found, fall back to a sibling checkout (../../numsim-core/include) so
-# the historical layout keeps working.
+# the historical layout keeps working. When both exist the package wins;
+# if it is stale (e.g. an old install in /usr/local), configure with
+# -DCMAKE_DISABLE_FIND_PACKAGE_numsim-core=ON to use the sibling instead.
 find_package(numsim-core CONFIG QUIET)
 set(RVEGEN_NUMSIM_CORE_FROM_PACKAGE OFF)
+set(_rvegen_core_sibling "${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include")
 if(numsim-core_FOUND)
   message(STATUS "numsim-core: using CMake package (${numsim-core_DIR})")
+  if(EXISTS "${_rvegen_core_sibling}/numsim-core")
+    message(STATUS
+      "numsim-core: sibling checkout ${_rvegen_core_sibling} is NOT used "
+      "(the package wins); pass -DCMAKE_DISABLE_FIND_PACKAGE_numsim-core=ON "
+      "to build against it instead")
+  endif()
   target_link_libraries(rvegen_lib INTERFACE numsim-core::numsim-core)
   set(RVEGEN_NUMSIM_CORE_FROM_PACKAGE ON)
 else()
-  set(_rvegen_core_sibling "${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include")
   if(EXISTS "${_rvegen_core_sibling}/numsim-core")
     message(STATUS "numsim-core: package not found, using sibling ${_rvegen_core_sibling}")
   else()
@@ -206,6 +214,12 @@ add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
 
+# Shape-id uniqueness (#85): every built-in shape type has its own
+# static_indexing id, and the dispatchers refuse a duplicate id.
+add_executable(rvegen_shape_id_unique_test tests/shape_id_unique_test.cpp)
+target_link_libraries(rvegen_shape_id_unique_test PRIVATE rvegen_lib)
+add_test(NAME shape_id_unique_test COMMAND rvegen_shape_id_unique_test)
+
 add_executable(rvegen_schema_audit_test tests/schema_audit_test.cpp)
 target_link_libraries(rvegen_schema_audit_test PRIVATE rvegen_lib)
 add_test(NAME schema_audit_test COMMAND rvegen_schema_audit_test)
@@ -219,6 +233,12 @@ add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
 # Only registered when gmsh is on the PATH (or RVEGEN_GMSH_EXECUTABLE is
 # set explicitly).
 find_program(RVEGEN_GMSH_EXECUTABLE gmsh)
+# CI sets this so a missing gmsh fails the configure instead of quietly
+# dropping the .geo meshing checks.
+option(RVEGEN_REQUIRE_GMSH "Fail the configure if gmsh is not found" OFF)
+if(RVEGEN_REQUIRE_GMSH AND NOT RVEGEN_GMSH_EXECUTABLE)
+  message(FATAL_ERROR "RVEGEN_REQUIRE_GMSH is ON but gmsh was not found")
+endif()
 if(RVEGEN_GMSH_EXECUTABLE)
   add_executable(rvegen_gmsh_geo_roundtrip_test tests/gmsh_geo_roundtrip_test.cpp)
   target_link_libraries(rvegen_gmsh_geo_roundtrip_test PRIVATE rvegen_lib)
@@ -407,9 +427,11 @@ if(Python3_Interpreter_FOUND)
               --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples
               --gmsh "${RVEGEN_GMSH_EXECUTABLE}"
               ${_cfg})
+    # Pass/fail is the script's exit status; 77 = a .geo was not meshed
+    # because gmsh is missing, reported as Skipped rather than Passed.
     set_tests_properties(cli_check_${_name} PROPERTIES
       TIMEOUT 900 LABELS "cli"
-      PASS_REGULAR_EXPRESSION "PASS")
+      SKIP_RETURN_CODE 77)
   endforeach()
 
   # The README type catalogue is generated from `rvegen --list-types`.

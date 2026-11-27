@@ -51,7 +51,9 @@ the `<print>` check, hence `-DCMAKE_CXX_COMPILER=g++-14` above.
 rvegen depends on [numsim-core](https://github.com/NumSim-Stack/numsim-core).
 CMake first looks for its installed package (`find_package(numsim-core CONFIG)`;
 set `CMAKE_PREFIX_PATH` to its install prefix) and falls back to a sibling
-checkout at `../../numsim-core/include` relative to this repository.
+checkout at `../../numsim-core/include` relative to this repository. If both
+exist the package wins; `-DCMAKE_DISABLE_FIND_PACKAGE_numsim-core=ON` forces
+the sibling (useful when an old install shadows a newer checkout).
 
 ---
 
