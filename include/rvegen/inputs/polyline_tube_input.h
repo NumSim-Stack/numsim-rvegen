@@ -59,13 +59,13 @@ public:
   polyline_tube_input(parameter_handler_t const& handler,
                       distribution_map_t<value_type> const& distributions)
       : polyline_tube_input(
-            *distributions.at(handler.template get<std::string>("start_x_dist")),
-            *distributions.at(handler.template get<std::string>("start_y_dist")),
-            *distributions.at(handler.template get<std::string>("start_z_dist")),
-            *distributions.at(handler.template get<std::string>("end_x_dist")),
-            *distributions.at(handler.template get<std::string>("end_y_dist")),
-            *distributions.at(handler.template get<std::string>("end_z_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+            lookup_distribution(distributions, handler, "start_x_dist"),
+            lookup_distribution(distributions, handler, "start_y_dist"),
+            lookup_distribution(distributions, handler, "start_z_dist"),
+            lookup_distribution(distributions, handler, "end_x_dist"),
+            lookup_distribution(distributions, handler, "end_y_dist"),
+            lookup_distribution(distributions, handler, "end_z_dist"),
+            lookup_distribution(distributions, handler, "radius_dist")) {
     this->read_metadata(handler);
   }
 

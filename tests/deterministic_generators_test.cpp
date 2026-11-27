@@ -6,6 +6,9 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <stdexcept>
 
 #include <nlohmann/json.hpp>
@@ -51,12 +54,14 @@ void test_registered() {
 }
 
 void test_weave() {
-  json spec = {{"type", "weave"}, {"n_warp_yarns", 3}, {"n_weft_yarns", 2},
+  json spec = {{"type", "weave"}, {"n_warp_yarns", 4}, {"n_weft_yarns", 2},
                {"yarn_radius", 0.05}, {"amplitude", 0.04},
                {"warp_phase_name", "warp"}, {"weft_phase_name", "weft"}};
   auto shapes = run_gen(spec, {1.0, 1.0, 0.4});
-  REQUIRE(shapes.size() == 5);
+  REQUIRE(shapes.size() == 6);   // 4 warp + 2 weft
   REQUIRE(shapes.front()->phase_name() == "warp");
+  REQUIRE(shapes[3]->phase_name() == "warp");
+  REQUIRE(shapes[4]->phase_name() == "weft");
   REQUIRE(shapes.back()->phase_name() == "weft");
 
   // Invalid params surface as exceptions (schema range / ctor check).
@@ -146,6 +151,131 @@ void test_oriented_input() {
   REQUIRE(threw);
 }
 
+// The generator seed follows the pipeline (top-level) seed; an explicit
+// generator "seed" key overrides it.
+std::vector<double> areas_with_pipeline_seed(json const& spec,
+                                             std::uint64_t pipeline_seed) {
+  auto g = build_gen(spec);
+  auto* det =
+      dynamic_cast<rvegen::deterministic_generator<double>*>(g.get());
+  REQUIRE(det != nullptr);
+  if (det) det->set_pipeline_seed(pipeline_seed);
+  gen_t::input_vector no_inputs;
+  rvegen::number_of_inclusions<double> never_used{1};
+  auto shapes = g->compute(no_inputs, never_used, {1.0, 1.0, 0.0});
+  std::vector<double> a;
+  for (auto const& s : shapes) a.push_back(s->area());
+  return a;
+}
+
+void test_voronoi_pipeline_seed() {
+  json spec = {{"type", "voronoi_2d"}, {"n_seeds", 12}};
+  auto s1 = areas_with_pipeline_seed(spec, 1);
+  auto s1b = areas_with_pipeline_seed(spec, 1);
+  auto s2 = areas_with_pipeline_seed(spec, 2);
+  REQUIRE(s1 == s1b);
+  REQUIRE(s1 != s2);
+
+  // Explicit generator seed wins over the pipeline seed.
+  json fixed = spec;
+  fixed["seed"] = 5;
+  REQUIRE(areas_with_pipeline_seed(fixed, 1) ==
+          areas_with_pipeline_seed(fixed, 2));
+  // ... and keeps the sequence of a plain run with that seed.
+  REQUIRE(areas_with_pipeline_seed(fixed, 7) ==
+          areas_with_pipeline_seed(spec, 5));
+
+  // Same for the 3D generator.
+  json s3 = {{"type", "voronoi_3d"}, {"n_seeds", 6}};
+  auto vol = [&](std::uint64_t seed) {
+    auto g = build_gen(s3);
+    dynamic_cast<rvegen::deterministic_generator<double>*>(g.get())
+        ->set_pipeline_seed(seed);
+    gen_t::input_vector none;
+    rvegen::number_of_inclusions<double> t{1};
+    auto shapes = g->compute(none, t, {1.0, 1.0, 1.0});
+    std::vector<double> v;
+    for (auto const& s : shapes) v.push_back(s->volume());
+    return v;
+  };
+  REQUIRE(vol(1) != vol(2));
+  REQUIRE(vol(3) == vol(3));
+}
+
+void test_unknown_distribution_name() {
+  rvegen::distribution_map_t<double> dists;
+  dists.emplace("c", std::make_shared<rvegen::constant_distribution<double>>(0.5));
+  json spec = {{"type", "circle_input"}, {"pos_x_dist", "c"},
+               {"pos_y_dist", "c"}, {"radius_dist", "nope"}};
+  std::string msg;
+  try { (void)rvegen::build_from_json(rvegen::input_registry_t<>::instance(),
+                                      spec, dists); }
+  catch (std::exception const& e) { msg = e.what(); }
+  REQUIRE(msg.find("radius_dist") != std::string::npos);
+  REQUIRE(msg.find("nope") != std::string::npos);
+  REQUIRE(msg.find("unknown distribution") != std::string::npos);
+
+  json tube = {{"type", "polyline_tube_input"}, {"start_x_dist", "c"},
+               {"start_y_dist", "c"}, {"start_z_dist", "c"},
+               {"end_x_dist", "c"}, {"end_y_dist", "c"}, {"end_z_dist", "c"},
+               {"radius_dist", "missing_r"}};
+  msg.clear();
+  try { (void)rvegen::build_from_json(rvegen::input_registry_t<>::instance(),
+                                      tube, dists); }
+  catch (std::exception const& e) { msg = e.what(); }
+  REQUIRE(msg.find("radius_dist") != std::string::npos);
+  REQUIRE(msg.find("missing_r") != std::string::npos);
+}
+
+// Output of each deterministic generator goes through the voxel writer and
+// produces real content.
+std::size_t count_ids(rvegen::voxel_writer<double>& w,
+                      gen_t::shape_vector const& shapes,
+                      std::array<double, 3> box, std::size_t* unassigned) {
+  auto const grid = w.sample(shapes, box);
+  std::size_t inc = 0, zero = 0;
+  for (auto v : grid) (v > 0 ? inc : zero)++;
+  if (unassigned) *unassigned = zero;
+  return inc;
+}
+
+void test_voxel_writer_round_trip() {
+  {
+    auto shapes = run_gen({{"type", "weave"}, {"n_warp_yarns", 4},
+                           {"n_weft_yarns", 2}, {"yarn_radius", 0.05},
+                           {"amplitude", 0.04}}, {1.0, 1.0, 0.4});
+    rvegen::voxel_writer<double> w{24, 24, 12};
+    REQUIRE(count_ids(w, shapes, {1.0, 1.0, 0.4}, nullptr) > 0);
+    std::stringstream out;
+    w.write(out, shapes, {1.0, 1.0, 0.4});
+    REQUIRE(out.str().find("# rvegen voxel grid") != std::string::npos);
+  }
+  {
+    auto shapes = run_gen({{"type", "tow_weave"}, {"n_warp_yarns", 2},
+                           {"n_weft_yarns", 2}, {"yarn_radius", 0.08},
+                           {"amplitude", 0.05}, {"n_fibres_per_tow", 7}},
+                          {1.0, 1.0, 0.4});
+    rvegen::voxel_writer<double> w{32, 32, 16};
+    REQUIRE(count_ids(w, shapes, {1.0, 1.0, 0.4}, nullptr) > 0);
+  }
+  {
+    auto shapes = run_gen({{"type", "voronoi_2d"}, {"n_seeds", 9}, {"seed", 3}},
+                          {1.0, 1.0, 0.0});
+    rvegen::voxel_writer<double> w{32, 32, 1};
+    std::size_t unassigned = 99;
+    REQUIRE(count_ids(w, shapes, {1.0, 1.0, 0.0}, &unassigned) == 32 * 32);
+    REQUIRE(unassigned == 0);
+  }
+  {
+    auto shapes = run_gen({{"type", "voronoi_3d"}, {"n_seeds", 6}, {"seed", 3}},
+                          {1.0, 1.0, 1.0});
+    rvegen::voxel_writer<double> w{12, 12, 12};
+    std::size_t unassigned = 99;
+    REQUIRE(count_ids(w, shapes, {1.0, 1.0, 1.0}, &unassigned) == 12 * 12 * 12);
+    REQUIRE(unassigned == 0);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -159,6 +289,9 @@ int main() {
   test_voronoi_2d();
   test_voronoi_3d();
   test_oriented_input();
+  test_voronoi_pipeline_seed();
+  test_unknown_distribution_name();
+  test_voxel_writer_round_trip();
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "deterministic_generators_test OK\n";
   return EXIT_SUCCESS;
