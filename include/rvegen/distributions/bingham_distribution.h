@@ -47,12 +47,20 @@
 //   κ = 200 → 0.25 %; κ = −5 → 39.6 %, κ = −50 → 12.5 %, κ = −200 →
 //   6.3 %. Prolate sampling therefore costs ~2κ candidates per draw.
 //
+// Prolate fast path (κ > 0):
+//   Let t = 1 − |cos θ|. The target exp(−κ t (2 − t)) is bounded by the
+//   truncated exponential exp(−κ t) on [0, 1], which is sampled exactly by
+//   inversion; the sign of cos θ is a fair coin. Acceptance probability is
+//   exp(−κ t (1 − t)) with overall rate ≥ (1 + e^−κ)/2 ≥ 1/2, so a draw
+//   costs O(1) candidates for any κ (the aligned-A2, κ = 1e5 case used to
+//   cost ~11 ms). The oblate branch still uses the uniform envelope.
+//
 // Supported κ range and iteration cap:
 //   * κ ∈ [−1e10, 1e5] (`min_kappa` / `max_kappa`); anything outside
-//     throws std::invalid_argument at construction. Both ends cost
-//     ~1e5–2e5 candidates (a few ms) per draw; beyond them the uniform
-//     proposal is impractical and needs a tailored envelope (Wood, or
-//     the Kent-Ganeiber-Mardia 2018 ACG proposal; see #77).
+//     throws std::invalid_argument at construction. The upper bound is a
+//     validation limit only (the prolate sampler is O(1)); the oblate end
+//     still costs ~1e5–2e5 candidates (a few ms) per draw since it uses
+//     the uniform proposal (needs Wood / Kent-Ganeiber-Mardia ACG; #77).
 //   * Each sample() is capped at 40× the bound-implied expected trial
 //     count, so a spurious std::runtime_error has probability
 //     ≤ (1 − p)^cap ≤ e⁻⁴⁰ for every accepted κ. The cap only fires on a
@@ -139,7 +147,7 @@ public:
       field<"mean_axis_z", T, true,
             numsim_core::description_label<"z-component of the Bingham mean axis (renormalised internally)">>,
       field<"kappa", T, true,
-            numsim_core::description_label<"Bingham concentration: κ > 0 = prolate (samples cluster on ±mean_axis), κ < 0 = oblate (samples lie near the great circle perpendicular to mean_axis), κ ≈ 0 = uniform on the sphere">>>;
+            numsim_core::description_label<"Bingham concentration: κ > 0 = prolate (samples cluster on ±mean_axis), κ < 0 = oblate (samples lie near the great circle perpendicular to mean_axis), κ ≈ 0 = uniform on the sphere. Supported range [-1e10, 1e5]; values outside are rejected">>>;
 
   // Schema-driven ctor for the JSON registry path. Mean axis is
   // declared as three scalar fields rather than a vector field
@@ -186,15 +194,23 @@ public:
             "bingham_distribution: rejection sampler exceeded its "
             "iteration cap (numerical breakdown or an overridden cap)"};
       }
-      const T u1 = _uniform(_engine.get());
-      x = T{2} * u1 - T{1};   // candidate cos θ in [-1, 1]
+      T accept;
+      if (_kappa > T{0}) {
+        // Prolate: exponential envelope in t = 1 - |x| (see header
+        // comment); acceptance >= 1/2 for every kappa > 0.
+        const T u1 = _uniform(_engine.get());
+        const T t = -std::log1p(-u1 * (-std::expm1(-_kappa))) / _kappa;
+        const T ax = T{1} - std::min(t, T{1});
+        const T u0 = _uniform(_engine.get());
+        x = (u0 < T{0.5}) ? -ax : ax;
+        // target exp(-k t (2 - t)) / envelope exp(-k t)
+        accept = std::exp(-_kappa * t * (T{1} - t));
+      } else {
+        const T u1 = _uniform(_engine.get());
+        x = T{2} * u1 - T{1};   // candidate cos θ in [-1, 1]
+        accept = std::exp(_kappa * (x * x));
+      }
       const T u2 = _uniform(_engine.get());
-      // Acceptance probability normalised so its max over [-1,1] is 1.
-      // For κ > 0 the density peaks at x² = 1; bound by exp(0) = 1.
-      // For κ < 0 the density peaks at x² = 0; bound by exp(0) = 1.
-      const T accept = (_kappa > T{0})
-                           ? std::exp(_kappa * (x * x - T{1}))
-                           : std::exp(_kappa * (x * x));
       if (u2 <= accept) break;
     }
     const T phi = T{2} * std::numbers::pi_v<T> * _uniform(_engine.get());

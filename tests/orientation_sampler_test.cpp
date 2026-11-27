@@ -165,13 +165,11 @@ void test_bingham_samples_are_unit_length() {
 }
 
 void test_bingham_iteration_cap_throws_quickly() {
-  // At the prolate range end (κ = 1e5, acceptance ≈ 5e-6) an injected
-  // cap of 16 candidates is essentially certain to run out; the throw
-  // must be a runtime_error and immediate.
+  // An injected cap of 0 candidates must throw a runtime_error at once.
   std::mt19937 engine{5};
   rvegen::bingham_distribution<double> dist{std::array<double, 3>{0, 0, 1},
                                             1e5, engine};
-  dist.set_max_iterations(16);
+  dist.set_max_iterations(0);
   const auto t0 = std::chrono::steady_clock::now();
   bool threw = false;
   try {
@@ -211,6 +209,47 @@ void test_bingham_kappa_range_and_default_cap() {
   }
 }
 
+void test_bingham_prolate_high_kappa_is_fast_and_correct() {
+  // Aligned-A2 case: κ = 1e5 used to cost ~2e5 candidates (~11 ms) per
+  // draw. With the exponential envelope a cap of 64 candidates never
+  // trips (old sampler would throw) and E[cos²θ] matches quadrature.
+  using arr = std::array<double, 3>;
+  for (double kappa : {1.0, 50.0, 1e3, 1e5}) {
+    std::mt19937 engine{11};
+    rvegen::bingham_distribution<double> d{arr{0, 0, 1}, kappa, engine};
+    d.set_max_iterations(64);
+    const int n = 20000;
+    double m2 = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < n; ++i) {
+      const auto v = d.sample();
+      m2 += v[2] * v[2];
+    }
+    const double secs = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - t0).count();
+    REQUIRE(secs < 1.0);
+    m2 /= n;
+    // quadrature of E[x²] under exp(κ(x²-1)) on [0,1]; substitution
+    // x = 1 - t resolves the boundary layer for large κ.
+    double num = 0, den = 0;
+    const int q = 2000000;
+    const double tmax = std::min(1.0, 40.0 / kappa);
+    for (int i = 0; i < q; ++i) {
+      const double t = (i + 0.5) / q * tmax;
+      const double w = std::exp(-kappa * t * (2 - t));
+      num += w * (1 - t) * (1 - t);
+      den += w;
+    }
+    const double expect = num / den;
+    const double sd = std::sqrt(0.25 / n);  // loose bound on var(x²) <= 1/4
+    if (std::abs(m2 - expect) > 5 * sd) {
+      std::cerr << "kappa=" << kappa << " m2=" << m2 << " expect=" << expect
+                << "\n";
+    }
+    REQUIRE(std::abs(m2 - expect) <= 5 * sd);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -222,6 +261,7 @@ int main() {
   test_bingham_samples_are_unit_length();
   test_bingham_iteration_cap_throws_quickly();
   test_bingham_kappa_range_and_default_cap();
+  test_bingham_prolate_high_kappa_is_fast_and_correct();
 
   if (failures > 0) {
     std::cerr << failures << " orientation sampler test failure(s)\n";
