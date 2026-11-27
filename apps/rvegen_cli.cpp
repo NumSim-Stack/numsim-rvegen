@@ -89,6 +89,7 @@ int run(int argc, char** argv) {
     static constexpr std::array<char const*, 8> known{
         "domain_box", "seed", "distributions", "direction_distributions",
         "shapes", "generator", "termination", "postprocess"};
+    if (key.starts_with('_')) continue;   // "_comment" style annotations
     if (std::find_if(known.begin(), known.end(), [&](char const* k) {
           return key == k;
         }) == known.end()) {
