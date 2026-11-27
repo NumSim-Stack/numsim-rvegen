@@ -96,31 +96,64 @@ template <typename T>
   return b;
 }
 
+// Bounds of the placed mesh: cached base AABB + offset, O(1).
 template <typename T>
 [[nodiscard]] inline bounds3<T> mesh_bounds(mesh_inclusion<T> const& m) {
-  mesh_inclusion<T> copy{m};   // shares the triangle list: O(1)
-  copy.make_bounding_box();
-  auto const* bb = copy.bounding_box();
-  return {bb->bottom_point(), bb->top_point()};
+  auto const& off = m.offset();
+  bounds3<T> b;
+  for (int k = 0; k < 3; ++k) {
+    b.lo[k] = m.base_lo()[k] + off[k];
+    b.hi[k] = m.base_hi()[k] + off[k];
+  }
+  return b;
+}
+
+// Translated triangle together with its AABB.
+template <typename T>
+struct tri_box {
+  gte::Triangle3<T> tri;
+  bounds3<T> box;
+};
+
+template <typename T>
+[[nodiscard]] inline tri_box<T> translated(gte::Triangle3<T> const& src,
+                                            std::array<T, 3> const& off) {
+  tri_box<T> r{src, {}};
+  for (int k = 0; k < 3; ++k) {
+    for (int i = 0; i < 3; ++i) r.tri.v[i][k] += off[k];
+    r.box.lo[k] = std::min({r.tri.v[0][k], r.tri.v[1][k], r.tri.v[2][k]});
+    r.box.hi[k] = std::max({r.tri.v[0][k], r.tri.v[1][k], r.tri.v[2][k]});
+  }
+  return r;
+}
+
+// Visit translated triangles of `m` whose AABB overlaps `region`, without
+// materialising them; stops at the first `f` that returns true.
+template <typename T, typename F>
+[[nodiscard]] inline bool any_mesh_triangle_in(mesh_inclusion<T> const& m,
+                                                bounds3<T> const& region,
+                                                F&& f) {
+  auto const base = m.base_triangles();
+  if (!base || !overlap(mesh_bounds(m), region)) return false;
+  auto const& off = m.offset();
+  for (auto const& src : *base) {
+    auto const t = translated(src, off);
+    if (overlap(t.box, region) && f(t.tri)) return true;
+  }
+  return false;
 }
 
 // Translated triangles of `m` whose AABB overlaps `region`.
 template <typename T>
-[[nodiscard]] inline std::vector<gte::Triangle3<T>>
+[[nodiscard]] inline std::vector<tri_box<T>>
 mesh_triangles_in(mesh_inclusion<T> const& m, bounds3<T> const& region) {
-  std::vector<gte::Triangle3<T>> out;
+  std::vector<tri_box<T>> out;
   auto const base = m.base_triangles();
-  if (!base) return out;
+  if (!base || !overlap(mesh_bounds(m), region)) return out;
   auto const& off = m.offset();
-  for (auto const& tri : *base) {
-    gte::Triangle3<T> t = tri;
-    bounds3<T> tb;
-    for (int k = 0; k < 3; ++k) {
-      for (int i = 0; i < 3; ++i) t.v[i][k] += off[k];
-      tb.lo[k] = std::min({t.v[0][k], t.v[1][k], t.v[2][k]});
-      tb.hi[k] = std::max({t.v[0][k], t.v[1][k], t.v[2][k]});
-    }
-    if (overlap(tb, region)) out.push_back(t);
+  for (auto const& src : *base) {
+    auto t = translated(src, off);
+    if (overlap(t.box, region)) out.push_back(t);
   }
   return out;
 }
@@ -248,9 +281,12 @@ template <typename T>
   }
   const auto cv = detail::to_vec3<T>(c);
   gte::DCPQuery<T, detail::vec3<T>, gte::Triangle3<T>> query;
-  for (auto const& tri : detail::mesh_triangles_in(m, region)) {
-    if (query(cv, tri).distance <= s.radius) return true;
+  if (detail::any_mesh_triangle_in(m, region, [&](gte::Triangle3<T> const& tri) {
+        return query(cv, tri).distance <= s.radius;
+      })) {
+    return true;
   }
+  if (!detail::overlap(detail::mesh_bounds(m), region)) return false;
   return m.is_inside(c);   // sphere centre inside the solid
 }
 
@@ -267,9 +303,12 @@ template <typename T>
   detail::bounds3<T> region;
   for (int k = 0; k < 3; ++k) { region.lo[k] = b.min[k]; region.hi[k] = b.max[k]; }
   gte::DCPQuery<T, gte::Triangle3<T>, gte::AlignedBox3<T>> query;
-  for (auto const& tri : detail::mesh_triangles_in(m, region)) {
-    if (query(tri, b).distance <= T{0}) return true;
+  if (detail::any_mesh_triangle_in(m, region, [&](gte::Triangle3<T> const& tri) {
+        return query(tri, b).distance <= T{0};
+      })) {
+    return true;
   }
+  if (!detail::overlap(detail::mesh_bounds(m), region)) return false;
   // Box entirely inside the mesh solid.
   return m.is_inside({(b.min[0] + b.max[0]) / T{2},
                       (b.min[1] + b.max[1]) / T{2},
@@ -292,13 +331,14 @@ template <typename T>
   gte::DCPQuery<T, gte::Segment3<T>, gte::Triangle3<T>> query;
   const T r = t.radius();
   if (detail::any_tube_segment(t, [&](gte::Segment3<T> const& seg) {
-        for (auto const& tri : tris) {
-          if (query(seg, tri).distance <= r) return true;
+        for (auto const& tb : tris) {
+          if (query(seg, tb.tri).distance <= r) return true;
         }
         return false;
       })) {
     return true;
   }
+  if (!detail::overlap(detail::mesh_bounds(m), region)) return false;
   auto const& p = t.centerline().front();
   return m.is_inside({p[0], p[1], p[2]});   // tube entirely inside the mesh
 }
@@ -310,8 +350,11 @@ template <typename T>
 }
 
 // ---- mesh x mesh ------------------------------------------------------------
-// Triangle-triangle intersection (GTE) restricted to the AABB overlap
-// region, then mutual containment via one representative vertex.
+// Cheap accepts first (a few vertices of one mesh inside the other), then
+// triangle-triangle intersection (GTE) restricted to the AABB overlap
+// region: in-region triangles of both meshes are cached with their AABBs
+// (triangles outside the region are never copied), a pair is only tested
+// when the triangle AABBs overlap, and the loop exits on the first hit. Finally mutual containment via one vertex.
 template <typename T>
 [[nodiscard]] bool collision_details(mesh_inclusion<T> const& a,
                                       mesh_inclusion<T> const& b) {
@@ -323,12 +366,29 @@ template <typename T>
     region.lo[k] = std::max(ba.lo[k], bb.lo[k]);
     region.hi[k] = std::min(ba.hi[k], bb.hi[k]);
   }
-  const auto ta = detail::mesh_triangles_in(a, region);
   const auto tb = detail::mesh_triangles_in(b, region);
+
+  // Sampled vertices of the in-region triangles of one mesh inside the other.
+  constexpr std::size_t samples = 2;
+  auto vertex_inside = [&](std::vector<detail::tri_box<T>> const& tris,
+                           mesh_inclusion<T> const& other) {
+    if (tris.empty()) return false;
+    const std::size_t step = std::max<std::size_t>(1, tris.size() / samples);
+    for (std::size_t i = 0; i < tris.size(); i += step) {
+      auto const& v = tris[i].tri.v[0];
+      if (other.is_inside({v[0], v[1], v[2]})) return true;
+    }
+    return false;
+  };
+  if (vertex_inside(tb, a)) return true;
+  const auto ta = detail::mesh_triangles_in(a, region);
+  if (vertex_inside(ta, b)) return true;
+
   gte::TIQuery<T, gte::Triangle3<T>, gte::Triangle3<T>> query;
   for (auto const& x : ta) {
     for (auto const& y : tb) {
-      if (query(x, y).intersect) return true;
+      if (!detail::overlap(x.box, y.box)) continue;
+      if (query(x.tri, y.tri).intersect) return true;
     }
   }
   return a.is_inside(detail::mesh_first_vertex(b)) ||

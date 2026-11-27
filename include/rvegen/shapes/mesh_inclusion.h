@@ -76,7 +76,9 @@ public:
   // STL/PLY readers and by tests.
   explicit mesh_inclusion(triangle_list triangles)
       : _base{std::make_shared<triangle_list>(std::move(triangles))},
-        _base_centre{compute_base_centre(*_base)} {}
+        _base_centre{compute_base_centre(*_base)} {
+    compute_base_bounds(*_base);
+  }
 
   // Zero-copy ctor for the load-once-place-many case (mesh_inclusion_input).
   // The shared_ptr is captured by value; subsequent mutations to the
@@ -85,7 +87,9 @@ public:
   explicit mesh_inclusion(shared_triangles base)
       : _base{std::move(base)},
         _base_centre{_base ? compute_base_centre(*_base)
-                           : std::array<T, 3>{}} {}
+                           : std::array<T, 3>{}} {
+    if (_base) compute_base_bounds(*_base);
+  }
 
   // ---- shape_base contract ----------------------------------------------
   [[nodiscard]] T area() const override { return T{0}; }   // 3D shape
@@ -183,6 +187,10 @@ public:
   [[nodiscard]] std::array<T, 3> const& offset() const noexcept {
     return _offset;
   }
+  // Cached AABB of the untranslated base mesh (add offset() for the
+  // placed shape's bounds). O(1); computed once at construction.
+  [[nodiscard]] std::array<T, 3> const& base_lo() const noexcept { return _base_lo; }
+  [[nodiscard]] std::array<T, 3> const& base_hi() const noexcept { return _base_hi; }
 
 private:
   // AABB-centre of the untranslated base mesh — cached at ctor time.
@@ -206,27 +214,30 @@ private:
             (mn[2] + mx[2]) * T{0.5}};
   }
 
-  [[nodiscard]] std::array<std::array<T, 3>, 2> compute_translated_bb() const {
-    if (!_base || _base->empty()) {
-      return {{{T{0}, T{0}, T{0}}, {T{0}, T{0}, T{0}}}};
-    }
-    auto const& tris = *_base;
-    std::array<T, 3> mn{tris[0].v[0][0], tris[0].v[0][1], tris[0].v[0][2]};
-    std::array<T, 3> mx = mn;
+  void compute_base_bounds(triangle_list const& tris) {
+    if (tris.empty()) return;
+    _base_lo = {tris[0].v[0][0], tris[0].v[0][1], tris[0].v[0][2]};
+    _base_hi = _base_lo;
     for (auto const& tri : tris) {
       for (int i = 0; i < 3; ++i) {
         for (int k = 0; k < 3; ++k) {
-          mn[k] = std::min(mn[k], tri.v[i][k]);
-          mx[k] = std::max(mx[k], tri.v[i][k]);
+          _base_lo[k] = std::min(_base_lo[k], tri.v[i][k]);
+          _base_hi[k] = std::max(_base_hi[k], tri.v[i][k]);
         }
       }
     }
+  }
+
+  [[nodiscard]] std::array<std::array<T, 3>, 2> compute_translated_bb() const {
+    std::array<T, 3> mn = _base_lo, mx = _base_hi;
     for (int k = 0; k < 3; ++k) { mn[k] += _offset[k]; mx[k] += _offset[k]; }
     return {{mn, mx}};
   }
 
   shared_triangles _base;
   std::array<T, 3> _base_centre{};
+  std::array<T, 3> _base_lo{};
+  std::array<T, 3> _base_hi{};
   std::array<T, 3> _offset{};
 };
 

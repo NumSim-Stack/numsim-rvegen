@@ -20,10 +20,11 @@ namespace rvegen {
 // their centres outside the domain. Counting wraps would double-count
 // the same physical inclusion, so we filter by centre-in-domain.
 // only_inside_generator only accepts shapes inside the box, so the filter
-// is a no-op there. random_generator accepts shapes anywhere and has no
-// wraps, so it calls is_met(accepted, /*count_all=*/true): every accepted
-// shape contributes its full area / volume, including shapes whose centre
-// (or part of whose body) lies outside the box.
+// is a no-op there. random_generator accepts shapes anywhere; it has no
+// wraps, but material outside the box is not part of the RVE, so the same
+// centre-in-domain rule applies, so a shape lying entirely outside the box
+// contributes nothing. The `count_all` flag therefore only affects
+// number_of_inclusions.
 //
 // Dimension is auto-detected: shape_base::area() is zero for 3D shapes,
 // shape_base::volume() is zero for 2D shapes — sum whichever is non-zero
@@ -65,14 +66,15 @@ public:
   }
 
   [[nodiscard]] bool is_met(shape_vector const& accepted,
-                            bool count_all) const override {
+                            bool /*count_all*/) const override {
     value_type sum{};
     bool const have_box =
         _domain_box[0] > value_type{0} && _domain_box[1] > value_type{0};
     for (auto const& shape : accepted) {
-      // Filter wrap copies: only count shapes whose centre is in domain.
-      if (!count_all && have_box && !is_centre_in_domain(shape->get_middle_point(),
-                                            _domain_box))
+      // Filter wrap copies and material outside the box: only count shapes
+      // whose centre is in domain (`count_all` is deliberately ignored).
+      if (have_box && !is_centre_in_domain(shape->get_middle_point(),
+                                           _domain_box))
         continue;
       const auto v = shape->volume();
       sum += (v > value_type{0}) ? v : shape->area();

@@ -342,6 +342,17 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
 
+# Unreachable target: the generator gives up at max_attempts and the CLI
+# warns on stderr (PASS_REGULAR_EXPRESSION matches stdout and stderr).
+add_test(
+    NAME cli_max_attempts_warning
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_max_attempts.json
+)
+set_tests_properties(cli_max_attempts_warning PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "warning .* stopped at max_attempts"
+)
+
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
 # ---------------------------------------------------------------------------

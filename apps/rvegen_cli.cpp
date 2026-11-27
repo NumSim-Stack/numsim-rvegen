@@ -139,6 +139,17 @@ int run(int argc, char** argv) {
                                    progress_opts);
   std::cout << "rvegen: generated " << shapes.size() << " shape"
             << (shapes.size() == 1 ? "" : "s") << '\n';
+  // A generator also returns when it exhausts max_attempts. Detect that
+  // by evaluating the termination predicate on the result (random_generator
+  // evaluates it with count_all = true, the others with the primaries-only
+  // default).
+  const bool counts_all =
+      config.at("generator").value("type", std::string{}) == "random";
+  if (!termination->is_met(shapes, counts_all)) {
+    std::cerr << "rvegen: warning — stopped at max_attempts before reaching "
+                 "the termination target (" << shapes.size()
+              << " shapes placed).\n";
+  }
 
   // ---- 8. Post-processing steps (each owns its sink) --------------------
   if (!config.contains("postprocess")) {

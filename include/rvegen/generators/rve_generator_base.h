@@ -75,9 +75,7 @@ public:
 // `emit_every` placements — bounded O(N) cost). Filters wrap copies by
 // the centre-in-domain test, matching how volume_fraction termination
 // accounts: counting wrap copies would double-report a single physical
-// inclusion. For random_generator (no domain constraint at all) the
-// fraction is "total extent / domain extent" (pass count_all = true so
-// shapes centred outside the box are included, matching its termination).
+// inclusion, and shapes centred outside the box are not part of the RVE.
 template <typename T>
 [[nodiscard]] inline double current_volume_fraction(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,

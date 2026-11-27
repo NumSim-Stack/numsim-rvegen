@@ -64,8 +64,9 @@ void test_random_counts_shapes_outside_the_box() {
   // shapes (hundreds in total). Every accepted shape counts now.
   REQUIRE(shapes.size() == 20);
 
-  // volume_fraction: stop at the first shape that reaches the target, with
-  // all shapes (in or out of the box) contributing their area.
+  // volume_fraction: only material in the box counts (centre-in-domain
+  // rule). Shapes lying entirely outside the box contribute nothing, so
+  // the in-box fraction reaches the target instead of stopping early.
   std::mt19937 engine2{12};
   uniform_real_distribution<D> qx{-2.0, 3.0, engine2};
   uniform_real_distribution<D> qy{-2.0, 3.0, engine2};
@@ -75,13 +76,31 @@ void test_random_counts_shapes_outside_the_box() {
   auto v_term = make_termination(
       R"({"type":"volume_fraction","target_fraction":0.05})");
   auto shapes2 = gen.compute(inputs2, *v_term, unit_box);
-  D sum = 0, sum_but_last = 0;
-  for (std::size_t i = 0; i < shapes2.size(); ++i) {
-    sum += shapes2[i]->area();
-    if (i + 1 < shapes2.size()) sum_but_last += shapes2[i]->area();
+  // Far more shapes than the target area alone needs (0.05 / ~0.002 = 25).
+  REQUIRE(shapes2.size() > 100);
+  D in_box = 0;
+  for (auto const& s : shapes2) {
+    auto m = s->get_middle_point();
+    if (m[0] >= 0 && m[0] <= 1 && m[1] >= 0 && m[1] <= 1) in_box += s->area();
   }
-  REQUIRE(sum >= 0.05);
-  REQUIRE(sum_but_last < 0.05);
+  REQUIRE(in_box >= 0.05);
+  REQUIRE(in_box < 0.05 + 0.004);
+
+  // Monte-Carlo in-box area fraction with the shapes' own is_inside: close
+  // to the target, not a fraction of it.
+  std::mt19937 mc{1};
+  std::uniform_real_distribution<D> u(0, 1);
+  long hit = 0;
+  constexpr long n_mc = 400'000;
+  for (long i = 0; i < n_mc; ++i) {
+    std::array<D, 3> x{u(mc), u(mc), 0};
+    for (auto const& s : shapes2) {
+      if (s->is_inside(x)) { ++hit; break; }
+    }
+  }
+  const D achieved = static_cast<D>(hit) / n_mc;
+  REQUIRE(achieved > 0.035);
+  REQUIRE(achieved < 0.065);
 
   // only_inside is unchanged: all shapes are inside, count == target.
   std::mt19937 engine3{13};

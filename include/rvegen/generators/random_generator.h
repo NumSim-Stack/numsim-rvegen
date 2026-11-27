@@ -24,7 +24,9 @@ namespace rvegen {
 // Accounting: shapes may be centred outside the box and there are no
 // periodic wrap copies, so every accepted shape is a primary. The
 // termination predicate is therefore evaluated with count_all = true
-// (see termination_base::is_met), and so is the progress volume fraction.
+// (see termination_base::is_met): number_of_inclusions counts every shape,
+// while volume_fraction (and the progress volume fraction) only counts
+// material in the box, by the centre-in-domain rule.
 template <typename T = double>
 class random_generator final : public rve_generator_base<T> {
 public:
@@ -93,8 +95,7 @@ public:
       if (accepted.size() - last_emit >= opts.emit_every) {
         opts.on_progress({accepted.size(),
                           termination.target_count(),
-                          current_volume_fraction(accepted, domain_box,
-                                                  /*count_all=*/true)});
+                          current_volume_fraction(accepted, domain_box)});
         last_emit = accepted.size();
       }
       done = termination.is_met(accepted, true);
