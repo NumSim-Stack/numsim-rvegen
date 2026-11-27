@@ -103,12 +103,13 @@ protected:
   // Two recognised fields:
   //   * `phase_name` (string) — convenience shortcut, stamped onto
   //     shape's info.phase_name.
-  //   * `metadata` (JSON-encoded string) — arbitrary key/value pairs
-  //     parsed via nlohmann::json and merged into the shape's info.
-  //     The string-encoding is a stop-gap until the parameter visitor
-  //     gains nested-object passthrough; until then, callers escape
-  //     their JSON as a string in the config:
+  //   * `metadata` (JSON object, or a JSON-encoded string) — arbitrary
+  //     key/value pairs merged into the shape's info. The parameter
+  //     visitor serialises an object value to its string form, so both
+  //       "metadata": {"orientation_deg": 42.5, "source": "a.stl"}
   //       "metadata": "{\"orientation_deg\": 42.5, \"source\": \"a.stl\"}"
+  //     give the same info blob. Any other JSON type throws, naming the
+  //     key.
   //
   // Order: `phase_name` is read first, then `metadata` is merged on
   // top — so a `phase_name` key inside the metadata object overrides
@@ -147,6 +148,14 @@ protected:
             patch.dump()};
       }
       _info.json().merge_patch(patch);
+      // phase_name() reads this as a string later (in the writers), so a
+      // wrong type must fail here, not after the whole generation ran.
+      if (auto const it = _info.json().find("phase_name");
+          it != _info.json().end() && !it->is_string()) {
+        throw std::runtime_error{
+            "shape input: 'metadata' key 'phase_name' must be a string, got " +
+            it->dump()};
+      }
     }
   }
 

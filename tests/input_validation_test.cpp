@@ -524,7 +524,7 @@ void test_json_integral_strictness() {
 // Builds a circle_input through the registry with the given `metadata`
 // value (or none when `metadata` is nullptr) and returns the produced
 // shape's info blob.
-nlohmann::json circle_info_with_metadata(char const* metadata) {
+nlohmann::json circle_info_with_metadata_value(nlohmann::json const* metadata) {
   rvegen::register_all_distributions<>();
   rvegen::register_all_inputs<>();
   std::mt19937 engine{72};
@@ -541,11 +541,17 @@ nlohmann::json circle_info_with_metadata(char const* metadata) {
                             {"pos_y_dist", "y"},
                             {"radius_dist", "r"},
                             {"phase_name", "fibre"}};
-  if (metadata != nullptr) input_spec["metadata"] = metadata;
+  if (metadata != nullptr) input_spec["metadata"] = *metadata;
   auto input = rvegen::build_from_json(rvegen::input_registry_t<>::instance(),
                                        input_spec, dists);
   auto shape = input->new_shape();
   return shape->info().json();
+}
+
+nlohmann::json circle_info_with_metadata(char const* metadata) {
+  if (metadata == nullptr) return circle_info_with_metadata_value(nullptr);
+  const nlohmann::json v = metadata;
+  return circle_info_with_metadata_value(&v);
 }
 
 void test_metadata_field() {
@@ -573,6 +579,37 @@ void test_metadata_field() {
     REQUIRE(throws_runtime_error_containing(
         [&] { (void)circle_info_with_metadata(bad); }, "'metadata'"));
   }
+
+  // A JSON object is accepted and gives the same blob as its string form.
+  {
+    const auto obj = nlohmann::json::parse(R"({"source": "a.stl", "n": 3})");
+    const auto from_obj = circle_info_with_metadata_value(&obj);
+    REQUIRE(from_obj == circle_info_with_metadata(obj.dump().c_str()));
+    REQUIRE(from_obj.value("source", std::string{}) == "a.stl");
+    REQUIRE(from_obj.value("phase_name", std::string{}) == "fibre");
+    const auto empty_obj = nlohmann::json::object();
+    REQUIRE(circle_info_with_metadata_value(&empty_obj) == baseline);
+  }
+
+  // Any other type fails with an error naming the key.
+  for (auto const& bad : {nlohmann::json{nullptr}, nlohmann::json{5},
+                          nlohmann::json{1.5}, nlohmann::json{true},
+                          nlohmann::json::array({1, 2})}) {
+    REQUIRE(throws_invalid_argument_containing(
+        [&] { (void)circle_info_with_metadata_value(&bad); }, "'metadata'"));
+  }
+
+  // A non-string phase_name inside metadata is rejected at construction,
+  // naming both keys, rather than failing later in a writer.
+  for (char const* bad : {R"({"phase_name": 5})", R"({"phase_name": [1]})",
+                          R"({"phase_name": {"a": 1}})"}) {
+    REQUIRE(throws_runtime_error_containing(
+        [&] { (void)circle_info_with_metadata(bad); }, "'metadata'"));
+    REQUIRE(throws_runtime_error_containing(
+        [&] { (void)circle_info_with_metadata(bad); }, "phase_name"));
+  }
+  REQUIRE(circle_info_with_metadata(R"({"phase_name": "matrix"})")
+              .value("phase_name", std::string{}) == "matrix");
 }
 
 // ---- 4. Distribution parameters -----------------------------------------

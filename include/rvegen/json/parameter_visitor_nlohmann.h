@@ -44,6 +44,10 @@ namespace rvegen {
 // nlohmann's own get<> would silently static_cast instead (-1 → SIZE_MAX,
 // 5.9 → 5).
 //
+// std::string targets must be JSON strings; the `metadata` key also accepts
+// a JSON object (serialised to its string form). Other types throw
+// std::invalid_argument naming the key.
+//
 // Adding a new supported type: add an `if (tid == typeid(T))` branch to
 // `read()`. Unknown types throw std::runtime_error with the type name.
 class parameter_visitor_nlohmann
@@ -66,7 +70,7 @@ public:
     if (tid == typeid(double))      return std::any{node.get<double>()};
     if (tid == typeid(float))       return std::any{node.get<float>()};
     if (tid == typeid(bool))        return std::any{node.get<bool>()};
-    if (tid == typeid(std::string)) return std::any{node.get<std::string>()};
+    if (tid == typeid(std::string)) return std::any{read_string(key, node)};
 
     if (tid == typeid(int))           return std::any{get_integral<int>(key, node)};
     if (tid == typeid(long))          return std::any{get_integral<long>(key, node)};
@@ -100,6 +104,21 @@ public:
   }
 
 private:
+  // std::string targets: a JSON string, or -- for the `metadata` key only --
+  // a JSON object, which is serialised to its string form so that
+  // `"metadata": {"a": 1}` and `"metadata": "{\"a\": 1}"` are equivalent.
+  // Any other type throws std::invalid_argument naming the key.
+  [[nodiscard]] static std::string read_string(key_type const& key,
+                                               nlohmann::json const& node) {
+    if (node.is_string()) return node.get<std::string>();
+    if (key == "metadata" && node.is_object()) return node.dump();
+    throw std::invalid_argument(
+        std::string{"parameter_visitor_nlohmann: key '"} + key +
+        "' expects " +
+        (key == "metadata" ? "a string or a JSON object" : "a string") +
+        ", got " + node.dump());
+  }
+
   // Strict JSON → integral conversion; see the class comment.
   template <typename I>
   [[nodiscard]] static I get_integral(key_type const& key,
