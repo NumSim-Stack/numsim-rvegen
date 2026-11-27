@@ -59,6 +59,7 @@
 
 #include <numsim-core/static_indexing.h>
 
+#include <Mathematics/DistPointTriangle.h>
 #include <Mathematics/IntrRay3Triangle3.h>
 #include <Mathematics/Ray.h>
 #include <Mathematics/Triangle.h>
@@ -199,39 +200,76 @@ template <typename T>
   std::sort(pairs.begin(), pairs.end());
 
   // ---- Step B: parity of each probe against each candidate container.
+  //
+  // A probe that lies ON the container's surface (a component touching
+  // its container) gives an arbitrary ray parity. While testing the
+  // first ray direction every triangle a probe could touch is also
+  // checked by point-triangle distance; a probe found on the surface
+  // is retried with another candidate point of the same component.
   std::array<gte::Vector3<T>, 3> dirs{{
       {T{0.5773}, T{0.4987}, T{0.6467}},
       {T{-0.6321}, T{0.7071}, T{-0.3175}},
       {T{0.2113}, T{-0.8660}, T{0.4532}}}};
   for (auto& d : dirs) gte::Normalize(d);
 
+  // Candidate probes per component: `probes[c]` first, then centroids
+  // of faces spread evenly over the component.
+  constexpr std::size_t max_candidates = 8;
+  auto candidate = [&](std::size_t c, std::size_t k) -> gte::Vector3<T> {
+    if (k == 0) return probes[c];
+    const std::size_t nfc = start[c + 1] - start[c];
+    auto const& t = tris[faces[start[c] + (k * nfc) / max_candidates]];
+    return (t.v[0] + t.v[1] + t.v[2]) / T{3};
+  };
+
   gte::TIQuery<T, gte::Ray3<T>, gte::Triangle3<T>> query;
+  gte::DCPQuery<T, gte::Vector3<T>, gte::Triangle3<T>> dist_query;
   std::vector<char> parity(n_comp, 0);
   std::vector<int> votes;
-  std::vector<std::size_t> bin_start, bin_faces;
+  std::vector<char> on_surface;
+  std::vector<gte::Vector3<T>> qp;           // probe point per pending query
+  std::vector<std::size_t> pending, next_pending, bin_start, bin_faces;
   std::vector<std::array<T, 4>> proj_box;   // per face: umin, umax, wmin, wmax
   for (std::size_t g = 0; g < pairs.size();) {
     const std::size_t o = pairs[g].first;
     std::size_t g_end = g;
     while (g_end < pairs.size() && pairs[g_end].first == o) ++g_end;
-    const std::size_t nq = g_end - g;
     const std::size_t f0 = start[o], nf = start[o + 1] - start[o];
-    votes.assign(nq, 0);
+    T extent = T{0};
+    for (int k = 0; k < 3; ++k) extent = std::max(extent, bb_max[o][k] - bb_min[o][k]);
+    const T surf_eps2 = (extent * T{1e-7}) * (extent * T{1e-7});
 
-    for (auto const& d : dirs) {
+    pending.clear();
+    for (std::size_t q = g; q < g_end; ++q) pending.push_back(q);
+    for (std::size_t round = 0; round < max_candidates && !pending.empty(); ++round) {
+    const std::size_t nq = pending.size();
+    votes.assign(nq, 0);
+    on_surface.assign(nq, 0);
+    qp.resize(nq);
+    for (std::size_t q = 0; q < nq; ++q) {
+      qp[q] = candidate(pairs[pending[q]].second, round);
+    }
+
+    for (std::size_t di = 0; di < dirs.size(); ++di) {
+      auto const& d = dirs[di];
       gte::Ray3<T> ray;
       ray.direction = d;
-      auto hits_in = [&](std::size_t const* first, std::size_t const* last) {
+      auto hits_in = [&](std::size_t q, std::size_t const* first,
+                         std::size_t const* last) {
         int hits = 0;
         for (auto it = first; it != last; ++it) {
           if (query(ray, tris[*it]).intersect) ++hits;
+          if (di == 0 && !on_surface[q] &&
+              dist_query(qp[q], tris[*it]).sqrDistance <= surf_eps2) {
+            on_surface[q] = 1;
+          }
         }
         return hits;
       };
       if (nf * nq <= 4096) {
         for (std::size_t q = 0; q < nq; ++q) {
-          ray.origin = probes[pairs[g + q].second];
-          votes[q] += hits_in(faces.data() + f0, faces.data() + f0 + nf) % 2;
+          ray.origin = qp[q];
+          votes[q] += hits_in(q, faces.data() + f0, faces.data() + f0 + nf) % 2;
         }
         continue;
       }
@@ -283,18 +321,27 @@ template <typename T>
         }
       }
       for (std::size_t q = 0; q < nq; ++q) {
-        auto const& p = probes[pairs[g + q].second];
+        auto const& p = qp[q];
         const T pu = gte::Dot(p, u), pw = gte::Dot(p, w);
         if (pu < umin || pu > umax || pw < wmin || pw > wmax) continue;
         const auto b = mesh_grid_cell(pu, umin, umax, r2) * r2 +
                        mesh_grid_cell(pw, wmin, wmax, r2);
         ray.origin = p;
-        votes[q] += hits_in(bin_faces.data() + bin_start[b],
+        votes[q] += hits_in(q, bin_faces.data() + bin_start[b],
                             bin_faces.data() + bin_start[b + 1]) % 2;
       }
     }
+    next_pending.clear();
     for (std::size_t q = 0; q < nq; ++q) {
-      if (votes[q] >= 2) parity[pairs[g + q].second] ^= 1;
+      // Retry an on-surface probe with the next candidate while one is
+      // left; the last candidate's vote is used as-is.
+      if (on_surface[q] && round + 1 < max_candidates) {
+        next_pending.push_back(pending[q]);
+      } else if (votes[q] >= 2) {
+        parity[pairs[pending[q]].second] ^= 1;
+      }
+    }
+    pending.swap(next_pending);
     }
     g = g_end;
   }

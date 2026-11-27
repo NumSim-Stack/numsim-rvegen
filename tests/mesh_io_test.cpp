@@ -237,6 +237,19 @@ void test_ply_huge_element_count_throws() {
   REQUIRE_THROWS_WITH(rvegen::read_ply_ascii<double>(ss), "payload");
 }
 
+void test_ply_header_element_flood_is_bounded() {
+  // Many distinct empty elements: used to make the duplicate-name
+  // check quadratic (40k elements took seconds). Now capped.
+  std::string hdr = "ply\nformat ascii 1.0\n";
+  for (int i = 0; i < 40000; ++i) hdr += "element e" + std::to_string(i) + " 0\n";
+  hdr += "end_header\n";
+  std::istringstream ss{hdr};
+  REQUIRE_THROWS_WITH(rvegen::read_ply<double>(ss), "more than");
+  std::istringstream dup{
+      "ply\nformat ascii 1.0\nelement vertex 0\nelement vertex 0\nend_header\n"};
+  REQUIRE_THROWS_WITH(rvegen::read_ply<double>(dup), "declared twice");
+}
+
 void test_ply_element_count_over_cap_throws() {
   std::stringstream ss{
       "ply\nformat ascii 1.0\n"
@@ -418,6 +431,19 @@ void test_mesh_inclusion_cavity_volume() {
   two.insert(two.end(), other.begin(), other.end());
   rvegen::mesh_inclusion<double> mesh2{two};
   REQUIRE(std::abs(mesh2.volume() - 2.0) < 1e-12);
+}
+
+void test_mesh_inclusion_cavity_touching_container() {
+  // Inner cube [0,5]^3 shares a corner and three faces with the outer
+  // [0,10]^3 (its largest-face probe lies on the container surface):
+  // volume must still be 1000 - 125.
+  for (double shift : {0.0, 5.0}) {
+    auto tris = make_cube(10.0);
+    auto inner = make_cube(5.0, shift);
+    tris.insert(tris.end(), inner.begin(), inner.end());
+    rvegen::mesh_inclusion<double> mesh{tris};
+    REQUIRE(std::abs(mesh.volume() - 875.0) < 1e-9);
+  }
 }
 
 void test_mesh_inclusion_open_mesh_throws() {
@@ -706,6 +732,7 @@ int main() {
   test_stl_binary_exact_and_trailing_bytes_ok();
 
   test_ply_huge_element_count_throws();
+  test_ply_header_element_flood_is_bounded();
   test_ply_element_count_over_cap_throws();
   test_ply_binary_huge_element_count_throws();
   test_ply_huge_list_count_throws();
@@ -721,6 +748,7 @@ int main() {
   test_mesh_inclusion_inconsistent_winding_is_reoriented();
   test_mesh_inclusion_consistent_shared_is_zero_copy();
   test_mesh_inclusion_cavity_volume();
+  test_mesh_inclusion_cavity_touching_container();
   test_mesh_inclusion_open_mesh_throws();
   test_mesh_inclusion_non_manifold_throws();
   test_mesh_inclusion_non_finite_vertex_throws();
