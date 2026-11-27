@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -330,6 +333,79 @@ void test_periodic_wraps_without_bbox() {
   REQUIRE(total > 0);
 }
 
+// ---- weighted empties, thin periodic box, gmsh clipping -----------------
+void check_weighted_empty(rvegen::voronoi_backend backend) {
+  seeds3_t seeds{{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}, {0.5, 0.2, 0.8}};
+  // Seed 0's weight is far below its neighbours': its power cell is empty.
+  std::vector<double> w{-10.0, 0.0, 0.0};
+  rvegen::voronoi_generator_3d<double> gen{1, 1, 1, seeds, backend, true, w};
+  auto cells = gen.build();
+  const auto empty = gen.empty_cell_indices(cells);
+  REQUIRE(empty.size() == 1 && empty[0] == 0);
+  bool threw = false;
+  try { (void)gen.build_checked(); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  // Zero weights: never empty, build_checked succeeds.
+  rvegen::voronoi_generator_3d<double> ok{1, 1, 1, seeds, backend, true,
+                                          std::vector<double>(3, 0.0)};
+  REQUIRE(ok.build_checked().size() == 3);
+}
+
+void check_thin_periodic(rvegen::voronoi_backend backend) {
+  const std::array<double, 3> L{1.0, 1.0, 1e-4};
+  auto s = make_seeds3(12, L, 21);
+  rvegen::voronoi_generator_3d<double> gen{L[0], L[1], L[2], s, backend, true};
+  double total = 0;
+  for (auto const& c : gen.build()) total += c->volume();
+  std::cout << "thin periodic volume ratio " << total / (L[0] * L[1] * L[2])
+            << "\n";
+  REQUIRE(std::abs(total / (L[0] * L[1] * L[2]) - 1.0) < 1e-6);
+}
+
+void test_weighted_empty_and_thin_periodic() {
+  check_weighted_empty(rvegen::voronoi_backend::in_house);
+  check_thin_periodic(rvegen::voronoi_backend::in_house);
+#ifdef RVEGEN_WITH_VORO_PP
+  check_weighted_empty(rvegen::voronoi_backend::voro_pp);
+  check_thin_periodic(rvegen::voronoi_backend::voro_pp);
+#endif
+}
+
+void test_gmsh_clips_periodic_polygons() {
+  const double Lx = 2.0, Ly = 1.5;
+  std::mt19937 eng{5};
+  std::uniform_real_distribution<double> u{0.0, 1.0};
+  std::vector<std::array<double, 2>> seeds;
+  for (int i = 0; i < 8; ++i) seeds.push_back({u(eng) * Lx, u(eng) * Ly});
+  rvegen::voronoi_generator_2d<double> gen{Lx, Ly, seeds, true};
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  for (auto const& p : gen.build()) {
+    auto c = std::make_unique<rvegen::convex_polygon<double>>(p);
+    c->make_bounding_box();
+    for (auto& w : rvegen::generate_periodic_wraps<double>(*c, {Lx, Ly, 0.0}))
+      shapes.push_back(std::move(w));
+    shapes.push_back(std::move(c));
+  }
+  std::ostringstream out;
+  rvegen::gmsh_geo_writer<double>{}.write(out, shapes, {Lx, Ly, 0.0});
+  std::istringstream in{out.str()};
+  std::string line;
+  std::size_t points = 0;
+  while (std::getline(in, line)) {
+    if (line.rfind("Point(", 0) != 0) continue;
+    const auto b = line.find('{');
+    double x, y;
+    char c1;
+    std::istringstream ls{line.substr(b + 1)};
+    ls >> x >> c1 >> y;
+    ++points;
+    REQUIRE(x >= -1e-12 && x <= Lx + 1e-12);
+    REQUIRE(y >= -1e-12 && y <= Ly + 1e-12);
+  }
+  REQUIRE(points > 8 * 3);
+  if (const char* o = std::getenv("RVEGEN_TEST_GEO_OUT")) std::ofstream(o) << out.str();
+}
+
 } // namespace
 
 int main() {
@@ -340,6 +416,8 @@ int main() {
   test_grain_robust_in_house();
   test_grain_nonconvergence_flagged();
   test_validation_scales_and_wraps();
+  test_weighted_empty_and_thin_periodic();
+  test_gmsh_clips_periodic_polygons();
   test_periodic_wraps_without_bbox();
 #ifdef RVEGEN_WITH_VORO_PP
   test_periodic_3d_voro_pp();

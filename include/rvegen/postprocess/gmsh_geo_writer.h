@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <ostream>
@@ -265,6 +267,61 @@ private:
     out << "\n";
   }
 
+  // Sutherland-Hodgman clip of a (convex) polygon against [0,Lx]x[0,Ly];
+  // consecutive near-duplicate vertices (a vertex lying on a clip edge) are
+  // merged so no zero-length Line is emitted. A polygon fully inside is
+  // returned unchanged. Returns fewer than 3 vertices when nothing (or only
+  // a sliver) remains.
+  static std::vector<std::array<value_type, 2>>
+  clip_polygon_to_rect(std::vector<std::array<value_type, 2>> poly,
+                       value_type Lx, value_type Ly) {
+    const value_type eps = std::min(Lx, Ly) * value_type{1e-12};
+    // axis, bound, keep-side sign: keep points with sign*(p[axis]-bound) <= 0
+    struct edge { int axis; value_type bound; value_type sign; };
+    const edge edges[4] = {{0, value_type{0}, value_type{-1}},
+                           {0, Lx, value_type{1}},
+                           {1, value_type{0}, value_type{-1}},
+                           {1, Ly, value_type{1}}};
+    for (auto const& e : edges) {
+      if (poly.size() < 3) return {};
+      std::vector<std::array<value_type, 2>> out;
+      const std::size_t n = poly.size();
+      for (std::size_t i = 0; i < n; ++i) {
+        auto const& a = poly[i];
+        auto const& b = poly[(i + 1) % n];
+        const value_type da = e.sign * (a[e.axis] - e.bound);
+        const value_type db = e.sign * (b[e.axis] - e.bound);
+        const bool ain = da <= value_type{0}, bin = db <= value_type{0};
+        if (ain) out.push_back(a);
+        if (ain != bin) {
+          const value_type t = da / (da - db);
+          std::array<value_type, 2> q{a[0] + t * (b[0] - a[0]),
+                                      a[1] + t * (b[1] - a[1])};
+          q[e.axis] = e.bound;   // exactly on the boundary
+          out.push_back(q);
+        }
+      }
+      poly = std::move(out);
+    }
+    std::vector<std::array<value_type, 2>> res;
+    for (auto const& v : poly) {
+      if (!res.empty() && std::abs(v[0] - res.back()[0]) <= eps &&
+          std::abs(v[1] - res.back()[1]) <= eps) continue;
+      res.push_back(v);
+    }
+    while (res.size() > 1 && std::abs(res.front()[0] - res.back()[0]) <= eps &&
+           std::abs(res.front()[1] - res.back()[1]) <= eps) res.pop_back();
+    // Drop slivers with (numerically) zero area.
+    value_type area2{0};
+    for (std::size_t i = 0; i < res.size(); ++i) {
+      auto const& a = res[i];
+      auto const& b = res[(i + 1) % res.size()];
+      area2 += a[0] * b[1] - a[1] * b[0];
+    }
+    if (res.size() < 3 || std::abs(area2) <= eps * std::max(Lx, Ly)) return {};
+    return res;
+  }
+
   void write_2d(std::ostream& out,
                 shape_vector const& shapes,
                 std::array<value_type, 3> const& domain_box) const {
@@ -296,7 +353,18 @@ private:
         // Custom polygon: emit N Points + N Lines + 1 Line Loop + 1
         // Plane Surface. The Plane Surface id is the entity that
         // ends up in any Physical group. Total ids consumed = 2N + 2.
-        auto const& verts = p->vertices();
+        // Clip to the domain rectangle: periodic polygons (and their
+        // wrap images) may poke out of [0,Lx]x[0,Ly], which would give a
+        // geometry gmsh cannot mesh against the domain Rectangle. Clipping
+        // a convex polygon to a rectangle is exact, and primary + wraps
+        // then tile the domain.
+        std::vector<std::array<value_type, 2>> verts;
+        {
+          std::vector<std::array<value_type, 2>> poly;
+          for (auto const& v : p->vertices()) poly.push_back({v[0], v[1]});
+          verts = clip_polygon_to_rect(std::move(poly), domain_box[0],
+                                       domain_box[1]);
+        }
         const std::size_t n_verts = verts.size();
         if (n_verts < 3) {
           // Empty / collapsed placeholder (e.g. a degenerate Voronoi cell):

@@ -353,13 +353,25 @@ PYBIND11_MODULE(_core, m) {
       .def("build",
            [](rvegen::voronoi_generator_3d<double> const& g) {
              std::vector<rvegen::voronoi_cell<double>> out;
+             std::vector<std::size_t> empty;
              {
                // Tessellation is pure C++ and can take long: release the GIL.
                py::gil_scoped_release release;
-               for (auto const& sh : g.build()) {
+               auto cells = g.build();
+               empty = g.empty_cell_indices(cells);
+               for (auto const& sh : cells) {
                  out.push_back(
                      static_cast<rvegen::voronoi_cell<double> const&>(*sh));
                }
+             }
+             if (!empty.empty()) {
+               // Weighted (power-diagram) seeds can end up with no cell.
+               std::string msg = std::to_string(empty.size()) +
+                                 " seed(s) have an empty cell (e.g. index " +
+                                 std::to_string(empty.front()) +
+                                 "); the weights are too spread out";
+               PyErr_WarnEx(PyExc_RuntimeWarning, msg.c_str(), 1);
+               if (PyErr_Occurred()) throw py::error_already_set();
              }
              return out;
            },

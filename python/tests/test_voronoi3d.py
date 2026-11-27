@@ -154,3 +154,12 @@ def test_build_releases_gil():
     assert elapsed > 0.1, "build too fast to observe GIL behaviour"
     # With the GIL held for the whole build the ticker would get ~0 ticks.
     assert len(ticks) > 10
+
+
+def test_weighted_empty_cell_warns():
+    seeds = [(0.25, 0.5, 0.5), (0.75, 0.5, 0.5), (0.5, 0.2, 0.8)]
+    gen = rvegen.VoronoiGenerator3d(1.0, 1.0, 1.0, seeds, periodic=True,
+                                    weights=[-10.0, 0.0, 0.0])
+    with pytest.warns(RuntimeWarning, match="empty cell"):
+        cells = gen.build()
+    assert cells[0].volume() == 0.0
