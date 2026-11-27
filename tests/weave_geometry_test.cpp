@@ -362,6 +362,16 @@ void check_tow(std::size_t n_fibres, double factor,
                 >= 2.0 * r_f * (1.0 - 1e-9));
       }
     }
+    // Periodic seam: each fibre's end node is its start node translated by
+    // the yarn's own end-to-start vector (end normals use the end
+    // segments, whose slopes the base weave makes equal).
+    {
+      const vec3 span = yarn_cl.back() - yarn_cl.front();
+      for (std::size_t a = 0; a < n_fibres; ++a) {
+        auto const& c = as_tube(fibres[y * n_fibres + a]).centerline();
+        REQUIRE(gte::Length((c.back() - c.front()) - span) < 1e-12);
+      }
+    }
     // Ring pattern (incl. a partial outer ring) is balanced around the
     // yarn axis: the fibre centroid at each node is the yarn node.
     for (std::size_t k = 0; k < yarn_cl.size(); ++k) {
@@ -371,6 +381,61 @@ void check_tow(std::size_t n_fibres, double factor,
       }
       sum /= static_cast<double>(n_fibres);
       REQUIRE(gte::Length(sum - yarn_cl[k]) < 1e-12);
+    }
+  }
+}
+
+
+// Fibres of DIFFERENT yarns (including periodic images) must also clear
+// 2 r_f: mitred offsets can sit slightly outside the yarn's polyline
+// envelope on the convex side of a kink. Returns min distance / (2 r_f).
+double check_tow_cross(rvegen::weave_generator<double> const& base,
+                       std::array<double, 3> const& box,
+                       std::size_t n_fibres, double factor) {
+  rvegen::tow_weave_generator<double> gen{base, n_fibres, factor};
+  auto yarns = base.build();
+  auto fibres = gen.build();
+  const double r_yarn = as_tube(yarns[0]).radius();
+  const double r_f = r_yarn * factor;
+  double best = std::numeric_limits<double>::infinity();
+  for (std::size_t ya = 0; ya < yarns.size(); ++ya) {
+    for (std::size_t yb = ya; yb < yarns.size(); ++yb) {
+      for (double dx : {-box[0], 0.0, box[0]}) {
+        for (double dy : {-box[1], 0.0, box[1]}) {
+          // A yarn and its own image shifted along its axis only share the
+          // periodic seam point; skip that (and the identity).
+          const bool warp = ya < base.n_warp_yarns();
+          if (ya == yb && (warp ? dx != 0.0 : dy != 0.0)) continue;
+          if (ya == yb && dx == 0.0 && dy == 0.0) continue;
+          const vec3 shift{dx, dy, 0.0};
+          if (polyline_distance(as_tube(yarns[ya]).centerline(),
+                                as_tube(yarns[yb]).centerline(), shift)
+              > 3.0 * r_yarn) continue;
+          for (std::size_t a = 0; a < n_fibres; ++a) {
+            for (std::size_t b = 0; b < n_fibres; ++b) {
+              best = std::min(best, polyline_distance(
+                  as_tube(fibres[ya * n_fibres + a]).centerline(),
+                  as_tube(fibres[yb * n_fibres + b]).centerline(), shift));
+            }
+          }
+        }
+      }
+    }
+  }
+  return best / (2.0 * r_f);
+}
+
+void test_tow_cross_yarn_clearance() {
+  using G = rvegen::weave_generator<double>;
+  for (std::size_t n_seg : {8u, 16u, 32u}) {
+    for (auto const& c : {weave_cfg{{1.0, 1.0, 0.3}, 4, 4, 0.04, 0.05, n_seg},
+                          weave_cfg{{1.0, 1.0, 1.0}, 4, 4, 0.056, 0.0562, n_seg},
+                          weave_cfg{{1.0, 1.0, 1.0}, 2, 2, 0.11, 0.112, n_seg}}) {
+      G base{c.box, c.n_warp, c.n_weft, c.r, c.A, c.n_seg};
+      const double m1 = check_tow_cross(base, c.box, 7, 1.0 / 3.0);
+      const double m2 = check_tow_cross(base, c.box, 19, 1.0 / 5.0);
+      REQUIRE(m1 >= 1.0 - 1e-9);
+      REQUIRE(m2 >= 1.0 - 1e-9);
     }
   }
 }
@@ -543,6 +608,7 @@ int main() {
   test_weave_validation();
   test_plain_weave_voxel_fraction();
   test_tow_fibres_do_not_overlap();
+  test_tow_cross_yarn_clearance();
   test_tow_infeasible_factor_throws();
   test_periodic_wraps_both_faces();
   test_periodic_wraps_single_side_counts_unchanged();
