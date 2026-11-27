@@ -7,10 +7,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# A new push to a PR branch cancels the run it supersedes; main keeps every run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    # Pinned image: the tool versions below (GCC 14, clang 19, gmsh, Boost,
+    # numpy) are those of Ubuntu 24.04. `ubuntu-latest` moves to a newer
+    # release on GitHub's schedule and changes all of them at once.
+    runs-on: ubuntu-24.04
     # Hard cap: a stuck FetchContent download or pathological test
     # shouldn't hold a runner for the GitHub default 6h. Sanitizer builds
     # run several times slower, so they get more headroom.
@@ -41,8 +52,8 @@ jobs:
             cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
             full: false
             timeout: 60
-          # Clang from the LLVM apt repo paired with libstdc++-14, which
-          # provides <print>. A second front end catches argument-order /
+          # Clang 19 from the Ubuntu 24.04 archive (19.1.x), paired with
+          # libstdc++-14, which provides <print>. A second front end catches argument-order /
           # evaluation-order dependence (#76) and clang-only template errors.
           - name: "clang-19 Release (libstdc++-14)"
             cc: clang-19
@@ -76,7 +87,9 @@ jobs:
         with:
           repository: NumSim-Stack/numsim-core
           ref: 61bcb7663ddd8ae9fc3fd239a716a4cacb366e6f  # v1.3.0
-          path: numsim-core
+          # Not `numsim-core`: that is the sibling path rvegen falls back to,
+          # so a missing installed package would go unnoticed.
+          path: numsim-core-src
 
       # GCC 14 for `<print>` (numsim-core needs C++23 lib support); the
       # Clang job reuses its libstdc++-14. libboost-dev for `Boost::headers`.
@@ -89,11 +102,6 @@ jobs:
         run: |
           sudo apt-get update
           if [[ "${{ matrix.cxx }}" == clang* ]]; then
-            wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | \
-              sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
-            echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" | \
-              sudo tee /etc/apt/sources.list.d/llvm.list
-            sudo apt-get update
             sudo apt-get install -y clang-19
           fi
           sudo apt-get install -y g++-14 libstdc++-14-dev ninja-build \
@@ -101,10 +109,23 @@ jobs:
             python3-numpy python3-matplotlib
           sudo apt-get install -y --no-install-recommends gmsh
 
+      - name: Print tool versions
+        run: |
+          cmake --version | head -n1
+          ninja --version
+          ${{ matrix.cxx }} --version | head -n1
+          if [[ "${{ matrix.cxx }}" == clang* ]]; then
+            ${{ matrix.cxx }} -v 2>&1 | grep 'Selected GCC'
+          fi
+          gmsh --version
+          python3 --version
+          python3 -c 'import numpy, matplotlib; print("numpy", numpy.__version__, "matplotlib", matplotlib.__version__)'
+          dpkg-query -W -f='${Package} ${Version}\n' libboost-dev libeigen3-dev nlohmann-json3-dev
+
       # Build + install numsim-core so rvegen finds it with
       # find_package(numsim-core CONFIG), exactly as a downstream user would.
       - name: Build and install numsim-core
-        working-directory: numsim-core
+        working-directory: numsim-core-src
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
@@ -133,7 +154,7 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
           UBSAN_OPTIONS: print_stacktrace=1
-        run: ctest --test-dir build --output-on-failure --parallel 2
+        run: ctest --test-dir build --output-on-failure --no-tests=error --parallel 2
 
       # Install + smoke-consume: verifies the CMake export works
       # end-to-end. A separate consumer project does

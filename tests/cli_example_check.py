@@ -19,7 +19,10 @@ declares, this script verifies the output file itself:
   .svg   valid XML <svg>; 2D: viewBox == domain; >= N shape elements
   .html  contains a script and >= N shapes
   .csv   (statistics) header volume fraction in (0, 1), 3 columns, r
-         increasing, 0 <= S2(r) <= phi, S2 not constant, g(r) >= 0 and not 0
+         increasing, 0 <= S2(r) <= phi, S2 not constant, g(r) >= 0 and not 0;
+         an empty g(r) field is accepted (fewer than two inclusions leave
+         the radial distribution undefined), but not in every row if any
+         row has a value
 
 Voxel ids (.vox / .vtk) are read in one of three modes:
   shapes        ids in 0..N, both matrix and inclusion voxels, at least
@@ -32,12 +35,23 @@ Voxel ids (.vox / .vtk) are read in one of three modes:
                 distinct ids is within 10% of N (N <= n_seeds, also within
                 10%)
 
+Termination target: the achieved fill must reach what the config asks for.
+  volume_fraction       the inclusion fraction, measured by re-running the
+                        config (same seed) with an extra voxel post-process,
+                        must lie in [max(t - 0.02, 0.9 t), 1.3 t + 0.01]
+                        for target t (the voxel estimate and the last shape
+                        placed account for the slack)
+  number_of_inclusions  the CLI's shape count must equal the target; skipped
+                        for the periodic generator, whose count includes
+                        wrap-around copies
+
 N is the shape count the CLI reports. The checks rely on the exit status
 only (no "PASS" line matching), so any failure or crash fails the test.
 Exit code 77 (CTest SKIP_RETURN_CODE) means every other check passed but a
 .geo could not be meshed because gmsh is not available.
 
 Usage: cli_example_check.py --rvegen BIN --examples DIR [--gmsh BIN] CONFIG
+       cli_example_check.py --self-test
 """
 import argparse
 import json
@@ -397,12 +411,18 @@ def check_csv(path):
     rows = [l for l in text.splitlines() if l and not l.startswith("#")]
     if len(rows) < 2:
         fail(f"{path.name}: fewer than 2 data rows")
-    cols = [[float(x) for x in r.split(",")] for r in rows]
-    if any(len(c) != 3 for c in cols):
+    fields = [r.split(",") for r in rows]
+    if any(len(f) != 3 for f in fields):
         fail(f"{path.name}: expected 3 columns r, S2, g")
-    r = [c[0] for c in cols]
-    s2 = [c[1] for c in cols]
-    g = [c[2] for c in cols]
+    if any(not f[0].strip() or not f[1].strip() for f in fields):
+        fail(f"{path.name}: empty r or S2 field")
+    r = [float(f[0]) for f in fields]
+    s2 = [float(f[1]) for f in fields]
+    # g(r) is empty when the pack has fewer than two inclusions.
+    g_all = [float(f[2]) if f[2].strip() else None for f in fields]
+    g = [v for v in g_all if v is not None]
+    if g and len(g) != len(g_all):
+        fail(f"{path.name}: g(r) is empty in {len(g_all) - len(g)} of {len(g_all)} rows")
     if any(b <= a for a, b in zip(r, r[1:])):
         fail(f"{path.name}: r is not strictly increasing")
     # S2(r) is the probability that two points r apart are both inclusion,
@@ -411,18 +431,106 @@ def check_csv(path):
         fail(f"{path.name}: S2(r) outside [0, phi={phi}]")
     if max(s2) - min(s2) <= 1e-9:
         fail(f"{path.name}: S2(r) is constant, statistics are trivial")
-    if min(g) < 0.0 or max(g) <= 0.0:
+    if g and (min(g) < 0.0 or max(g) <= 0.0):
         fail(f"{path.name}: g(r) negative or identically zero")
-    return f"{len(rows)} bins, phi {phi:.3f}"
+    return f"{len(rows)} bins, phi {phi:.3f}" + ("" if g else ", g(r) empty")
+
+
+def fill_window(target):
+    """Accepted range of the achieved inclusion fraction for a target."""
+    return max(target - 0.02, 0.9 * target), 1.3 * target + 0.01
+
+
+def measured_fraction(rvegen, config, work, domain):
+    """Inclusion fraction of the config's RVE, from a voxel grid.
+
+    Runs the config again (the seed fixes the shapes) with its post-processes
+    replaced by one voxel writer, so the number does not depend on which
+    outputs the example happens to write.
+    """
+    three_d = domain[2] > 0
+    n = 96 if three_d else 512
+    derived = dict(config)
+    derived["postprocess"] = [{"type": "voxel", "nx": n, "ny": n, "nz": n if three_d else 1,
+                               "output_path": "fill_check.vox"}]
+    path = work / "fill_check.json"
+    path.write_text(json.dumps(derived))
+    r = subprocess.run([rvegen, str(path)], cwd=work, capture_output=True,
+                       text=True, timeout=900)
+    if r.returncode != 0:
+        fail(f"fill check run exited {r.returncode}\n{r.stdout}{r.stderr}")
+    vals = [int(l) for l in (work / "fill_check.vox").read_text().splitlines()
+            if l.strip() and not l.startswith("#")]
+    if not vals:
+        fail("fill check: empty voxel grid")
+    return sum(1 for v in vals if v > 0) / len(vals)
+
+
+def check_target(rvegen, config, nshapes, work, domain):
+    """The RVE must reach the termination target the config asks for."""
+    term = config.get("termination", {})
+    kind = term.get("type")
+    if kind == "volume_fraction":
+        target = float(term["target_fraction"])
+        got = measured_fraction(rvegen, config, work, domain)
+        lo, hi = fill_window(target)
+        if not lo <= got <= hi:
+            fail(f"volume fraction {got:.4f} not within [{lo:.4f}, {hi:.4f}] "
+                 f"of the target {target} (RVE under- or over-filled)")
+        return f"volume fraction {got:.4f} for target {target}"
+    if kind == "number_of_inclusions" and config.get("generator", {}).get("type") != "periodic":
+        target = int(term["target"])
+        if nshapes != target:
+            fail(f"{nshapes} shapes generated, target is {target}")
+        return f"{nshapes} inclusions for target {target}"
+    return None
+
+
+def self_test():
+    """Checks of the checker: the parts that need no CLI run."""
+    with tempfile.TemporaryDirectory(prefix="rvegen_cli_selftest_") as tmp:
+        csv = Path(tmp) / "s.csv"
+        head = "# volume_fraction = 0.1\n# columns: r, S2(r), g(r)\n"
+
+        def expect(text, ok, what):
+            csv.write_text(head + text)
+            try:
+                check_csv(csv)
+                good = True
+            except SystemExit:
+                good = False
+            if good != ok:
+                print(f"self-test FAILED: {what}")
+                sys.exit(1)
+
+        expect("0.1,0.10,1.0\n0.2,0.05,2.0\n", True, "full rows")
+        expect("0.1,0.10,\n0.2,0.05,\n", True, "empty g(r) in every row")
+        expect("0.1,0.10,\n0.2,0.05,2.0\n", False, "g(r) empty in only some rows")
+        expect("0.1,0.10,0\n0.2,0.05,0\n", False, "g(r) identically zero")
+    lo, hi = fill_window(0.35)
+    if lo > 0.35 or hi < 0.35 or 0.223 >= lo or not lo <= 0.3546 <= hi:
+        print("self-test FAILED: fill window")
+        sys.exit(1)
+    lo, hi = fill_window(0.05)
+    if 0.0261 >= lo or not lo <= 0.0517 <= hi:
+        print("self-test FAILED: fill window at 0.05")
+        sys.exit(1)
+    print("self-test passed")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--rvegen", required=True)
-    ap.add_argument("--examples", required=True)
+    ap.add_argument("--rvegen")
+    ap.add_argument("--examples")
     ap.add_argument("--gmsh", default="")
-    ap.add_argument("config")
+    ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("config", nargs="?")
     a = ap.parse_args()
+    if a.self_test:
+        self_test()
+        return
+    if not (a.rvegen and a.examples and a.config):
+        ap.error("--rvegen, --examples and CONFIG are required")
 
     config_path = Path(a.config).resolve()
     config = json.loads(config_path.read_text())
@@ -449,6 +557,10 @@ def main():
         print(f"{config_path.name}: {nshapes} shapes")
 
         mode = IdMode(config, nshapes)
+        domain = [float(v) for v in config.get("domain_box", [1, 1, 0])] + [0.0]
+        domain = domain[:3]
+        if msg := check_target(str(Path(a.rvegen).resolve()), config, nshapes, work, domain):
+            print(f"  target: {msg}")
         domain = [float(v) for v in config.get("domain_box", [1, 1, 0])] + [0.0]
         domain = domain[:3]
         three_d = domain[2] > 0

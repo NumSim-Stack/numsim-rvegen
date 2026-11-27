@@ -84,13 +84,11 @@ endif()
 # tree (vcpkg / conda-forge / `find_package(rvegen)`) get
 # INSTALL_INTERFACE paths so the CMake config relocates correctly.
 #
-# numsim-core: rvegen depends on numsim-core's headers. The installed
-# rvegen CMake config attempts to find numsim-core via a CMake config,
-# but until numsim-core itself ships one (its own packaging is a
-# separate concern), consumers must put numsim-core's include path on
-# the compiler search path themselves. The rvegen install does NOT
-# bundle numsim-core headers — that would be a relicensing concern
-# and goes against single-source-of-truth packaging.
+# numsim-core: rvegen depends on numsim-core (>= 1.3), found below through
+# its installed CMake package or, as a fallback, a sibling checkout. The
+# rvegen install does NOT bundle numsim-core headers - that would be a
+# relicensing concern and goes against single-source-of-truth packaging;
+# the installed rvegen config re-finds the package via find_dependency.
 #
 # The vendored GTE headers ARE installed alongside rvegen's own
 # headers (separately licenced under Boost; bundling is fine).
@@ -119,12 +117,14 @@ target_compile_features(rvegen_lib INTERFACE cxx_std_23)
 
 # numsim-core: prefer its installed CMake package (target
 # numsim-core::numsim-core, shipped since numsim-core ef6d2ac). Point
-# CMAKE_PREFIX_PATH / numsim-core_DIR at the install prefix. If no package
-# is found, fall back to a sibling checkout (../../numsim-core/include) so
+# CMAKE_PREFIX_PATH / numsim-core_DIR at the install prefix. Version 1.3 is
+# the minimum: it has the lazy static_indexing ids the shape-id guard
+# needs; an older package is treated as not found. If no package is found,
+# fall back to a sibling checkout (../../numsim-core/include) so
 # the historical layout keeps working. When both exist the package wins;
 # if it is stale (e.g. an old install in /usr/local), configure with
 # -DCMAKE_DISABLE_FIND_PACKAGE_numsim-core=ON to use the sibling instead.
-find_package(numsim-core CONFIG QUIET)
+find_package(numsim-core 1.3 CONFIG QUIET)
 set(RVEGEN_NUMSIM_CORE_FROM_PACKAGE OFF)
 set(_rvegen_core_sibling "${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include")
 if(numsim-core_FOUND)
@@ -142,7 +142,8 @@ else()
     message(STATUS "numsim-core: package not found, using sibling ${_rvegen_core_sibling}")
   else()
     message(WARNING
-      "numsim-core not found: no CMake package and no sibling checkout. "
+      "numsim-core >= 1.3 not found: no CMake package (or one that is too "
+      "old) and no sibling checkout. "
       "Install numsim-core and set CMAKE_PREFIX_PATH, or add its include "
       "directory via CMAKE_CXX_FLAGS=-I<path>.")
   endif()
@@ -433,6 +434,25 @@ if(Python3_Interpreter_FOUND)
       TIMEOUT 900 LABELS "cli"
       SKIP_RETURN_CODE 77)
   endforeach()
+
+  # The checker must reject an under-filled RVE: this config stops at
+  # max_attempts 50 far below its volume-fraction target. The test passes
+  # only if the checker reports the shortfall (the regex decides, not the
+  # exit status). cli_check_selftest covers the checker's own parsing
+  # (statistics CSV with an empty g(r), the accepted fill window).
+  add_test(NAME cli_check_rejects_underfill
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py
+            --rvegen $<TARGET_FILE:rvegen>
+            --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/underfilled_polydisperse.json)
+  set_tests_properties(cli_check_rejects_underfill PROPERTIES
+    TIMEOUT 300 LABELS "cli"
+    PASS_REGULAR_EXPRESSION "FAIL: volume fraction [0-9.]+ not within")
+  add_test(NAME cli_check_selftest
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py --self-test)
+  set_tests_properties(cli_check_selftest PROPERTIES LABELS "cli")
 
   # The README type catalogue is generated from `rvegen --list-types`.
   add_test(NAME readme_type_catalogue

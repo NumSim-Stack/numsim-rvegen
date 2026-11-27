@@ -1,14 +1,16 @@
 # rvegen
 
-JSON-driven Representative Volume Element (RVE) generator for FFT- and FEM-based
-computational homogenization.
+JSON-driven Representative Volume Element (RVE) generator: it places shapes in
+a box and writes the geometry (gmsh `.geo`, voxel grids, VTK, SVG, three.js)
+plus geometric statistics. It stops there: no homogenization, effective
+properties or material models are computed or described.
 
 The library produces synthetic microstructures — random packings of circles,
 ellipses, spheres, rectangles, boxes, fibre tubes, mesh-defined inclusions and
 other shapes — fully described by a JSON config
 file. The output is either a gmsh `.geo` script (for FEM meshing) or a regular
-voxel grid (for FFT solvers like Moulinec–Suquet), plus VTK, SVG, three.js and
-statistics outputs for inspection and analysis.
+voxel grid (for FFT solvers), plus VTK, SVG, three.js and statistics outputs
+for inspection and analysis.
 
 The architecture is layered, header-only, and designed for extension: every
 generator strategy, distribution, shape input, termination predicate, and
@@ -30,7 +32,16 @@ More pictures, one per config in `examples/`, are in the
 ## Quick start
 
 ```bash
-cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14
+# 1. Dependencies: Boost headers, Eigen, nlohmann_json (e.g. Debian/Ubuntu:
+#    libboost-dev libeigen3-dev nlohmann-json3-dev) and numsim-core >= 1.3,
+#    installed to a prefix:
+git clone --branch v1.3.0 https://github.com/NumSim-Stack/numsim-core.git
+cmake -S numsim-core -B numsim-core/build -DCMAKE_CXX_COMPILER=g++-14 \
+      -DNUMSIM_CORE_BUILD_TESTS=OFF -DNUMSIM_CORE_BUILD_EXAMPLES=OFF
+cmake --install numsim-core/build --prefix "$HOME/numsim-deps"
+
+# 2. rvegen:
+cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_PREFIX_PATH="$HOME/numsim-deps"
 cmake --build build
 cd build && ./rvegen ../examples/circles_in_unit_box.json
 # -> rvegen: generated 10 shapes
@@ -48,8 +59,9 @@ The compiler must provide C++23 `<print>` (GCC 14+, or Clang 17+ with a recent
 libc++/libstdc++). With a system default of GCC 13 the configure step stops at
 the `<print>` check, hence `-DCMAKE_CXX_COMPILER=g++-14` above.
 
-rvegen depends on [numsim-core](https://github.com/NumSim-Stack/numsim-core).
-CMake first looks for its installed package (`find_package(numsim-core CONFIG)`;
+rvegen depends on [numsim-core](https://github.com/NumSim-Stack/numsim-core)
+1.3 or newer (older versions are not accepted).
+CMake first looks for its installed package (`find_package(numsim-core 1.3 CONFIG)`;
 set `CMAKE_PREFIX_PATH` to its install prefix) and falls back to a sibling
 checkout at `../../numsim-core/include` relative to this repository. If both
 exist the package wins; `-DCMAKE_DISABLE_FIND_PACKAGE_numsim-core=ON` forces
@@ -119,7 +131,7 @@ declared by its static `parameters()` method):
 |                 | `vtk_legacy`               | `output_path`, `nx`, `ny`, `nz` (ParaView-readable) |
 |                 | `svg`                      | `output_path`, `canvas_width` (2D picture) |
 |                 | `svg_3d`                   | `output_path`, `canvas_width` (projected 3D picture) |
-|                 | `three_js`                 | `output_path` (self-contained HTML viewer) |
+|                 | `three_js`                 | `output_path` (HTML viewer; loads three.js from unpkg.com, so the page needs network access) |
 |                 | `statistics`               | `output_path` (CSV), `nx`, `ny`, `nbins`: two-point correlation S2(r) and radial distribution g(r) |
 
 The cross-references in shape inputs (e.g. `"pos_x_dist": "uniform_x"`) refer
@@ -149,14 +161,16 @@ path resolves, e.g. `cd examples && ../build/rvegen mesh_inclusions_3d.json`.
 
 ## Adding a new type
 
-The library is open for extension. To add (say) a new shape input type
+The library is open for extension; [docs/extending.md](docs/extending.md) walks
+through adding a shape, a generator and a post-process. To add (say) a new shape input type
 `triangle_input`:
 
 1. **Library code** — implement the shape if it doesn't exist
-   (`include/rvegen/shapes/triangle.h`), add `collision_details(triangle, …)`
-   overloads in `intersection/collision_details.h` for every existing shape
-   pair (the compiler tells you which are missing), and implement
-   `is_inside(point)`.
+   (`include/rvegen/shapes/triangle.h`) by deriving from
+   `numsim_core::static_indexing<triangle<T>, shape_base<T>>` and implementing
+   the `shape_base<T>` virtuals, `is_inside(point)` included. Precise collision
+   pairs are optional (`registry/register_collisions.h`); unregistered pairs
+   use the bounding-box overlap test.
 
 2. **Input** — `include/rvegen/inputs/triangle_input.h` with:
    - direct C++ ctor
@@ -276,7 +290,7 @@ include/rvegen/
   statistics/               S2(r) / g(r) microstructure statistics
   visualization/            mesh_dispatcher + per-shape triangle meshes
   io/                       STL / PLY mesh readers
-  phase/                    phase tags for voxel / homogenization output
+  phase/                    phase tags for voxel output
   metadata/                 library info
   schema/                   field_list schema helper
   registry/                 register_*.h per category + build_from_json helper
@@ -300,13 +314,16 @@ tests/                      smoke tests, CLI example checks; all under ctest
 | `RVEGEN_BUILD_DOCS`          | `OFF`   | Doxygen API reference (`docs` target)     |
 | `RVEGEN_BUILD_PYTHON`        | `OFF`   | pybind11 bindings under `python/`         |
 
-The default build needs Boost headers, Eigen, nlohmann_json (the last two are
-fetched if not installed) and numsim-core.
+The default build needs Boost headers, Eigen, nlohmann_json and numsim-core
+(>= 1.3), all installed. CMake does fall back to downloading Eigen or
+nlohmann_json when they are missing, but the install/export rules then fail at
+generate time, so install them (the quick start lists the packages).
 
 ### Tests
 
 `ctest --test-dir build` runs the unit and smoke tests plus one
-`cli_example_<name>` test per config in `examples/`. When Python 3 is found,
+`cli_check_<name>` test per config in `examples/` (select them with
+`ctest -R cli_check`). When Python 3 is found,
 those run `tests/cli_example_check.py`, which executes the CLI and inspects
 every written file: voxel and VTK headers against their value counts, SVG as
 XML, statistics CSV for non-trivial S2/g, and `.geo` files through gmsh when it
@@ -319,9 +336,9 @@ builds with Clang.
 
 ## License
 
-GPL-3.0-or-later, with commercial licensing available on request (see the
-`LICENSE` file; the package metadata under `packaging/` and `python/` declares
-the same SPDX identifier).
+The licence has not been chosen yet, and the repository contains no licence
+file. The SPDX identifier in the package metadata under `packaging/` and
+`python/` is not backed by one and should be treated as unsettled.
 
 ---
 
