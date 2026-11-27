@@ -6,8 +6,8 @@
 // header is empty, keeping rvegen header-only with no extra dependency.
 //
 // Voro++ computes each cell by incremental plane cutting inside a block
-// grid, so it scales roughly linearly in the seed count (vs O(N^5) for the
-// in-house enumeration). Output is converted to the unchanged public
+// grid, so it scales roughly linearly in the seed count (vs ~N^4 for the
+// in-house enumeration, which is capped at a few hundred seeds). Output is converted to the unchanged public
 // `voronoi_cell` shape; the voronoi_cell ctor re-derives outward normals and
 // face winding, so Voro++'s own face orientation convention does not matter.
 //
@@ -23,7 +23,11 @@
 // the box), matching the in-house periodic backend. Weighted (Laguerre)
 // mode uses voro::container_poly with radius r_i = sqrt(w_i - min w), which
 // is the same power diagram (weights are only defined up to a constant).
-// A weighted seed whose cell vanishes yields an empty voronoi_cell.
+// A weighted seed whose power cell vanishes (compute_cell reports no cell)
+// yields an empty voronoi_cell placeholder (volume 0), the same convention
+// as the in-house backend. A seed that Voro++ never stored (put() drops it
+// silently) is NOT that: it is an error, detected by comparing the stored
+// particle count with the seed count.
 
 #ifdef RVEGEN_WITH_VORO_PP
 
@@ -92,6 +96,17 @@ build_voronoi_cells_voro_pp(T Lx, T Ly, T Lz,
     }
   }
 
+  // put() has no return value and silently drops a point it cannot place.
+  // That is a backend failure, distinct from a power cell that legitimately
+  // vanishes (handled below by an empty placeholder).
+  const auto stored = static_cast<std::size_t>(
+      weighted ? poly.total_particles() : mono.total_particles());
+  if (stored != n) {
+    throw std::runtime_error{
+        "voronoi_generator_3d (voro++): backend dropped " +
+        std::to_string(n - stored) + " seed(s) on insertion"};
+  }
+
   std::vector<std::unique_ptr<shape_base<T>>> out(n);
   voro::voronoicell cell;
   std::vector<double> verts;
@@ -134,7 +149,7 @@ build_voronoi_cells_voro_pp(T Lx, T Ly, T Lz,
   if (weighted) run(poly); else run(mono);
   if (weighted) {
     for (auto& c : out) {
-      if (!c) c = std::make_unique<voronoi_cell<T>>();   // vanished cell
+      if (!c) c = std::make_unique<voronoi_cell<T>>();   // vanished power cell
     }
   } else if (produced != n) {
     throw std::runtime_error{

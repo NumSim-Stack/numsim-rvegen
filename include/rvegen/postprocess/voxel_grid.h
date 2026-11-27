@@ -62,7 +62,9 @@ sample_voxel_grid_with_ids(
 // Sample a regular voxel grid: for each voxel centre point, ask each shape
 // in turn whether the point is inside; mark with the (1-based) shape index
 // or 0 if no shape contains it. First-match wins; later shapes don't
-// overwrite earlier ones.
+// overwrite earlier ones. A shape whose info() has an integer "grain_id"
+// (set by voronoi_to_shapes) is marked with grain_id + 1 instead, so the
+// periodic wrap pieces of one grain share that grain's value.
 //
 // 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz_eff = 1).
 // Returns the flat array in (k, j, i) order — k is the slowest-varying axis.
@@ -73,7 +75,8 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::size_t nx, std::size_t ny, std::size_t nz) {
   std::vector<phase_id> shape_to_id(shapes.size());
   for (std::size_t s = 0; s < shapes.size(); ++s) {
-    shape_to_id[s] = static_cast<phase_id>(s + 1);
+    shape_to_id[s] = static_cast<phase_id>(
+        shapes[s]->info().template get_or<std::size_t>("grain_id", s) + 1);
   }
   return detail::sample_voxel_grid_with_ids(
       shapes, domain_box, nx, ny, nz, shape_to_id);

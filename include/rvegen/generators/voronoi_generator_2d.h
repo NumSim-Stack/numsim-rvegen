@@ -61,6 +61,8 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "voronoi_seed_validation.h"
@@ -85,19 +87,40 @@ public:
       throw std::runtime_error{
           "voronoi_generator_2d: weights must be empty or one per seed"};
     }
-    if (Lx <= T{0} || Ly <= T{0}) {
-      throw std::runtime_error{
-          "voronoi_generator_2d: Lx and Ly must both be positive"};
+    for (auto const& [name, v] :
+         std::array<std::pair<char const*, T>, 2>{{{"Lx", Lx}, {"Ly", Ly}}}) {
+      if (!std::isfinite(v) || !(v > T{0})) {
+        throw std::invalid_argument{
+            std::string{"voronoi_generator_2d: "} + name +
+            " must be finite and positive (got " + std::to_string(v) + ")"};
+      }
     }
     if (_seeds.empty()) {
       throw std::runtime_error{
           "voronoi_generator_2d: at least one seed required"};
+    }
+    for (std::size_t i = 0; i < _seeds.size(); ++i) {
+      if (!std::isfinite(_seeds[i][0]) || !std::isfinite(_seeds[i][1])) {
+        throw std::invalid_argument{
+            "voronoi_generator_2d: seeds[" + std::to_string(i) +
+            "] has a non-finite coordinate"};
+      }
+    }
+    for (std::size_t i = 0; i < _weights.size(); ++i) {
+      if (!std::isfinite(_weights[i])) {
+        throw std::invalid_argument{"voronoi_generator_2d: weights[" +
+                                    std::to_string(i) + "] is not finite"};
+      }
     }
     detail::validate_voronoi_seeds<T, 2>({Lx, Ly}, _seeds,
                                          "voronoi_generator_2d", periodic);
   }
 
   [[nodiscard]] bool periodic() const noexcept { return _periodic; }
+
+  [[nodiscard]] std::array<T, 3> box() const noexcept {
+    return {_Lx, _Ly, T{0}};
+  }
 
   [[nodiscard]] std::size_t seed_count() const noexcept {
     return _seeds.size();
@@ -237,16 +260,24 @@ template <typename T>
 // One-line bridge from voronoi_generator_2d into the rvegen shape
 // pipeline: build the cells, wrap each as a convex_polygon, return
 // the shape_vector that the standard writers (voxel, gmsh, svg)
-// consume. Always returns one shape per seed, in seed order (#79):
+// consume. The first seed_count() entries are the cells in seed order (#79):
 // a numerically collapsed (< 3 vertex) cell becomes an empty
 // convex_polygon placeholder (area 0, contains nothing) so downstream
 // per-grain data indexed by seed stays aligned.
+//
+// For a periodic generator a cell that sticks out of the box is built whole,
+// so its wrapped pieces (translated copies, generate_periodic_wraps) are
+// appended after the primaries: without them part of the box has no owner
+// (about 27 % of the voxels in a typical 8-seed case). Every piece carries
+// info "grain_id" = its seed index, so all pieces of one grain share the
+// grain's id (sample_voxel_grid honours it).
 //
 // Lives in its own header so callers can pull in the helper without
 // dragging in shape_base / convex_polygon transitively when they
 // only want the raw polygon output.
 
 #include "../shapes/convex_polygon.h"
+#include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
 
 namespace rvegen {
@@ -257,12 +288,21 @@ voronoi_to_shapes(voronoi_generator_2d<T> const& gen) {
   auto cells = gen.build();
   std::vector<std::unique_ptr<shape_base<T>>> out;
   out.reserve(cells.size());
-  for (auto& v : cells) {
+  for (std::size_t i = 0; i < cells.size(); ++i) {
+    auto& v = cells[i];
     if (v.size() < 3) {
       out.push_back(std::make_unique<convex_polygon<T>>());   // placeholder
-      continue;
+    } else {
+      out.push_back(std::make_unique<convex_polygon<T>>(std::move(v)));
     }
-    out.push_back(std::make_unique<convex_polygon<T>>(std::move(v)));
+    out.back()->info().set("grain_id", i);
+  }
+  if (gen.periodic()) {
+    const std::size_t n = out.size();
+    for (std::size_t i = 0; i < n; ++i) {
+      auto wraps = generate_periodic_wraps<T>(*out[i], gen.box());
+      for (auto& w : wraps) out.push_back(std::move(w));
+    }
   }
   return out;
 }

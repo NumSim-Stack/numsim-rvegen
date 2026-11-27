@@ -25,8 +25,10 @@
 //   5. Construct a `voronoi_cell` from the (vertices, faces) pair.
 //
 // Complexity: O(N · (N + 5)³) vertex-triplets, each O(N) feasibility
-// test ≈ O(N⁵). For N ≤ 50 seeds this is well under a second; beyond
-// that, switch to a real Voronoi library (Voro++, CGAL).
+// test ≈ O(N⁵) in the worst case (measured ~N⁴ for random seeds). For
+// N ≤ 50 seeds this is well under a second; the constructor rejects more
+// than voronoi_in_house_max_seeds(periodic) seeds (see there for timings):
+// switch to Voro++ for larger N.
 //
 // Backends (#70):
 //   * `voronoi_backend::in_house` (default) — the enumeration above.
@@ -83,8 +85,10 @@
 
 #include <Eigen/Dense>
 
+#include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
 #include "../shapes/voronoi_cell.h"
+#include "rve_generator_base.h"   // progress_options (cancel hook)
 #include "voronoi_backend_voropp.h"
 #include "voronoi_seed_validation.h"
 
@@ -101,6 +105,55 @@ enum class voronoi_backend { in_house, voro_pp };
   return false;
 #endif
 }
+
+// Largest seed count accepted by the in-house backend. Measured cost of one
+// tessellation of random seeds in a unit box:
+//   bounded:  N = 100 ~ 1 s, N = 200 ~ 17 s, N = 300 ~ 85 s (grows ~N^4);
+//   periodic: N = 400 ~ 3 s, N = 1600 ~ 13 s, N = 3200 ~ 67 s (the image
+//             pruning keeps it roughly N^1.5).
+// The caps sit near one minute per build; the grain-size iteration repeats
+// the tessellation up to 1000 times, so use the Voro++ backend for more
+// seeds.
+[[nodiscard]] constexpr std::size_t
+voronoi_in_house_max_seeds(bool periodic) noexcept {
+  return periodic ? 3000 : 300;
+}
+
+// Thrown by build() when progress_options::cancel returned true.
+class voronoi_cancelled : public std::runtime_error {
+public:
+  voronoi_cancelled() : std::runtime_error{"voronoi tessellation cancelled"} {}
+};
+
+// Relative tolerance of the volume-sum check that every build() performs:
+// |sum of cell volumes - box volume| <= this * box volume.
+inline constexpr double voronoi_volume_sum_tol = 1e-6;
+
+namespace detail {
+
+// Throws std::runtime_error (naming the backend and the mismatch) unless the
+// cell volumes sum to `box_volume` within voronoi_volume_sum_tol (relative).
+template <typename T>
+void check_voronoi_volume_sum(
+    std::vector<std::unique_ptr<shape_base<T>>> const& cells, T box_volume,
+    char const* backend, bool periodic, bool weighted) {
+  long double sum = 0;
+  for (auto const& c : cells) sum += c->volume();
+  const long double box = box_volume;
+  const long double rel = std::abs(sum - box) / box;
+  if (!(rel <= static_cast<long double>(voronoi_volume_sum_tol))) {
+    throw std::runtime_error{
+        std::string{"voronoi_generator_3d ("} + backend +
+        (periodic ? ", periodic" : "") + (weighted ? ", weighted" : "") +
+        "): cell volumes sum to " + std::to_string(static_cast<double>(sum)) +
+        " but the box volume is " + std::to_string(static_cast<double>(box)) +
+        " (relative mismatch " + std::to_string(static_cast<double>(rel)) +
+        ", tolerance " + std::to_string(voronoi_volume_sum_tol) +
+        "); the tessellation is not trustworthy"};
+  }
+}
+
+} // namespace detail
 
 template <typename T = double>
 class voronoi_generator_3d {
@@ -123,19 +176,53 @@ public:
           "voronoi_generator_3d: Voro++ backend requested but rvegen was "
           "built without RVEGEN_WITH_VORO_PP"};
     }
-    if (Lx <= T{0} || Ly <= T{0} || Lz <= T{0}) {
-      throw std::runtime_error{
-          "voronoi_generator_3d: Lx, Ly, Lz must all be positive"};
+    const std::array<std::pair<char const*, T>, 3> extents{
+        {{"Lx", Lx}, {"Ly", Ly}, {"Lz", Lz}}};
+    for (auto const& [name, v] : extents) {
+      if (!std::isfinite(v) || !(v > T{0})) {
+        throw std::invalid_argument{
+            std::string{"voronoi_generator_3d: "} + name +
+            " must be finite and positive (got " + std::to_string(v) + ")"};
+      }
     }
     if (_seeds.empty()) {
       throw std::runtime_error{
           "voronoi_generator_3d: at least one seed required"};
+    }
+    for (std::size_t i = 0; i < _seeds.size(); ++i) {
+      for (std::size_t k = 0; k < 3; ++k) {
+        if (!std::isfinite(_seeds[i][k])) {
+          throw std::invalid_argument{
+              "voronoi_generator_3d: seeds[" + std::to_string(i) +
+              "] has a non-finite coordinate"};
+        }
+      }
+    }
+    for (std::size_t i = 0; i < _weights.size(); ++i) {
+      if (!std::isfinite(_weights[i])) {
+        throw std::invalid_argument{"voronoi_generator_3d: weights[" +
+                                    std::to_string(i) + "] is not finite"};
+      }
+    }
+    if (backend == voronoi_backend::in_house &&
+        _seeds.size() > voronoi_in_house_max_seeds(periodic)) {
+      throw std::invalid_argument{
+          "voronoi_generator_3d: " + std::to_string(_seeds.size()) +
+          " seeds exceed the limit of " +
+          std::to_string(voronoi_in_house_max_seeds(periodic)) +
+          (periodic ? " (periodic)" : " (bounded)") +
+          " for the in-house backend (its cost grows steeply); use the Voro++ "
+          "backend (voronoi_backend::voro_pp, RVEGEN_WITH_VORO_PP=ON)"};
     }
     detail::validate_voronoi_seeds<T, 3>({Lx, Ly, Lz}, _seeds,
                                          "voronoi_generator_3d", periodic);
   }
 
   [[nodiscard]] bool periodic() const noexcept { return _periodic; }
+
+  [[nodiscard]] std::array<T, 3> box() const noexcept {
+    return {_Lx, _Ly, _Lz};
+  }
 
   [[nodiscard]] std::size_t seed_count() const noexcept {
     return _seeds.size();
@@ -171,20 +258,30 @@ public:
 
   // Build one voronoi_cell per seed. Cell index matches seed index.
   // In weighted mode some cells may be empty placeholders; check with
-  // empty_cell_indices() or use build_checked().
-  [[nodiscard]] shape_vector build() const {
+  // empty_cell_indices() or use build_checked(). After every tessellation
+  // (either backend, periodic or not, weighted or not) the cell volumes
+  // must sum to the box volume within voronoi_volume_sum_tol (relative);
+  // otherwise std::runtime_error names the backend and the mismatch
+  // instead of returning overlapping or missing cells. `opts.cancel` is
+  // polled once per cell (in-house) / before the call (Voro++); a true
+  // answer throws voronoi_cancelled.
+  [[nodiscard]] shape_vector build(progress_options const& opts = {}) const {
+    shape_vector out;
+    if (opts.cancel && opts.cancel()) throw voronoi_cancelled{};
 #ifdef RVEGEN_WITH_VORO_PP
     if (_backend == voronoi_backend::voro_pp) {
-      return detail::build_voronoi_cells_voro_pp<T>(_Lx, _Ly, _Lz, _seeds,
-                                                    _periodic, _weights);
+      out = detail::build_voronoi_cells_voro_pp<T>(_Lx, _Ly, _Lz, _seeds,
+                                                   _periodic, _weights);
+      check_volume_sum(out);
+      return out;
     }
 #endif
-    shape_vector out;
     out.reserve(_seeds.size());
-
     for (std::size_t i = 0; i < _seeds.size(); ++i) {
+      if (opts.cancel && opts.cancel()) throw voronoi_cancelled{};
       out.push_back(build_cell(i));
     }
+    check_volume_sum(out);
     return out;
   }
 
@@ -194,6 +291,13 @@ private:
   voronoi_backend _backend;
   bool _periodic;
   std::vector<T> _weights;   // empty = plain Voronoi
+
+  void check_volume_sum(shape_vector const& cells) const {
+    detail::check_voronoi_volume_sum<T>(
+        cells, _Lx * _Ly * _Lz,
+        _backend == voronoi_backend::voro_pp ? "voro_pp" : "in_house",
+        _periodic, !_weights.empty());
+  }
 
   // Half-space: A·x + B·y + C·z ≤ D with a UNIT normal (A, B, C), so D is
   // a signed distance and all tolerances are plain lengths.
@@ -333,6 +437,7 @@ private:
     struct candidate {
       Eigen::Vector3<T> point;
       std::array<std::size_t, 3> on_planes;
+      T err;   // roundoff bound of the 3x3 solve, ~eps*L/|det|
     };
     std::vector<candidate> cands;
     // Distance tolerance, relative to the domain size.
@@ -349,10 +454,13 @@ private:
           rhs << hs[a].D, hs[b].D, hs[c].D;
           Eigen::PartialPivLU<Eigen::Matrix3<T>> lu{M};
           // Unit normals → |det| is a dimensionless sine-volume.
-          if (std::abs(M.determinant()) < T{1e-10}) {
+          const T det = std::abs(M.determinant());
+          if (det < T{1e-10}) {
             continue;   // parallel / coplanar — no unique intersection
           }
           const Eigen::Vector3<T> x = lu.solve(rhs);
+          const T err = T{64} * std::numeric_limits<T>::epsilon() *
+                        std::max({_Lx, _Ly, _Lz}) / det;
           // Feasibility: all half-spaces satisfied within tolerance.
           bool feasible = true;
           for (std::size_t k = 0; k < H; ++k) {
@@ -361,7 +469,7 @@ private:
             if (lhs > hs[k].D + tol) { feasible = false; break; }
           }
           if (!feasible) continue;
-          cands.push_back({x, {a, b, c}});
+          cands.push_back({x, {a, b, c}, err});
         }
       }
     }
@@ -376,14 +484,19 @@ private:
     // Deduplicate vertices that came from different triplets but
     // landed at the same point (a vertex on 4+ half-spaces, e.g.
     // a corner of the bounding box). Use L2 distance with a small
-    // tolerance.
+    // tolerance PLUS the roundoff bound of the two solves: a triple of
+    // nearly parallel bisectors (two close seeds) is solved with error
+    // ~eps/|det|, far above the fixed tolerance, so its copies of one
+    // vertex would otherwise stay apart and corrupt the face loops (the
+    // periodic cell of a third seed lost up to 10 % of its volume).
     std::vector<Eigen::Vector3<T>> verts;
     std::vector<std::vector<std::size_t>> vert_planes;   // which planes pass through each unique vertex
+    std::vector<T> vert_err;
     const T merge_tol = tol;
     for (auto const& c : cands) {
       bool dup = false;
       for (std::size_t v = 0; v < verts.size(); ++v) {
-        if ((verts[v] - c.point).norm() < merge_tol) {
+        if ((verts[v] - c.point).norm() < merge_tol + c.err + vert_err[v]) {
           // Add this triplet's planes to the existing vertex.
           for (auto p : c.on_planes) {
             if (std::find(vert_planes[v].begin(), vert_planes[v].end(), p)
@@ -398,6 +511,7 @@ private:
       if (!dup) {
         verts.push_back(c.point);
         vert_planes.emplace_back(c.on_planes.begin(), c.on_planes.end());
+        vert_err.push_back(c.err);
       }
     }
 
@@ -460,5 +574,29 @@ private:
                                               std::move(faces));
   }
 };
+
+// Cells as a shape_vector ready for the standard writers (voxel, gmsh, ...).
+// The first seed_count() entries are the cells in seed order. For a periodic
+// generator a cell that sticks out of the box is returned whole by build(),
+// so its wrapped pieces (translated copies, see generate_periodic_wraps) are
+// appended after them: without them part of the box has no owner. Every
+// piece carries info "grain_id" = its seed index, so all pieces of one grain
+// share the grain's id (sample_voxel_grid honours it).
+template <typename T = double>
+[[nodiscard]] inline std::vector<std::unique_ptr<shape_base<T>>>
+voronoi_to_shapes(voronoi_generator_3d<T> const& gen) {
+  auto shapes = gen.build();
+  for (std::size_t i = 0; i < shapes.size(); ++i) {
+    shapes[i]->info().set("grain_id", i);
+  }
+  if (gen.periodic()) {
+    const std::size_t n = shapes.size();
+    for (std::size_t i = 0; i < n; ++i) {
+      auto wraps = generate_periodic_wraps<T>(*shapes[i], gen.box());
+      for (auto& w : wraps) shapes.push_back(std::move(w));
+    }
+  }
+  return shapes;
+}
 
 } // namespace rvegen

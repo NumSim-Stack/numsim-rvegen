@@ -316,9 +316,14 @@ PYBIND11_MODULE(_core, m) {
   // outside the box.
   m.def("voro_pp_available", &rvegen::voro_pp_available,
         "True if rvegen was built with the Voro++ backend.");
-  // "auto" (default) picks Voro++ when the build has it (orders of
-  // magnitude faster than the O(N^2)-per-cell in-house tessellator for
-  // N beyond a few dozen) and falls back to the in-house backend.
+  // "auto" (default) picks Voro++ when the module was built with it
+  // (RVEGEN_WITH_VORO_PP; roughly linear in N) and otherwise falls back to
+  // the in-house backend. The in-house backend is brute force: one bounded
+  // tessellation costs ~N^4 (N=100 about 1 s, N=300 about 85 s), a
+  // periodic one ~N^1.5 (N=3200 about 67 s); it refuses more than 300
+  // (bounded) / 3000 (periodic) seeds with an error pointing to Voro++.
+  // python/CMakeLists.txt does not enable Voro++, so a default Python
+  // build resolves "auto" to the in-house backend.
   auto parse_backend = [](std::string const& name) {
     if (name == "auto") {
       return rvegen::voro_pp_available() ? rvegen::voronoi_backend::voro_pp
@@ -388,7 +393,8 @@ PYBIND11_MODULE(_core, m) {
           rvegen::grain_size_result<double> r;
           {
             // Pure C++ from here (many tessellations): let other Python
-            // threads run, and let Ctrl-C be handled between calls.
+            // threads run. Ctrl-C is NOT delivered until the call returns
+            // (no PyErr_CheckSignals is wired to progress_options::cancel).
             py::gil_scoped_release release;
             std::mt19937 eng{rng_seed};
             r = rvegen::lognormal_grain_seeds_3d<double>(

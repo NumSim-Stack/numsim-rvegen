@@ -37,6 +37,19 @@
 // times) and the best attempt is kept. The result ALWAYS reports
 // `converged`, `max_rel_volume_error` and `empty_cells`: check `converged`
 // before trusting the grain-size distribution.
+//
+// Limits (invalid_argument is thrown up front for requests outside them):
+//   * the box must hold at least 2 mean-sized grains (V_box / E[V_grain] >=
+//     2); a smaller box cannot reproduce the requested distribution at all;
+//   * with the in-house backend the grain count is capped at
+//     voronoi_in_house_max_seeds(periodic) (300 bounded, 3000 periodic;
+//     its cost grows steeply); use voro_pp for more grains;
+//   * convergence is only expected for moderate sigma (about <= 0.8): for
+//     sigma near 1 the weight limiter cannot keep every cell alive and the
+//     result is flagged `converged = false`.
+// `progress_options::cancel` is polled once per tessellated cell and once
+// per weight iteration; a true answer returns the best attempt so far with
+// `cancelled = true` (and `converged = false`).
 
 #include <algorithm>
 #include <array>
@@ -48,6 +61,7 @@
 #include <random>
 #include <vector>
 
+#include "rve_generator_base.h"
 #include "voronoi_generator_3d.h"
 
 namespace rvegen {
@@ -63,6 +77,7 @@ struct grain_size_result {
   bool converged{false};            // max_rel_volume_error <= tolerance
   std::size_t empty_cells{};        // cells with zero volume in the result
   std::size_t restarts{};           // fresh-seed restarts used (0 = first try)
+  bool cancelled{false};            // progress_options::cancel stopped the run
 };
 
 // Equivalent sphere diameter of volume v.
@@ -113,18 +128,47 @@ template <typename T = double, typename Engine>
     T Lx, T Ly, T Lz, T mean_diameter, T sigma_ln, Engine& engine,
     voronoi_backend backend = voronoi_backend::in_house, bool periodic = true,
     T tolerance = T{0.01}, std::size_t max_iterations = 1000,
-    std::size_t max_restarts = 2) {
-  if (mean_diameter <= T{0} || sigma_ln < T{0}) {
+    std::size_t max_restarts = 2, progress_options const& opts = {}) {
+  if (!(mean_diameter > T{0}) || !std::isfinite(mean_diameter) ||
+      !(sigma_ln >= T{0}) || !std::isfinite(sigma_ln)) {
     throw std::runtime_error{
         "lognormal_grain_seeds_3d: mean_diameter > 0 and sigma_ln >= 0 required"};
+  }
+  for (T e : {Lx, Ly, Lz}) {
+    if (!std::isfinite(e) || !(e > T{0})) {
+      throw std::invalid_argument{
+          "lognormal_grain_seeds_3d: box extents must be finite and positive"};
+    }
   }
   constexpr T pi = std::numbers::pi_v<T>;
   const T V = Lx * Ly * Lz;
   const T mu = std::log(mean_diameter) - sigma_ln * sigma_ln / T{2};
   const T mean_v = pi / T{6} * std::exp(T{3} * mu + T{4.5} * sigma_ln * sigma_ln);
-  const auto n = static_cast<std::size_t>(std::max(T{2}, std::round(V / mean_v)));
+  const T implied = V / mean_v;   // grains of the requested mean size in the box
+  if (!(implied >= T{2})) {
+    throw std::invalid_argument{
+        "lognormal_grain_seeds_3d: requested mean diameter " +
+        std::to_string(mean_diameter) + " (sigma_ln " +
+        std::to_string(sigma_ln) + ") in a box " + std::to_string(Lx) + " x " +
+        std::to_string(Ly) + " x " + std::to_string(Lz) + " implies " +
+        std::to_string(implied) +
+        " grains; at least 2 are needed. Use a smaller mean diameter or a "
+        "larger box"};
+  }
+  const auto n = static_cast<std::size_t>(std::round(implied));
+  if (backend == voronoi_backend::in_house &&
+      n > voronoi_in_house_max_seeds(periodic)) {
+    throw std::invalid_argument{
+        "lognormal_grain_seeds_3d: the request implies " + std::to_string(n) +
+        " grains, above the limit of " +
+        std::to_string(voronoi_in_house_max_seeds(periodic)) +
+        " for the in-house backend (its cost grows steeply); use the Voro++ "
+        "backend (voronoi_backend::voro_pp, RVEGEN_WITH_VORO_PP=ON)"};
+  }
 
   grain_size_result<T> res;
+  // TODO(#130): std::lognormal_distribution / uniform_real_distribution give
+  // different streams per standard library; switch to the portable samplers.
   std::lognormal_distribution<T> dist{mu, sigma_ln};
   std::uniform_real_distribution<T> u{T{0}, T{1}};
   std::vector<T> vt(n);
@@ -138,6 +182,7 @@ template <typename T = double, typename Engine>
   for (auto v : vt) res.target_diameters.push_back(equivalent_diameter(v));
 
   const std::array<T, 3> L{Lx, Ly, Lz};
+  bool cancelled = false;
   grain_size_result<T> best;
   best.target_diameters = res.target_diameters;
   best.max_rel_volume_error = std::numeric_limits<T>::infinity();
@@ -149,6 +194,7 @@ template <typename T = double, typename Engine>
   for (std::size_t attempt = 0; attempt <= max_restarts; ++attempt) {
     grain_size_result<T> cur;
     cur.target_diameters = res.target_diameters;
+    cur.max_rel_volume_error = std::numeric_limits<T>::infinity();
     for (std::size_t i = 0; i < n; ++i) {
       cur.seeds.push_back({u(engine) * Lx, u(engine) * Ly, u(engine) * Lz});
     }
@@ -164,7 +210,13 @@ template <typename T = double, typename Engine>
     for (std::size_t it = 0; it <= max_iterations; ++it) {
       voronoi_generator_3d<T> gen{Lx, Ly, Lz, cur.seeds, backend, periodic,
                                   cur.weights};
-      auto cells = gen.build();
+      typename voronoi_generator_3d<T>::shape_vector cells;
+      try {
+        cells = gen.build(opts);
+      } catch (voronoi_cancelled const&) {
+        cancelled = true;
+        break;
+      }
       T err{0};
       for (std::size_t i = 0; i < n; ++i) {
         vol[i] = cells[i]->volume();
@@ -174,6 +226,7 @@ template <typename T = double, typename Engine>
       cur.iterations = it;
       if (err <= tolerance) { cur.converged = true; break; }
       if (it == max_iterations) break;
+      if (opts.cancel && opts.cancel()) { cancelled = true; break; }
       // Volume responds to a weight change roughly as dV = 3 s dw, s = size.
       for (std::size_t i = 0; i < n; ++i) {
         const T s = std::cbrt(vt[i]);
@@ -197,6 +250,12 @@ template <typename T = double, typename Engine>
         }
       }
     }
+    if (cancelled) {
+      // `cur` was interrupted mid-evaluation: keep the best finished attempt
+      // (or, if none finished, the seeds/weights reached so far).
+      if (best.seeds.empty()) best = std::move(cur);
+      break;
+    }
     cur.diameters.resize(n);
     for (std::size_t i = 0; i < n; ++i) {
       cur.diameters[i] = equivalent_diameter(vol[i]);
@@ -208,6 +267,10 @@ template <typename T = double, typename Engine>
     if (best.converged) break;
   }
   res = std::move(best);
+  if (cancelled) {
+    res.cancelled = true;
+    res.converged = false;
+  }
   return res;
 }
 

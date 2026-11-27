@@ -8,7 +8,9 @@
 #include <sstream>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 #include "rvegen/rvegen.h"
@@ -408,6 +410,239 @@ void test_gmsh_clips_periodic_polygons() {
   if (const char* o = std::getenv("RVEGEN_TEST_GEO_OUT")) std::ofstream(o) << out.str();
 }
 
+
+// ---- review fixes (#8): volume check, near pairs, limits, wraps ---------
+template <typename E, typename F>
+bool throws_with(F&& f, std::string const& needle) {
+  try { f(); } catch (E const& e) {
+    return std::string{e.what()}.find(needle) != std::string::npos;
+  } catch (...) {}
+  return false;
+}
+
+// The volume-sum check names the backend and the mismatch.
+void test_volume_sum_check() {
+  using shapes_t = std::vector<std::unique_ptr<rvegen::shape_base<double>>>;
+  auto box_cell = [](double x0, double x1) {
+    using vec = gte::Vector<3, double>;
+    auto mk = [](double x, double y, double z) { vec v; v[0] = x; v[1] = y; v[2] = z; return v; };
+    std::vector<vec> v{mk(x0, 0, 0), mk(x1, 0, 0), mk(x1, 1, 0), mk(x0, 1, 0),
+                       mk(x0, 0, 1), mk(x1, 0, 1), mk(x1, 1, 1), mk(x0, 1, 1)};
+    return std::make_unique<rvegen::voronoi_cell<double>>(
+        v, std::vector<std::vector<std::size_t>>{{0, 3, 2, 1}, {4, 5, 6, 7},
+            {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}});
+  };
+  shapes_t good, overlapping;
+  good.push_back(box_cell(0, 0.5)); good.push_back(box_cell(0.5, 1));
+  overlapping.push_back(box_cell(0, 0.7)); overlapping.push_back(box_cell(0.4, 1));
+  rvegen::detail::check_voronoi_volume_sum<double>(good, 1.0, "voro_pp", true, true);
+  REQUIRE((throws_with<std::runtime_error>([&] {
+    rvegen::detail::check_voronoi_volume_sum<double>(overlapping, 1.0, "voro_pp", true, true);
+  }, "voro_pp, periodic, weighted): cell volumes sum to 1.300000")));
+  REQUIRE((throws_with<std::runtime_error>([&] {
+    rvegen::detail::check_voronoi_volume_sum<double>(overlapping, 1.0, "in_house", false, false);
+  }, "in_house): cell volumes sum")));
+}
+
+// Close seed pairs in a periodic box: no volume may be lost (#8).
+void check_close_pairs(rvegen::voronoi_backend backend) {
+  for (double d : {1e-3, 1e-6, 1.5e-9}) {   // 1e-9 is the coincidence limit
+    seeds3_t s{{0.5, 0.5, 0.5}, {0.5 + d, 0.5, 0.5}, {0.2, 0.3, 0.7}};
+    rvegen::voronoi_generator_3d<double> gen{1, 1, 1, s, backend, true};
+    double total = 0;
+    auto cells = gen.build();   // also runs the volume-sum check
+    for (auto const& c : cells) total += c->volume();
+    REQUIRE(std::abs(total - 1.0) < 1e-9);
+    REQUIRE(cells[2]->volume() > 0.49);
+  }
+  // Random near-pair sweep (18 of 200 lost up to 10 % before the fix).
+  std::mt19937 e{3};
+  std::uniform_real_distribution<double> u{0, 1};
+  for (int rep = 0; rep < 60; ++rep) {
+    seeds3_t s;
+    for (int i = 0; i < 2 + rep % 6; ++i) s.push_back({u(e), u(e), u(e)});
+    const double d = std::pow(10.0, -3 - 5.5 * u(e));
+    s.push_back({std::min(1.0, s[0][0] + d), s[0][1], s[0][2]});
+    rvegen::voronoi_generator_3d<double> gen{1, 1, 1, s, backend, true};
+    double total = 0;
+    for (auto const& c : gen.build()) total += c->volume();
+    REQUIRE(std::abs(total - 1.0) < 1e-9);
+  }
+}
+
+void test_periodic_close_pairs() {
+  check_close_pairs(rvegen::voronoi_backend::in_house);
+#ifdef RVEGEN_WITH_VORO_PP
+  check_close_pairs(rvegen::voronoi_backend::voro_pp);
+#endif
+}
+
+// A request the box cannot hold throws instead of clamping to 2 grains.
+void test_grain_request_too_large_for_box() {
+  std::mt19937 eng{1};
+  REQUIRE((throws_with<std::invalid_argument>([&] {
+    (void)rvegen::lognormal_grain_seeds_3d<double>(1, 1, 1, 1.0, 0.25, eng);
+  }, "implies 1.5")));
+  REQUIRE((throws_with<std::invalid_argument>([&] {
+    (void)rvegen::lognormal_grain_seeds_3d<double>(0.5, 0.5, 0.5, 1.0, 0.25, eng);
+  }, "mean diameter 1.0")));
+  REQUIRE((throws_with<std::invalid_argument>([&] {
+    (void)rvegen::lognormal_grain_seeds_3d<double>(
+        1, 1, std::nan(""), 0.1, 0.25, eng);
+  }, "finite")));
+}
+
+// Grain-count caps of the in-house backend, with a pointer to Voro++.
+void test_in_house_grain_cap() {
+  std::mt19937 eng{1};
+  REQUIRE((throws_with<std::invalid_argument>([&] {
+    (void)rvegen::lognormal_grain_seeds_3d<double>(
+        10, 10, 10, 1.0, 0.0, eng, rvegen::voronoi_backend::in_house, false);
+  }, "Voro++")));
+  REQUIRE((throws_with<std::invalid_argument>([&] {
+    (void)rvegen::lognormal_grain_seeds_3d<double>(
+        20, 20, 20, 1.0, 0.0, eng, rvegen::voronoi_backend::in_house, true);
+  }, "limit of 3000")));
+  REQUIRE((throws_with<std::invalid_argument>([] {
+    rvegen::voronoi_generator_3d<double> g{
+        1, 1, 1, make_seeds3(301, {1, 1, 1}, 1), rvegen::voronoi_backend::in_house};
+  }, "limit of 300 (bounded)")));
+  // At the cap it is still accepted.
+  rvegen::voronoi_generator_3d<double> ok{
+      1, 1, 1, make_seeds3(300, {1, 1, 1}, 1), rvegen::voronoi_backend::in_house,
+      true};
+  REQUIRE(ok.seed_count() == 300);
+}
+
+// progress_options::cancel stops the tessellation and the weight iteration.
+void test_cancel_hook() {
+  rvegen::voronoi_generator_3d<double> gen{
+      1, 1, 1, make_seeds3(40, {1, 1, 1}, 2), rvegen::voronoi_backend::in_house};
+  rvegen::progress_options now;
+  now.cancel = [] { return true; };
+  bool threw = false;
+  try { (void)gen.build(now); } catch (rvegen::voronoi_cancelled const&) { threw = true; }
+  REQUIRE(threw);
+  // Polled once per cell: cancel after 5 polls stops long before 40 cells.
+  int polls = 0;
+  rvegen::progress_options later;
+  later.cancel = [&polls] { return ++polls > 5; };
+  threw = false;
+  try { (void)gen.build(later); } catch (rvegen::voronoi_cancelled const&) { threw = true; }
+  REQUIRE(threw && polls == 6);
+
+  // Grain-size iteration: stops with cancelled = true, converged = false.
+  std::mt19937 eng{7};
+  int it_polls = 0;
+  rvegen::progress_options opts;
+  opts.cancel = [&it_polls] { return ++it_polls > 400; };   // some iterations in
+  const auto t0 = std::chrono::steady_clock::now();
+  auto r = rvegen::lognormal_grain_seeds_3d<double>(
+      3.5, 3.5, 3.5, 1.0, 0.8, eng, rvegen::voronoi_backend::in_house, true,
+      1e-15, 100000, 5, opts);
+  const double secs = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - t0).count();
+  REQUIRE(r.cancelled && !r.converged);
+  REQUIRE(!r.seeds.empty());
+  REQUIRE(secs < 60.0);
+}
+
+// Periodic cells returned by voronoi_to_shapes must cover the whole box.
+void test_voronoi_to_shapes_periodic_coverage_2d() {
+  const double Lx = 2.0, Ly = 1.5;
+  std::mt19937 eng{5};
+  std::uniform_real_distribution<double> u{0.0, 1.0};
+  std::vector<std::array<double, 2>> seeds;
+  for (int i = 0; i < 8; ++i) seeds.push_back({u(eng) * Lx, u(eng) * Ly});
+  rvegen::voronoi_generator_2d<double> gen{Lx, Ly, seeds, true};
+  auto shapes = rvegen::voronoi_to_shapes(gen);
+  REQUIRE(shapes.size() > seeds.size());   // wrap pieces appended
+  const std::size_t nx = 200, ny = 150;
+  auto grid = rvegen::sample_voxel_grid<double>(shapes, {Lx, Ly, 0.0}, nx, ny, 1);
+  std::vector<std::size_t> count(seeds.size() + 1, 0);
+  for (auto id : grid) { REQUIRE(id <= seeds.size()); ++count[id]; }
+  REQUIRE(count[0] == 0);   // every voxel assigned
+  const double dV = Lx / nx * Ly / ny;
+  auto polys = gen.build();
+  for (std::size_t i = 0; i < seeds.size(); ++i) {
+    const double a = rvegen::polygon_area(polys[i]);
+    REQUIRE(std::abs(count[i + 1] * dV - a) < 0.03 * a + 4 * dV);
+  }
+  // Every piece of grain i carries grain id i.
+  for (std::size_t s = 0; s < shapes.size(); ++s)
+    REQUIRE(shapes[s]->info().contains("grain_id"));
+  for (std::size_t i = 0; i < seeds.size(); ++i)
+    REQUIRE(shapes[i]->info().get<std::size_t>("grain_id") == i);
+}
+
+void check_voronoi_to_shapes_periodic_3d(rvegen::voronoi_backend backend) {
+  const std::array<double, 3> L{1.0, 1.2, 0.9};
+  auto seeds = make_seeds3(9, L, 11);
+  rvegen::voronoi_generator_3d<double> gen{L[0], L[1], L[2], seeds, backend, true};
+  auto shapes = rvegen::voronoi_to_shapes(gen);
+  REQUIRE(shapes.size() > seeds.size());
+  const std::size_t nx = 40, ny = 48, nz = 36;
+  auto grid = rvegen::sample_voxel_grid<double>(shapes, L, nx, ny, nz);
+  std::vector<std::size_t> count(seeds.size() + 1, 0);
+  for (auto id : grid) { REQUIRE(id <= seeds.size()); ++count[id]; }
+  REQUIRE(count[0] == 0);
+  const double dV = L[0] / nx * L[1] / ny * L[2] / nz;
+  auto cells = gen.build();
+  for (std::size_t i = 0; i < seeds.size(); ++i) {
+    const double v = cells[i]->volume();
+    REQUIRE(std::abs(count[i + 1] * dV - v) < 0.1 * v);
+  }
+}
+
+void test_voronoi_to_shapes_periodic_coverage_3d() {
+  check_voronoi_to_shapes_periodic_3d(rvegen::voronoi_backend::in_house);
+#ifdef RVEGEN_WITH_VORO_PP
+  check_voronoi_to_shapes_periodic_3d(rvegen::voronoi_backend::voro_pp);
+#endif
+}
+
+// Non-finite or non-positive inputs name the offending argument.
+void test_input_validation() {
+  const double nan = std::nan(""), inf = std::numeric_limits<double>::infinity();
+  seeds3_t s{{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}, {0.5, 0.2, 0.8}};
+  using G3 = rvegen::voronoi_generator_3d<double>;
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{1, 1, 1, s, rvegen::voronoi_backend::in_house, false, {0, nan, 0}}; }, "weights[1]")));
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{1, 1, 1, s, rvegen::voronoi_backend::in_house, true, {0, 0, inf}}; }, "weights[2]")));
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{nan, 1, 1, s}; }, "Lx")));
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{1, inf, 1, s}; }, "Ly")));
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{1, 1, 0, s}; }, "Lz")));
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{1, 1, -1, s}; }, "Lz")));
+  auto bad = s; bad[1][2] = nan;
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{1, 1, 1, bad}; }, "seeds[1]")));
+  bad = s; bad[0][0] = -inf;
+  REQUIRE((throws_with<std::invalid_argument>([&] { G3 g{1, 1, 1, bad}; }, "seeds[0]")));
+  using G2 = rvegen::voronoi_generator_2d<double>;
+  std::vector<std::array<double, 2>> s2{{0.25, 0.5}, {0.75, 0.5}};
+  REQUIRE((throws_with<std::invalid_argument>([&] { G2 g{1, 1, s2, false, {nan, 0}}; }, "weights[0]")));
+  REQUIRE((throws_with<std::invalid_argument>([&] { G2 g{nan, 1, s2}; }, "Lx")));
+  REQUIRE((throws_with<std::invalid_argument>([&] { G2 g{1, 0, s2}; }, "Ly")));
+  auto bad2 = s2; bad2[1][0] = inf;
+  REQUIRE((throws_with<std::invalid_argument>([&] { G2 g{1, 1, bad2}; }, "seeds[1]")));
+}
+
+#ifdef RVEGEN_WITH_VORO_PP
+// A weighted seed whose power cell vanishes is reported as an empty cell
+// (volume 0); a seed Voro++ cannot store is an error. A non-finite
+// coordinate cannot be stored, so it takes the "dropped" path.
+void test_voro_pp_dropped_vs_vanished() {
+  seeds3_t seeds{{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}, {0.5, 0.2, 0.8}};
+  rvegen::voronoi_generator_3d<double> gen{
+      1, 1, 1, seeds, rvegen::voronoi_backend::voro_pp, false, {-10.0, 0.0, 0.0}};
+  auto cells = gen.build();   // vanished cell: no exception
+  REQUIRE(cells.size() == 3 && cells[0]->volume() == 0.0);
+  seeds[1][0] = std::nan("");
+  REQUIRE((throws_with<std::runtime_error>([&] {
+    (void)rvegen::detail::build_voronoi_cells_voro_pp<double>(
+        1, 1, 1, seeds, false, {0.0, 0.0, 0.0});
+  }, "dropped")));
+}
+#endif
+
 } // namespace
 
 int main() {
@@ -421,7 +656,16 @@ int main() {
   test_weighted_empty_and_thin_periodic();
   test_gmsh_clips_periodic_polygons();
   test_periodic_wraps_without_bbox();
+  test_volume_sum_check();
+  test_periodic_close_pairs();
+  test_grain_request_too_large_for_box();
+  test_in_house_grain_cap();
+  test_cancel_hook();
+  test_voronoi_to_shapes_periodic_coverage_2d();
+  test_voronoi_to_shapes_periodic_coverage_3d();
+  test_input_validation();
 #ifdef RVEGEN_WITH_VORO_PP
+  test_voro_pp_dropped_vs_vanished();
   test_periodic_3d_voro_pp();
   test_grain_size_300_voro_pp();
   test_grain_robust_voro_pp();
