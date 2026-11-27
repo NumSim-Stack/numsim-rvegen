@@ -205,20 +205,13 @@ public:
           "for an undulating weave use a 3D domain with positive Lz"};
     }
     const std::size_t repeat = weave_pattern_repeat(pattern);
-    if (pattern == weave_pattern::plain
-        && (n_warp_yarns % 2 != 0 || n_weft_yarns % 2 != 0)) {
-      throw std::runtime_error{
-          "weave_generator: n_warp_yarns and n_weft_yarns must both be "
-          "even — a periodic plain weave flips over/under at every "
-          "crossing, so an odd count breaks the alternation at the "
-          "periodic seam"};
-    }
     if (n_warp_yarns % repeat != 0 || n_weft_yarns % repeat != 0) {
       throw std::runtime_error{
           "weave_generator: n_warp_yarns and n_weft_yarns must both be "
           "multiples of the pattern repeat ("
           + std::to_string(repeat) + " for "
-          + (pattern == weave_pattern::twill_2_2 ? "twill_2_2" : "satin_5")
+          + (pattern == weave_pattern::twill_2_2 ? "twill_2_2"
+             : pattern == weave_pattern::satin_5 ? "satin_5" : "plain")
           + ") so the interlacing tiles the periodic cell"};
     }
     // Segment multiplier q needed for polyline clearance (3D only;
