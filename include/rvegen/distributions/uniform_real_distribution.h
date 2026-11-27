@@ -11,6 +11,7 @@
 #include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
+#include "portable_random.h"
 
 namespace rvegen {
 
@@ -18,8 +19,12 @@ namespace rvegen {
 //
 // Validation: `a` and `b` must be finite, `a <= b`, and `b - a` must not
 // overflow; otherwise the ctor (and set_parameter) throws
-// std::invalid_argument. std::uniform_real_distribution has undefined
-// behaviour for those inputs.
+// std::invalid_argument.
+//
+// Reproducibility: draws use rvegen::portable_uniform_real (53-bit
+// mantissa method, see portable_random.h), not
+// std::uniform_real_distribution, so the same engine seed gives
+// bit-identical values on libstdc++, libc++ and MSVC.
 template <typename T = double, typename Engine = std::mt19937>
 class uniform_real_distribution final : public distribution_base<T> {
 public:
@@ -60,14 +65,12 @@ public:
   }
 
   void set_parameter(value_type a, value_type b) {
-    _dist.param(checked_param(a, b));
+    _dist = checked_param(a, b);
   }
 
 private:
-  using param_type =
-      typename std::uniform_real_distribution<value_type>::param_type;
-
-  [[nodiscard]] static param_type checked_param(value_type a, value_type b) {
+  [[nodiscard]] static portable_uniform_real<value_type> checked_param(
+      value_type a, value_type b) {
     if (!std::isfinite(a) || !std::isfinite(b) || !(a <= b) ||
         !std::isfinite(b - a)) {
       throw std::invalid_argument{
@@ -75,7 +78,7 @@ private:
           ", b=" + std::to_string(b) +
           " (need finite a <= b with finite b - a)"};
     }
-    return param_type{a, b};
+    return portable_uniform_real<value_type>{a, b};
   }
 
   // Tuple-taking helper used by the schema-driven ctor. Lets us delegate
@@ -84,7 +87,7 @@ private:
                             engine_type& engine)
       : uniform_real_distribution(std::get<0>(ab), std::get<1>(ab), engine) {}
 
-  std::uniform_real_distribution<value_type> _dist;
+  portable_uniform_real<value_type> _dist;
   engine_type& _engine;
 };
 

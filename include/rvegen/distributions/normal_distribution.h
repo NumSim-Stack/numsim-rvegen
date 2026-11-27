@@ -12,6 +12,7 @@
 #include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
+#include "portable_random.h"
 
 namespace rvegen {
 
@@ -19,7 +20,13 @@ namespace rvegen {
 //
 // Validation: `mean` and `stddev` must be finite and `stddev > 0`;
 // otherwise the ctor throws std::invalid_argument.
-// std::normal_distribution has undefined behaviour for stddev <= 0.
+//
+// Reproducibility: draws use rvegen::portable_normal (Marsaglia polar
+// method on 53-bit uniforms, with an in-house logarithm; see
+// portable_random.h), not std::normal_distribution, so the same engine
+// seed gives bit-identical values on libstdc++, libc++ and MSVC. Values
+// come in pairs: every second call is served from a cached value and
+// does not advance the engine.
 template <typename T = double, typename Engine = std::mt19937>
 class normal_distribution final : public distribution_base<T> {
 public:
@@ -53,10 +60,8 @@ public:
   }
 
 private:
-  using param_type = typename std::normal_distribution<value_type>::param_type;
-
-  [[nodiscard]] static param_type checked_param(value_type mean,
-                                                value_type stddev) {
+  [[nodiscard]] static portable_normal<value_type> checked_param(
+      value_type mean, value_type stddev) {
     if (!std::isfinite(mean) || !std::isfinite(stddev) ||
         !(stddev > value_type{0})) {
       throw std::invalid_argument{
@@ -64,7 +69,7 @@ private:
           std::to_string(mean) + ", stddev=" + std::to_string(stddev) +
           " (need finite mean and finite stddev > 0)"};
     }
-    return param_type{mean, stddev};
+    return portable_normal<value_type>{mean, stddev};
   }
 
   // Tuple-taking helper used by the schema-driven ctor. Lets us delegate
@@ -73,7 +78,7 @@ private:
                       engine_type& engine)
       : normal_distribution(std::get<0>(ms), std::get<1>(ms), engine) {}
 
-  std::normal_distribution<value_type> _dist;
+  portable_normal<value_type> _dist;
   engine_type& _engine;
 };
 

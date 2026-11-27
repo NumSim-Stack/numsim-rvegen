@@ -59,6 +59,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "direction_distribution_base.h"
+#include "portable_random.h"
 #include "../schema/field_list.h"
 #include "../types.h"
 
@@ -229,7 +230,7 @@ private:
   vector_type _frame_y;
   T _kappa;
   std::reference_wrapper<engine_type> _engine;
-  std::uniform_real_distribution<T> _uniform;
+  portable_uniform_real<T> _uniform;
 };
 
 } // namespace rvegen

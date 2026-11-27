@@ -156,6 +156,10 @@ target_link_libraries(rvegen_input_validation_test PRIVATE
 )
 add_test(NAME input_validation_test COMMAND rvegen_input_validation_test)
 
+add_executable(rvegen_golden_random_test tests/golden_random_test.cpp)
+target_link_libraries(rvegen_golden_random_test PRIVATE rvegen_lib)
+add_test(NAME golden_random_test COMMAND rvegen_golden_random_test)
+
 add_executable(rvegen_full_registry_smoke tests/full_registry_smoke.cpp)
 target_link_libraries(rvegen_full_registry_smoke PRIVATE
     rvegen_lib

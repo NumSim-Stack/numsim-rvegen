@@ -14,6 +14,12 @@ namespace rvegen {
 // singleton — distributions are reproducible (same seed → same sequence) and
 // safe to use across threads when each thread has its own engine.
 //
+// Cross-toolchain reproducibility: the built-in scalar distributions
+// sample through rvegen/distributions/portable_random.h instead of
+// std::*_distribution, so a fixed engine seed gives bit-identical draws
+// on libstdc++, libc++ and MSVC (see that header for the exact
+// guarantee). Custom subclasses should do the same.
+//
 // Threading: a distribution and its engine form a unit. Sharing either across
 // threads is undefined behaviour (std::mt19937 is not thread-safe). Each
 // thread constructs its own engine and its own distributions referencing
