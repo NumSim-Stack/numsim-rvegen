@@ -419,7 +419,8 @@ void test_gmsh_geo_writer_periodic_2d() {
   writer.write(out, shapes, {2.0, 1.0, 0.0});
 
   const auto txt = out.str();
-  REQUIRE(txt.find("Geometry.OCCBoundsUseStl = 1;") != std::string::npos);
+  REQUIRE(txt.find("OCCBoundsUseStl") == std::string::npos);  // 2D: not needed, 16x slower
+  REQUIRE(txt.find("no periodic partner") != std::string::npos);
   REQUIRE(txt.find("Curve In BoundingBox") != std::string::npos);
   REQUIRE(txt.find("Periodic Curve{_hi(_j)} = {_lo(_i)} Translate{2, 0, 0};") !=
           std::string::npos);
@@ -438,6 +439,7 @@ void test_gmsh_geo_writer_periodic_3d() {
   writer.write(out, shapes, {1.0, 2.0, 3.0});
 
   const auto txt = out.str();
+  REQUIRE(txt.find("Geometry.OCCBoundsUseStl = 1;") != std::string::npos);
   REQUIRE(txt.find("Surface In BoundingBox") != std::string::npos);
   REQUIRE(txt.find("Periodic Surface{_hi(_j)} = {_lo(_i)} Translate{1, 0, 0};") !=
           std::string::npos);
@@ -476,8 +478,7 @@ void test_gmsh_geo_writer_sets_occ_factory_and_fragments() {
 
   const auto factory_pos  = txt.find("SetFactory(\"OpenCASCADE\");");
   const auto domain_pos   = txt.find("Rectangle(1)");
-  const auto fragment_pos = txt.find("BooleanFragments{ Surface{1}; Delete; }"
-                                     "{ Surface{_inc()}; Delete; }");
+  const auto fragment_pos = txt.find("BooleanFragments{ Surface{_matrix(), _inc()}; Delete; }{}");
   REQUIRE(factory_pos  != std::string::npos);
   REQUIRE(domain_pos   != std::string::npos);
   REQUIRE(fragment_pos != std::string::npos);
@@ -600,9 +601,9 @@ void test_gmsh_geo_writer_2d_physical_groups_per_phase() {
   // Everything that is not a tagged inclusion (matrix region + the
   // untagged circle) lands in the declared "matrix" phase — otherwise
   // gmsh would drop the matrix elements from the .msh.
-  REQUIRE(txt.find("_matrix() = Surface{:};") != std::string::npos);
-  REQUIRE(txt.find("_matrix() -= {2, 3};") != std::string::npos);
-  REQUIRE(txt.find("Physical Surface(\"matrix\", 1) = {_matrix()};") !=
+  REQUIRE(txt.find("_matrix() = BooleanDifference{ Surface{1}; Delete; }"
+                   "{ Surface{_inc()}; };") != std::string::npos);
+  REQUIRE(txt.find("Physical Surface(\"matrix\", 1) = {_matrix(), 4};") !=
           std::string::npos);
   REQUIRE(txt.find("Physical Volume") == std::string::npos);  // 2D, no volumes
 }

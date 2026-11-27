@@ -7,9 +7,12 @@
 #include <cstddef>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <numbers>
 #include <ostream>
+#include <sstream>
 #include <stdexcept>
+#include <typeinfo>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,15 +42,31 @@ namespace rvegen {
 //   3. Inclusions whose bounding box leaves the domain (periodic wrap
 //      copies, random-generator overhang) are clipped to the domain with
 //      `BooleanIntersection`; the result is captured in `_inc_<id>()`.
+//   3b. First shape wins (like voxel_grid): an inclusion whose bounding
+//      box overlaps an earlier one becomes `BooleanDifference` of itself
+//      minus those earlier inclusions, so the final pieces are disjoint
+//      and every piece belongs to exactly one phase. Overlapping /
+//      nested / full-domain inputs therefore get the right phases;
+//      shapes whose boxes do not overlap an earlier one stay untouched.
+//      With periodic=true the wrap copies of one particle share the
+//      priority of its earliest copy, so the result does not depend on
+//      where the copies sit in the list, and spheres cut by a periodic
+//      face get their poles moved off planes that pass near them (gmsh
+//      cannot mesh such caps consistently on both sides).
+//      The pieces of every inclusion are tracked in `_inc_<id>()` lists
+//      (an inclusion that becomes empty is simply an empty list).
 //   4. `BooleanFragments` of the domain against all inclusions — the
 //      result is one conforming geometry: the matrix (a new tag) plus
-//      the inclusions, which keep their tags because they are disjoint
-//      and fully inside the domain after step 3.
+//      the (now disjoint, inside-the-domain) inclusion pieces, which
+//      keep their tags.
 //   5. periodic=true: every boundary curve (2D) / face (3D) on the low
 //      side of each axis is paired with its translated image on the
 //      high side by bounding-box matching (the pattern from gmsh's
 //      tutorial t18), *after* fragmenting so the constraints reference
-//      the final entities.
+//      the final entities. A low-side entity without a partner (e.g. a
+//      boundary-cut inclusion with no image on the opposite face) makes
+//      the script call gmsh `Error(...)` instead of silently producing a
+//      non-periodic mesh.
 //   6. With a phase_collection attached: one Physical group per phase
 //      (alphabetical), plus a "matrix" group holding everything that is
 //      not a tagged inclusion. gmsh only saves elements that belong to a
@@ -213,12 +232,16 @@ public:
       throw std::runtime_error{
           "gmsh_geo_writer: output_path not set; cannot run() as post-process"};
     }
+    // Build the whole script first: a rejected shape must not truncate
+    // an existing file.
+    std::ostringstream buf;
+    write(buf, shapes, domain_box);
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{
           "gmsh_geo_writer: cannot open '" + _output_path + "' for writing"};
     }
-    write(out, shapes, domain_box);
+    out << buf.str();
   }
 
   // Stream-based emit. Kept public so tests and embedders can capture the
@@ -227,6 +250,15 @@ public:
              shape_vector const& shapes,
              std::array<value_type, 3> const& box) const {
     const bool is_3d = box[2] > value_type{0};
+
+    for (auto const v : box) require_finite(v, "domain size");
+    if (!(box[0] > value_type{0}) || !(box[1] > value_type{0}) || box[2] < value_type{0}) {
+      throw std::runtime_error{
+          "gmsh_geo_writer: domain size must be > 0 in x and y and >= 0 in z"};
+    }
+    for (auto const v : {_char_length_min, _char_length_max}) {
+      require_finite(v, "mesh size");
+    }
 
     // Validate everything BEFORE writing anything, so a throw never
     // leaves a partial .geo behind.
@@ -260,13 +292,17 @@ public:
       }
     }
 
-    write_header(out);
-    const auto inclusions = is_3d ? write_entities_3d(out, shapes, box)
-                                  : write_entities_2d(out, shapes, box);
+    // Emit into a local buffer (num() rejects NaN/inf by throwing), so
+    // `out` only ever receives a complete script.
+    std::ostringstream buf;
+    write_header(buf);
+    const auto inclusions = is_3d ? write_entities_3d(buf, shapes, box)
+                                  : write_entities_2d(buf, shapes, box);
     const char* kind = is_3d ? "Volume" : "Surface";
-    write_fragments(out, inclusions, kind);
-    if (_periodic) write_periodic(out, box, is_3d);
-    if (_phases) write_physical_groups(out, inclusions, kind);
+    write_fragments(buf, inclusions, kind);
+    if (_periodic) write_periodic(buf, box, is_3d);
+    if (_phases) write_physical_groups(buf, inclusions, kind);
+    out << buf.str();
   }
 
 private:
@@ -274,7 +310,15 @@ private:
   // (std::to_chars without a precision) — `0.05` stays `0.05`, while
   // values that need 17 digits get them. Independent of the stream's
   // precision / locale settings.
+  static void require_finite(value_type v, char const* what) {
+    if (!std::isfinite(v)) {
+      throw std::runtime_error{std::string{"gmsh_geo_writer: non-finite "} +
+                               what + " (NaN or inf)"};
+    }
+  }
+
   static std::string num(value_type v) {
+    require_finite(v, "coordinate or size");
     std::array<char, 64> buf{};
     auto const res = std::to_chars(buf.data(), buf.data() + buf.size(), v);
     return std::string(buf.data(), res.ptr);
@@ -318,15 +362,36 @@ private:
     return false;
   }
 
+  // Plain extent box so aabb_overlap() also works for shapes that have no
+  // bounding box computed (centre ± max_expansion()).
+  struct extent_box final : bounding_box_base<value_type> {
+    std::array<value_type, 3> top, bottom;
+    [[nodiscard]] std::array<value_type, 3> const& top_point() const override { return top; }
+    [[nodiscard]] std::array<value_type, 3> const& bottom_point() const override { return bottom; }
+    [[nodiscard]] std::unique_ptr<bounding_box_base<value_type>> clone() const override {
+      return std::make_unique<extent_box>(*this);
+    }
+  };
+
+  static extent_box extent_of(shape_base<value_type> const& s) {
+    extent_box e;
+    if (auto const* bb = s.bounding_box(); bb != nullptr) {
+      e.top = bb->top_point();
+      e.bottom = bb->bottom_point();
+    } else {
+      const auto mid = s.get_middle_point();
+      const auto ext = s.max_expansion();
+      for (std::size_t k = 0; k < 3; ++k) {
+        e.top[k] = mid[k] + ext[k];
+        e.bottom[k] = mid[k] - ext[k];
+      }
+    }
+    return e;
+  }
+
   void write_header(std::ostream& out) const {
     out << "// rvegen — generated gmsh .geo script\n"
         << "SetFactory(\"OpenCASCADE\");\n";
-    if (_periodic) {
-      // Tight (triangulation-based) bounding boxes; OCC's default boxes
-      // are inflated for curved entities, which breaks the bounding-box
-      // matching of periodic boundary entities below.
-      out << "Geometry.OCCBoundsUseStl = 1;\n";
-    }
     // Emit active mesh-size directives (positive value → uncommented
     // directive; otherwise keep the placeholder so users still see
     // the syntax they need to enable manually).
@@ -401,6 +466,7 @@ private:
         out << "Sphere(" << entity_id << ") = {"
             << num((*s)(0)) << ", " << num((*s)(1)) << ", " << num((*s)(2)) << ", "
             << num(s->radius) << "};\n";
+        if (_periodic) write_pole_rotation(out, *s, entity_id, domain_box);
       } else if (auto const* b = dynamic_cast<box<value_type> const*>(raw); b) {
         const auto hx = b->width()  * value_type{0.5};
         const auto hy = b->height() * value_type{0.5};
@@ -412,6 +478,61 @@ private:
       ids.push_back(entity_id++);
     }
     return write_clips(out, shapes, ids, domain_box, "Volume");
+  }
+
+  // gmsh's OCC sphere has its poles on +-z. A sphere cut by a periodic
+  // face whose plane passes close to a pole (|offset| << r) gets a cap
+  // boundary that nearly touches the parametric singularity; gmsh's
+  // surface mesher then fails, "splits those edges and tries again", and
+  // thereby changes the 1D mesh of one boundary curve but not of its
+  // periodic partner ("curve N has 5 vertices, whereas correspondant M
+  // has 2"). Moving the poles to a better axis avoids it. The choice only
+  // depends on the centre modulo the box (distance to the nearest lattice
+  // plane), so a sphere and its periodic images are rotated identically
+  // and their cut curves keep matching seams. z (gmsh's default) is kept
+  // unless another axis is clearly better.
+  static int pole_axis(sphere<value_type> const& s,
+                       std::array<value_type, 3> const& box) {
+    std::array<value_type, 3> off{};  // signed offset to nearest lattice plane
+    std::array<bool, 3> cut{};
+    const value_type r = s.radius;
+    for (std::size_t k = 0; k < 3; ++k) {
+      if (!(box[k] > value_type{0})) continue;
+      const value_type t = s(k) / box[k];
+      off[k] = (t - std::round(t)) * box[k];
+      cut[k] = std::abs(off[k]) < r;
+    }
+    auto score = [&](std::size_t pole) {
+      value_type m = r;
+      for (std::size_t k = 0; k < 3; ++k) {
+        if (!cut[k]) continue;
+        // distance of the nearest pole to the plane along axis k
+        m = std::min(m, k == pole ? r - std::abs(off[k]) : std::abs(off[k]));
+      }
+      return m;
+    };
+    int best = 2;
+    value_type best_score = score(2);
+    if (best_score >= value_type{0.5} * r) return best;
+    for (int a : {0, 1}) {
+      const value_type sc = score(static_cast<std::size_t>(a));
+      if (sc > best_score * value_type{1.0001}) {
+        best = a;
+        best_score = sc;
+      }
+    }
+    return best;
+  }
+
+  static void write_pole_rotation(std::ostream& out, sphere<value_type> const& s,
+                                  std::size_t id,
+                                  std::array<value_type, 3> const& box) {
+    const int axis = pole_axis(s, box);
+    if (axis == 2) return;
+    // z -> x : rotate about y; z -> -y : rotate about x.
+    out << "Rotate {{" << (axis == 0 ? "0, 1, 0" : "1, 0, 0") << "}, {"
+        << num(s(0)) << ", " << num(s(1)) << ", " << num(s(2))
+        << "}, Pi/2} { Volume{" << id << "}; }\n";
   }
 
   // gmsh's OCC Disk needs rx >= ry; swap the semi-axes and rotate a
@@ -459,30 +580,102 @@ private:
         << "Plane Surface(" << id << ") = {_ll};\n";
   }
 
-  // Clip every inclusion that leaves the domain. Runs after all
-  // primitives are emitted so the tags of new boolean results can never
-  // collide with a later explicit inclusion id.
+  // First-wins priority of every shape. Normally the shape index. With
+  // periodic=true the wrap copies of one particle (same type and size,
+  // centres differing by whole box lengths) share the priority of the
+  // earliest copy: otherwise the order A, B, A', B' would let A beat B on
+  // one side of the box but B' beat A' on the other, and the two faces
+  // could no longer be paired.
+  std::vector<std::size_t> priorities(
+      shape_vector const& shapes, std::vector<extent_box> const& extents,
+      std::array<value_type, 3> const& box) const {
+    std::vector<std::size_t> prio(shapes.size());
+    for (std::size_t i = 0; i < shapes.size(); ++i) prio[i] = i;
+    if (!_periodic) return prio;
+    const value_type tol = value_type{1e-9} * std::max({box[0], box[1], box[2]});
+    auto images = [&](std::size_t i, std::size_t j) {
+      if (typeid(*shapes[i]) != typeid(*shapes[j])) return false;
+      const auto mi = shapes[i]->get_middle_point();
+      const auto mj = shapes[j]->get_middle_point();
+      for (std::size_t k = 0; k < 3; ++k) {
+        const value_type size_i = extents[i].top[k] - extents[i].bottom[k];
+        const value_type size_j = extents[j].top[k] - extents[j].bottom[k];
+        if (std::abs(size_i - size_j) > tol) return false;
+        if (!(box[k] > value_type{0})) continue;
+        const value_type d = (mi[k] - mj[k]) / box[k];
+        if (std::abs(d - std::round(d)) * box[k] > tol) return false;
+      }
+      return true;
+    };
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      for (std::size_t j = 0; j < i; ++j) {
+        if (prio[j] == j && images(i, j)) { prio[i] = j; break; }
+      }
+    }
+    return prio;
+  }
+
+  // Reduce every inclusion to its final pieces, in shape order:
+  //   1. clip to the domain if it leaves it (BooleanIntersection);
+  //   2. first shape wins: subtract all earlier inclusions whose
+  //      bounding box overlaps (BooleanDifference), so the pieces are
+  //      disjoint and exactly one phase owns every point.
+  // Runs after all primitives are emitted so the tags of new boolean
+  // results can never collide with a later explicit inclusion id.
+  // Inclusions that need neither step keep their plain id.
   std::vector<inclusion_ref> write_clips(
       std::ostream& out, shape_vector const& shapes,
       std::vector<std::size_t> const& ids,
       std::array<value_type, 3> const& domain_box, char const* kind) const {
-    std::vector<inclusion_ref> refs;
-    refs.reserve(shapes.size());
+    std::vector<inclusion_ref> refs(shapes.size());
     bool header_done = false;
-    for (std::size_t i = 0; i < shapes.size(); ++i) {
+    std::vector<extent_box> extents;
+    extents.reserve(shapes.size());
+    for (auto const& sh : shapes) extents.push_back(extent_of(*sh));
+    const auto prio = priorities(shapes, extents, domain_box);
+    std::vector<std::size_t> order(shapes.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](std::size_t a, std::size_t b) { return prio[a] < prio[b]; });
+    for (std::size_t i : order) {
       const auto id = std::to_string(ids[i]);
-      if (needs_clip(*shapes[i], domain_box)) {
-        if (!header_done) {
-          out << "\n// Clip inclusions that leave the domain (periodic wrap copies,\n"
-                 "// overhanging shapes) so the mesh stays inside the RVE.\n";
-          header_done = true;
+      const auto var = "_inc_" + id + "()";
+      const bool clip = needs_clip(*shapes[i], domain_box);
+
+      std::vector<std::string> tools;
+      for (std::size_t j = 0; j < shapes.size(); ++j) {
+        const bool before = prio[j] < prio[i] || (prio[j] == prio[i] && j < i);
+        if (before && aabb_overlap(extents[i], extents[j])) {
+          tools.push_back(refs[j].ref);
         }
-        out << "_inc_" << id << "() = BooleanIntersection{ " << kind << "{"
-            << id << "}; Delete; }{ " << kind << "{1}; };\n";
-        refs.push_back({"_inc_" + id + "()", shapes[i]->phase_name()});
-      } else {
-        refs.push_back({id, shapes[i]->phase_name()});
       }
+
+      if (!clip && tools.empty()) {
+        refs[i] = {id, shapes[i]->phase_name()};
+        continue;
+      }
+      if (!header_done) {
+        out << "\n// Clip inclusions that leave the domain (periodic wrap copies,\n"
+               "// overhanging shapes) and make overlapping inclusions disjoint\n"
+               "// (first shape wins). `_inc_<id>()` holds the final pieces.\n";
+        header_done = true;
+      }
+      if (clip) {
+        out << var << " = BooleanIntersection{ " << kind << "{" << id
+            << "}; Delete; }{ " << kind << "{1}; };\n";
+      } else {
+        out << var << " = {" << id << "};\n";
+      }
+      if (!tools.empty()) {
+        out << "_tool() = ";
+        write_ref_list(out, tools);
+        out << ";\n"
+            << "If (#" << var << " > 0 && #_tool() > 0)\n"
+            << "  " << var << " = BooleanDifference{ " << kind << "{" << var
+            << "}; Delete; }{ " << kind << "{_tool()}; };\n"
+            << "EndIf\n";
+      }
+      refs[i] = {var, shapes[i]->phase_name()};
     }
     return refs;
   }
@@ -497,23 +690,29 @@ private:
     out << "}";
   }
 
-  // Fragment the domain against all inclusions → one conforming
-  // geometry. The inclusions are disjoint and inside the domain, so OCC
-  // keeps their tags; the matrix becomes a new entity.
+  // Build the matrix explicitly as domain minus all inclusion pieces,
+  // then fragment matrix and pieces together so they share interfaces.
+  // The pieces are disjoint (see write_clips) and the matrix is disjoint
+  // from them, so OCC keeps every tag; fragmenting the *domain* against
+  // the inclusions instead would let OCC re-tag coincident areas (e.g.
+  // an inclusion equal to the domain) and silently swap phases.
+  // `_matrix()` is empty when the inclusions cover the whole domain.
   static void write_fragments(std::ostream& out,
                               std::vector<inclusion_ref> const& inclusions,
                               char const* kind) {
     std::vector<std::string> refs;
     refs.reserve(inclusions.size());
     for (auto const& inc : inclusions) refs.push_back(inc.ref);
-    out << "\n// Fragment the domain against the inclusions: one conforming\n"
-           "// geometry with shared interfaces (matrix + inclusions).\n"
+    out << "\n// Matrix = domain minus inclusions; fragment everything into one\n"
+           "// conforming geometry with shared interfaces.\n"
         << "_inc() = ";
     write_ref_list(out, refs);
     out << ";\n"
+        << "_matrix() = {1};\n"
         << "If (#_inc() > 0)\n"
-        << "  BooleanFragments{ " << kind << "{1}; Delete; }{ " << kind
-        << "{_inc()}; Delete; }\n"
+        << "  _matrix() = BooleanDifference{ " << kind << "{1}; Delete; }{ " << kind
+        << "{_inc()}; };\n"
+        << "  BooleanFragments{ " << kind << "{_matrix(), _inc()}; Delete; }{}\n"
         << "EndIf\n";
   }
 
@@ -531,6 +730,12 @@ private:
         << (is_3d ? "face" : "curve") << "\n"
         << "// with its translated image on the opposite side.\n"
         << "_pe = " << num(lmax * value_type{1e-6}) << ";\n";
+    if (is_3d) {
+      // Tight (triangulation-based) bounding boxes; OCC's default boxes
+      // are inflated for curved faces, which breaks the bounding-box
+      // matching in 3D. Not needed (and ~16x slower) in 2D.
+      out << "Geometry.OCCBoundsUseStl = 1;\n";
+    }
     for (int a = 0; a < n_axes; ++a) {
       std::array<value_type, 3> shift{value_type{0}, value_type{0}, value_type{0}};
       shift[a] = dom[a];
@@ -552,6 +757,7 @@ private:
             << num(shift[m % 3]);
       }
       out << "};\n"
+          << "  _found = 0;\n"
           << "  For _j In {0:#_hi()-1}\n"
           << "    _c() = BoundingBox " << ent << "{_hi(_j)};\n"
           << "    If (";
@@ -563,10 +769,17 @@ private:
       out << ")\n"
           << "      Periodic " << ent << "{_hi(_j)} = {_lo(_i)} Translate{"
           << num(shift[0]) << ", " << num(shift[1]) << ", " << num(shift[2]) << "};\n"
+          << "      _found = 1;\n"
           << "    EndIf\n"
           << "  EndFor\n"
+          << "  If (!_found)\n"
+          << "    Error(\"gmsh_geo_writer: " << ent
+          << " on the low side of axis " << a
+          << " has no periodic partner on the opposite side\");\n"
+          << "  EndIf\n"
           << "EndFor\n";
     }
+    if (is_3d) out << "Geometry.OCCBoundsUseStl = 0;\n";
   }
 
   // One `Physical <kind>("name", id)` per phase that appears on a shape,
@@ -579,22 +792,15 @@ private:
                              char const* kind) const {
     static constexpr char const* matrix_name = "matrix";
     std::map<std::string, std::vector<std::string>> by_phase;
-    std::vector<std::string> tagged;
+    // Untagged inclusions are treated as matrix.
+    by_phase[matrix_name].push_back("_matrix()");
     for (auto const& inc : inclusions) {
-      if (inc.phase_name.empty()) continue;
-      by_phase[inc.phase_name].push_back(inc.ref);
-      tagged.push_back(inc.ref);
+      by_phase[inc.phase_name.empty() ? matrix_name : inc.phase_name]
+          .push_back(inc.ref);
     }
 
     out << "\n// Physical groups — one per phase, keyed off shape.phase_name(),\n"
-           "// plus \"matrix\" for everything that is not a tagged inclusion.\n"
-        << "_matrix() = " << kind << "{:};\n";
-    if (!tagged.empty()) {
-      out << "_matrix() -= ";
-      write_ref_list(out, tagged);
-      out << ";\n";
-    }
-    by_phase[matrix_name].push_back("_matrix()");
+           "// plus \"matrix\" for everything that is not a tagged inclusion.\n";
 
     const bool matrix_declared = _phases->contains(matrix_name);
     for (auto const& [name, refs] : by_phase) {
