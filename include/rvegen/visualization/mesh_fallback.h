@@ -62,8 +62,16 @@ template <typename T>
 mesh_or_warn(shape_base<T> const& shape, char const* writer_name) {
   auto& d = mesh_dispatcher<T>::instance();
   // Nobody else populates the singleton in library code; if the host app
-  // never registered anything, install the built-in shapes.
-  if (d.size() == 0) register_all_meshes<T>();
+  // never registered anything, install the built-in shapes. The
+  // check-and-register runs under a lock so concurrent writers do not race
+  // on the table; the lock also orders the registration before every
+  // writer's subsequent read. (Hosts that register their own shapes must
+  // still do so before starting writers.)
+  {
+    static std::mutex reg_mtx;
+    std::lock_guard<std::mutex> lk{reg_mtx};
+    if (d.size() == 0) register_all_meshes<T>();
+  }
   auto m = d(shape);
   if (m.empty()) warn_unrendered_once(shape, writer_name);
   return m;

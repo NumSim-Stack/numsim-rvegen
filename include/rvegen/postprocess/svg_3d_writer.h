@@ -248,8 +248,9 @@ public:
       ++idx;
     }
 
-    // Sort back-to-front (smallest depth first).
-    std::sort(items.begin(), items.end(),
+    // Sort back-to-front (smallest depth first). Stable: ties keep draw-list
+    // order, so output is identical across standard libraries.
+    std::stable_sort(items.begin(), items.end(),
               [](auto const& a, auto const& b) { return a.depth < b.depth; });
 
     // Domain wireframe — draw last so it sits on top of everything for

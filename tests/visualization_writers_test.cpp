@@ -2,6 +2,7 @@
 // the "no silently dropped shapes" policy of the visualization writers.
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <iostream>
@@ -9,6 +10,7 @@
 #include <numbers>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "rvegen/rvegen.h"
@@ -167,9 +169,32 @@ void test_unrenderable_shape_warns_once() {
   REQUIRE(count_of(eb.str(), "svg_writer: skipping") == 1);
   d.clear();
 }
+void test_concurrent_writers_auto_register() {
+  // Empty dispatcher + many writers at once: the lazy built-in
+  // registration must not race (checked under -fsanitize=thread).
+  rvegen::mesh_dispatcher<double>::instance().clear();
+  std::vector<std::thread> th;
+  std::atomic<int> bad{0};
+  for (int i = 0; i < 8; ++i) {
+    th.emplace_back([&] {
+      for (int k = 0; k < 50; ++k) {
+        shapes_t s;
+        s.emplace_back(std::make_unique<rvegen::polyline_tube<double>>(
+            std::vector<std::array<double, 3>>{{0.1, 0.5, 0.5}, {0.9, 0.5, 0.5}},
+            0.05));
+        std::ostringstream js;
+        rvegen::three_js_writer<double>{}.write(js, s, {1, 1, 1});
+        if (js.str().find("kind: 'mesh'") == std::string::npos) ++bad;
+      }
+    });
+  }
+  for (auto& t : th) t.join();
+  REQUIRE(bad == 0);
+}
 } // namespace
 
 int main() {
+  test_concurrent_writers_auto_register();
   test_tube_winding_outward();
   test_camera_scales_with_domain();
   test_tube_rendered_via_dispatcher();
