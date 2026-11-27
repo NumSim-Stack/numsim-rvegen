@@ -125,6 +125,21 @@ mesh read_msh22(std::string const& path) {
   return m;
 }
 
+// Removes <stem>.{geo,msh,log} on scope exit unless a check failed since
+// construction (failed runs keep their files for inspection).
+struct cleanup_on_success {
+  explicit cleanup_on_success(std::string stem)
+      : _stem{std::move(stem)}, _failures_at_start{failures} {}
+  ~cleanup_on_success() {
+    if (failures != _failures_at_start) return;
+    for (auto const* ext : {".geo", ".msh", ".log"}) {
+      std::remove((_stem + ext).c_str());
+    }
+  }
+  std::string _stem;
+  int _failures_at_start;
+};
+
 // Write `shapes` with `writer`, mesh with gmsh, return the parsed mesh.
 mesh write_and_mesh(rvegen::gmsh_geo_writer<double> const& writer,
                     shape_vector const& shapes, box_t const& box,
@@ -133,8 +148,10 @@ mesh write_and_mesh(rvegen::gmsh_geo_writer<double> const& writer,
   const std::string msh = stem + ".msh";
   const std::string log = stem + ".log";
   {
+    std::ostringstream buf;
+    writer.write(buf, shapes, box);
     std::ofstream out{geo};
-    writer.write(out, shapes, box);
+    out << buf.str();
   }
   std::remove(msh.c_str());
   const bool is_3d = box[2] > 0.0;
@@ -253,6 +270,7 @@ void test_periodic_2d_circles_and_ellipses() {
   writer.set_phases(&phases);
   writer.set_characteristic_length_max(0.01);
 
+  const cleanup_on_success cleanup{"gmsh_rt_periodic_2d"};
   const auto m = write_and_mesh(writer, shapes, box, "gmsh_rt_periodic_2d");
   if (!m.ok) return;
   check_inside_domain(m, box);
@@ -301,6 +319,7 @@ void test_periodic_3d_spheres_and_boxes() {
   writer.set_phases(&phases);
   writer.set_characteristic_length_max(0.06);
 
+  const cleanup_on_success cleanup{"gmsh_rt_periodic_3d"};
   const auto m = write_and_mesh(writer, shapes, box, "gmsh_rt_periodic_3d");
   if (!m.ok) return;
   check_inside_domain(m, box);
@@ -331,10 +350,279 @@ void test_non_periodic_overhang_and_polygon() {
 
   rvegen::gmsh_geo_writer<double> writer{};
   writer.set_characteristic_length_max(0.05);
+  const cleanup_on_success cleanup{"gmsh_rt_non_periodic_2d"};
   const auto m = write_and_mesh(writer, shapes, box, "gmsh_rt_non_periodic_2d");
   if (!m.ok) return;
   check_inside_domain(m, box);
   REQUIRE(std::abs(total_measure(m) - 1.0) < 1e-9);
+}
+
+// First-wins expectation on a fine grid of cell centres: each point is
+// owned by the first shape containing it (voxel_grid semantics). Works for
+// 2D (box[2] == 0) and 3D domains.
+std::map<std::string, double> first_wins_areas(shape_vector const& shapes,
+                                               box_t const& box) {
+  const bool is_3d = box[2] > 0.0;
+  const int nx = is_3d ? 120 : 1000;
+  const int nz = is_3d ? 120 : 1;
+  std::map<std::string, double> area;
+  const double cell = box[0] * box[1] * (is_3d ? box[2] : 1.0) /
+                      (double(nx) * nx * nz);
+  for (int ix = 0; ix < nx; ++ix) {
+    for (int iy = 0; iy < nx; ++iy) {
+      for (int iz = 0; iz < nz; ++iz) {
+        const std::array<double, 3> p{(ix + 0.5) * box[0] / nx,
+                                      (iy + 0.5) * box[1] / nx,
+                                      is_3d ? (iz + 0.5) * box[2] / nz : 0.0};
+        std::string owner = "matrix";
+        for (auto const& sh : shapes) {
+          if (sh->is_inside(p)) { owner = sh->phase_name(); break; }
+        }
+        area[owner] += cell;
+      }
+    }
+  }
+  return area;
+}
+
+shape_vector make_shapes(std::vector<std::pair<std::unique_ptr<rvegen::shape_base<double>>,
+                                               std::string>> items) {
+  shape_vector v;
+  for (auto& [sh, phase] : items) {
+    sh->set_phase_name(phase);
+    sh->make_bounding_box();
+    v.push_back(std::move(sh));
+  }
+  return v;
+}
+
+using item = std::pair<std::unique_ptr<rvegen::shape_base<double>>, std::string>;
+template <typename S, typename... A>
+item mk(std::string phase, A... a) {
+  return {std::make_unique<S>(a...), std::move(phase)};
+}
+
+// Overlapping / nested / full-domain inclusions: the geometry must be
+// partitioned so the first shape owns its full area, later ones only
+// the remainder, and everything else is matrix. `expect_shapes` (default:
+// `shapes`) gives the order the expectation is computed in.
+void check_first_wins(shape_vector const& shapes, std::string const& stem,
+                      bool periodic = false, box_t const& box = {1.0, 1.0, 0.0},
+                      double h = 0.01,
+                      shape_vector const* expect_shapes = nullptr) {
+  const cleanup_on_success cleanup{stem};
+  rvegen::phase_collection<double> phases;
+  phases.add("matrix");
+  phases.add("a");
+  phases.add("b");
+  phases.add("c");
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_phases(&phases);
+  writer.set_periodic(periodic);
+  writer.set_characteristic_length_max(h);
+  const auto m = write_and_mesh(writer, shapes, box, stem);
+  if (!m.ok) return;
+  check_inside_domain(m, box);
+  if (periodic) check_periodic_nodes(m, box);
+  const double domain = box[0] * box[1] * (box[2] > 0.0 ? box[2] : 1.0);
+  REQUIRE(std::abs(total_measure(m) - domain) < 1e-9 * domain);
+  REQUIRE(m.measure_by_tag.count(0) == 0);
+  auto const expect = first_wins_areas(expect_shapes ? *expect_shapes : shapes, box);
+  for (auto const* name : {"matrix", "a", "b", "c"}) {
+    const auto it = expect.find(name);
+    const double e = it == expect.end() ? 0.0 : it->second;
+    double g = measure_of(m, name);
+    if (g < 0.0) g = 0.0;  // phase without any piece may have no group
+    // Faceted boundaries shrink inclusions by a few percent in 3D at
+    // h = 0.05 (measured up to 3.7% of the phase) and by < 0.3% in 2D at
+    // h = 0.01; the grid sampling error is far below the absolute term.
+    const double rel = box[2] > 0.0 ? 0.05 : 0.005;
+    if (std::abs(g - e) > rel * e + 1e-4 * domain) {
+      std::cerr << stem << ": phase " << name << " measure " << g
+                << " expected " << e << "\n";
+      ++failures;
+    }
+    if (std::getenv("RVEGEN_GMSH_TEST_VERBOSE")) {
+      std::cerr << stem << " " << name << " got " << g << " expect " << e
+                << " diff " << g - e << "\n";
+    }
+  }
+}
+
+void test_first_wins_nested() {
+  using C = rvegen::circle<double>;
+  // big first: the small circle is entirely swallowed
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 0.5, 0.5, 0.3)); v.push_back(mk<C>("b", 0.5, 0.5, 0.1));
+      return v; }()), "gmsh_rt_nested_big_first");
+  // small first: the big one becomes an annulus
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 0.5, 0.5, 0.1)); v.push_back(mk<C>("b", 0.5, 0.5, 0.3));
+      return v; }()), "gmsh_rt_nested_small_first");
+}
+
+void test_first_wins_overlap() {
+  using C = rvegen::circle<double>;
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 0.4, 0.5, 0.2)); v.push_back(mk<C>("b", 0.6, 0.5, 0.2));
+      return v; }()), "gmsh_rt_overlap_two");
+  // three-way overlap, plus a disjoint circle that must stay untouched
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("a", 0.4, 0.4, 0.22)); v.push_back(mk<C>("b", 0.6, 0.4, 0.22));
+      v.push_back(mk<C>("c", 0.5, 0.6, 0.22)); v.push_back(mk<C>("a", 0.9, 0.9, 0.05));
+      return v; }()), "gmsh_rt_overlap_three");
+}
+
+void test_first_wins_full_domain() {
+  using C = rvegen::circle<double>;
+  using R = rvegen::rectangle<double>;
+  // full-domain rectangle first: it owns everything, matrix is empty
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<R>("a", 0.5, 0.5, 1.0, 1.0)); v.push_back(mk<C>("b", 0.5, 0.5, 0.2));
+      return v; }()), "gmsh_rt_full_first");
+  // full-domain rectangle last: it owns what the circle leaves
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<C>("b", 0.5, 0.5, 0.2)); v.push_back(mk<R>("a", 0.5, 0.5, 1.0, 1.0));
+      return v; }()), "gmsh_rt_full_last");
+}
+
+// 3D first-wins: nested, overlapping and a disjoint sphere, plus a box.
+void test_first_wins_3d() {
+  using S = rvegen::sphere<double>;
+  using B = rvegen::box<double>;
+  const box_t box{1.0, 1.0, 1.0};
+  // nested, small first: the big sphere becomes a shell
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<S>("a", 0.5, 0.5, 0.5, 0.15));
+      v.push_back(mk<S>("b", 0.5, 0.5, 0.5, 0.3)); return v; }()),
+      "gmsh_rt_3d_nested_small_first", false, box, 0.05);
+  // nested, big first: the small one is swallowed
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<S>("a", 0.5, 0.5, 0.5, 0.3));
+      v.push_back(mk<S>("b", 0.5, 0.5, 0.5, 0.15)); return v; }()),
+      "gmsh_rt_3d_nested_big_first", false, box, 0.05);
+  // overlapping spheres + a box cutting both + a disjoint sphere
+  check_first_wins(make_shapes([] { std::vector<item> v;
+      v.push_back(mk<S>("a", 0.4, 0.5, 0.5, 0.25));
+      v.push_back(mk<S>("b", 0.6, 0.5, 0.5, 0.25));
+      v.push_back(mk<B>("c", 0.5, 0.5, 0.5, 0.2, 0.9, 0.2));
+      v.push_back(mk<S>("a", 0.85, 0.15, 0.15, 0.1)); return v; }()),
+      "gmsh_rt_3d_overlap", false, box, 0.05);
+}
+
+// First wins must be translation-consistent with periodic=true: two
+// particles overlapping across the boundary, listed A, B, A', B' (wrap
+// copies after both originals). Previously B' beat A' on the high side but
+// A beat B on the low side, so the faces could not be paired.
+void test_first_wins_periodic_order() {
+  using C = rvegen::circle<double>;
+  auto build = [](bool interleaved) {
+    std::vector<item> v;
+    v.push_back(mk<C>("a", 0.03, 0.5, 0.1));
+    v.push_back(mk<C>("b", 0.97, 0.5, 0.1));
+    if (interleaved) {  // A, B, A', B'
+      v.push_back(mk<C>("a", 1.03, 0.5, 0.1));
+      v.push_back(mk<C>("b", -0.03, 0.5, 0.1));
+    } else {            // A, A', B, B'
+      v.insert(v.begin() + 1, mk<C>("a", 1.03, 0.5, 0.1));
+      v.push_back(mk<C>("b", -0.03, 0.5, 0.1));
+    }
+    return make_shapes(std::move(v));
+  };
+  // Expectation: A (and its wrap copy) owns the overlap on both sides.
+  const auto expected = build(false);
+  const auto shapes = build(true);
+  check_first_wins(shapes, "gmsh_rt_periodic_order", true, {1.0, 1.0, 0.0}, 0.01,
+                   &expected);
+}
+
+// A sphere cut by periodic faces whose plane passes close to the sphere's
+// pole axis (centre 0.0024 from the low-x face) made gmsh fail with
+// "curve N has 5 vertices, whereas correspondant M has 2" at coarse mesh
+// sizes; the writer now moves such spheres' poles to another axis.
+void test_periodic_sphere_cut_near_pole() {
+  using S = rvegen::sphere<double>;
+  const box_t box{1.0, 1.0, 1.0};
+  const double r = 0.082939374200207416;
+  auto shapes = make_shapes([&] { std::vector<item> v;
+      v.push_back(mk<S>("p", -0.0024221518456235547, 0.28226640679118864,
+                        0.41985503044439154, r));
+      v.push_back(mk<S>("p", 0.99757784815437645, 0.28226640679118864,
+                        0.41985503044439154, r));
+      return v; }());
+  rvegen::phase_collection<double> phases;
+  phases.add("p");
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_periodic(true);
+  writer.set_phases(&phases);
+  writer.set_characteristic_length_max(0.2);
+  const cleanup_on_success cleanup{"gmsh_rt_pole"};
+  const auto m = write_and_mesh(writer, shapes, box, "gmsh_rt_pole");
+  if (!m.ok) return;
+  check_inside_domain(m, box);
+  check_periodic_nodes(m, box);
+  REQUIRE(std::abs(total_measure(m) - 1.0) < 1e-9);
+  REQUIRE(measure_of(m, "p") > 0.0);
+}
+
+// An unmatched boundary-cut inclusion with periodic=true must make gmsh
+// fail loudly instead of silently producing a non-periodic mesh.
+void test_periodic_unmatched_errors() {
+  shape_vector shapes = make_shapes([] { std::vector<item> v;
+      v.push_back(mk<rvegen::circle<double>>("a", 1.0, 0.5, 0.2)); return v; }());
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_periodic(true);
+  const std::string stem = "gmsh_rt_unmatched_periodic";
+  {
+    std::ostringstream buf;
+    writer.write(buf, shapes, {1.0, 1.0, 0.0});
+    std::ofstream out{stem + ".geo"};
+    out << buf.str();
+  }
+  const std::string cmd = std::string{"\""} + RVEGEN_GMSH_EXECUTABLE + "\" -2 " +
+                          stem + ".geo -format msh22 -o " + stem + ".msh > " +
+                          stem + ".log 2>&1";
+  const int rc = std::system(cmd.c_str());
+  std::ifstream log{stem + ".log"};
+  std::stringstream ss; ss << log.rdbuf();
+  const bool reported = ss.str().find("no periodic partner") != std::string::npos;
+  REQUIRE(reported);
+  if (!reported || rc == 0) {
+    if (rc == 0) std::cerr << "unmatched periodic: gmsh exited 0\n";
+  }
+  if (reported) {
+    for (auto const* ext : {".geo", ".msh", ".log"}) std::remove((stem + ext).c_str());
+  }
+}
+
+// Rejected input must not truncate an existing file, and non-finite
+// numbers must be rejected.
+void test_writer_rejects_bad_input() {
+  const std::string path = "gmsh_rt_reject.geo";
+  { std::ofstream o{path}; o << "KEEP\n"; }
+  shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  rvegen::gmsh_geo_writer<double> writer{path};
+  bool threw = false;
+  try { writer.run(shapes, {1.0, 1.0, 0.0}); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  std::ifstream in{path};
+  std::string line; std::getline(in, line);
+  REQUIRE(line == "KEEP");
+
+  shape_vector nan_shapes;
+  nan_shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, std::nan("")));
+  std::ostringstream buf;
+  threw = false;
+  try { writer.write(buf, nan_shapes, {1.0, 1.0, 0.0}); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  REQUIRE(buf.str().empty());
+  threw = false;
+  try { writer.write(buf, {}, {1.0, std::nan(""), 0.0}); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  REQUIRE(buf.str().empty());
+  if (threw) std::remove(path.c_str());
 }
 
 } // namespace
@@ -343,6 +631,14 @@ int main() {
   test_periodic_2d_circles_and_ellipses();
   test_periodic_3d_spheres_and_boxes();
   test_non_periodic_overhang_and_polygon();
+  test_first_wins_nested();
+  test_first_wins_overlap();
+  test_first_wins_full_domain();
+  test_first_wins_3d();
+  test_first_wins_periodic_order();
+  test_periodic_sphere_cut_near_pole();
+  test_periodic_unmatched_errors();
+  test_writer_rejects_bad_input();
   if (failures == 0) {
     std::cout << "gmsh_geo_roundtrip_test: PASS\n";
     return 0;
