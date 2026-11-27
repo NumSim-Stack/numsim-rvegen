@@ -27,7 +27,23 @@
 //     cylinders along z, area fractions are volume fractions. The full 3D
 //     stiffness is returned; in-plane components are the plane-strain ones.
 //   * Hashin-Shtrikman bounds are the bounds of a statistically isotropic
-//     composite (isotropic comparison medium).
+//     composite (isotropic comparison medium). They use the Walpole /
+//     Berryman multi-phase form: the reference K0 and G0 are the extreme
+//     (softest for lower, stiffest for upper) values over ALL phases,
+//     taken independently, so they are valid for any K/G ordering.
+//   * Mori-Tanaka equals the HS lower bound only when the matrix is the
+//     softest phase in BOTH K and G (and the HS upper bound when it is the
+//     stiffest in both), for spherical inclusions. With mixed ordering
+//     (e.g. soft-K / stiff-G matrix) MT is not an HS bound of either kind
+//     in general; it still lies between the Reuss and Voigt bounds.
+//   * Self-consistent can fail to converge for strongly contrasting
+//     phases near the percolation threshold (near-void inclusions at
+//     c >~ 0.5, near-void fibres at c >~ 0.6): homogenize() then throws
+//     `self_consistent_error` (a std::runtime_error). Raise
+//     options::sc_max_iterations / sc_relaxation or pick another scheme.
+//   * extract_microstructure throws std::invalid_argument when a shape's
+//     dimension does not match the domain (circle/ellipse in a 3D box,
+//     sphere in a 2D box) instead of dropping it.
 
 #include <algorithm>
 #include <array>
@@ -267,6 +283,14 @@ template <typename T>
     if (it == inclusion_materials.end()) it = inclusion_materials.find("");
     if (it == inclusion_materials.end())
       throw std::invalid_argument{"extract_microstructure: no material for phase '" + name + "'"};
+    bool const shape_planar = dynamic_cast<circle<T> const*>(sp.get()) ||
+                              dynamic_cast<ellipse<T> const*>(sp.get());
+    bool const shape_solid = dynamic_cast<sphere<T> const*>(sp.get());
+    if ((shape_planar && !planar) || (shape_solid && planar))
+      throw std::invalid_argument{
+          std::string{"extract_microstructure: "} + (shape_planar ? "2D" : "3D") +
+          " shape of phase '" + name + "' in a " + (planar ? "2D" : "3D") +
+          " domain (shape/domain dimension mismatch)"};
     double const frac = double(planar ? sp->area() : sp->volume()) / domain;
 
     if (dynamic_cast<circle<T> const*>(sp.get())) {
@@ -316,6 +340,12 @@ enum class model {
   }
   return {};
 }
+
+// Thrown when the self-consistent iteration does not converge (typically
+// near percolation with near-void or near-rigid inclusions).
+struct self_consistent_error : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
 
 struct effective_properties {
   tensor4 C;      // effective stiffness (3D, rank-4)
@@ -408,6 +438,7 @@ inline nm::object_spec<policy::ParameterHandler> shape_spec(oriented_ellipsoid c
 } // namespace detail
 
 // Effective stiffness of the microstructure under the chosen mean-field model.
+// model::self_consistent throws `self_consistent_error` if it fails to converge.
 [[nodiscard]] inline effective_properties homogenize(microstructure const& ms, model m,
                                                      options const& opt = {}) {
   double const phi = ms.inclusion_fraction();
@@ -471,7 +502,18 @@ inline nm::object_spec<policy::ParameterHandler> shape_spec(oriented_ellipsoid c
   views.reserve(n);
   for (std::size_t i = 0; i < n; ++i) views.push_back({frac[i], &C[i], &S[i]});
   std::vector<tensor4> A(n);
-  kernel->concentrations(views, A);
+  if (m == model::self_consistent) {
+    try {
+      kernel->concentrations(views, A);
+    } catch (std::runtime_error const& e) {
+      throw self_consistent_error{
+          std::string{"self_consistent: iteration failed (" } + e.what() +
+          "); typical near percolation with near-void/near-rigid inclusions - "
+          "increase options::sc_max_iterations or use another model"};
+    }
+  } else {
+    kernel->concentrations(views, A);
+  }
 
   tensor4 Ceff;
   for (std::size_t i = 0; i < n; ++i)

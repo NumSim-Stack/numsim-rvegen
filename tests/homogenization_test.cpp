@@ -2,7 +2,8 @@
 //
 // Checks against closed forms: Eshelby tensors of the sphere and the circular
 // cylinder, the Voigt >= HS+ >= MT >= HS- >= Reuss chain, MT == HS lower for
-// stiff spheres, the dilute limit, phi -> 0 / 1, Hill's self-consistent
+// stiff spheres in a matrix that is softest in both K and G (NOT in general:
+// mixed K/G ordering is tested separately), the dilute limit, phi -> 0 / 1, Hill's self-consistent
 // equations, Hashin's plane-strain bulk modulus of aligned fibres, rotation
 // and orientation-average consistency, and extraction from rvegen shapes.
 
@@ -120,7 +121,8 @@ void test_bounds_chain_and_mt() {
   REQUIRE_NEAR(r.K, 1 / ((1 - c) / Km + c / Ki), 1e-12);
   REQUIRE_NEAR(r.G, 1 / ((1 - c) / Gm + c / Gi), 1e-12);
 
-  // MT equals closed form and HS lower (stiff spheres in soft matrix)
+  // MT equals closed form and HS lower (stiff spheres in a matrix softest in
+  // BOTH K and G; see test_mixed_ordering for the general case)
   auto const [Kc, Gc] = mt_closed(c, Km, Gm, Ki, Gi);
   REQUIRE_NEAR(mt.K, Kc, 1e-10);
   REQUIRE_NEAR(mt.G, Gc, 1e-10);
@@ -292,9 +294,95 @@ void test_extraction() {
   REQUIRE_NEAR(e3.G, Gc, 1e-10);
 }
 
+// Independent Walpole/Berryman multi-phase HS form for isotropic phases.
+std::pair<double, double> hs_ref(std::vector<std::array<double, 3>> const& ph, double K0, double G0) {
+  double const z = zeta(K0, G0);
+  double sk = 0, sg = 0;
+  for (auto const& p : ph) { sk += p[0] / (p[1] + 4 * G0 / 3); sg += p[0] / (p[2] + z); }
+  return {1 / sk - 4 * G0 / 3, 1 / sg - z};
+}
+
+void test_mixed_ordering() {
+  // (a) two inclusion phases with mixed K/G ordering: A stiff in K, soft in G;
+  // B soft in K, stiff in G; matrix 3/1.
+  h::microstructure ms{{3, 1}, {}};
+  ms.grains.push_back({"A", 0.2, h::sphere_inclusion(), {100, 2}});
+  ms.grains.push_back({"B", 0.2, h::sphere_inclusion(), {5, 40}});
+  std::vector<std::array<double, 3>> const ph{{0.6, 3, 1}, {0.2, 100, 2}, {0.2, 5, 40}};
+  auto const [Kl, Gl] = hs_ref(ph, 3, 1);       // softest K = 3, softest G = 1
+  auto const [Ku, Gu] = hs_ref(ph, 100, 40);    // stiffest K = 100, stiffest G = 40
+  auto const hl = h::homogenize(ms, model::hashin_shtrikman_lower);
+  auto const hu = h::homogenize(ms, model::hashin_shtrikman_upper);
+  REQUIRE_NEAR(hl.K, Kl, 1e-10); REQUIRE_NEAR(hl.G, Gl, 1e-10);
+  REQUIRE_NEAR(hu.K, Ku, 1e-10); REQUIRE_NEAR(hu.G, Gu, 1e-10);
+  auto const v = h::homogenize(ms, model::voigt);
+  auto const r = h::homogenize(ms, model::reuss);
+  REQUIRE(v.K >= hu.K && hu.K >= hl.K && hl.K >= r.K);
+  REQUIRE(v.G >= hu.G && hu.G >= hl.G && hl.G >= r.G);
+
+  // (b) matrix soft in K but stiff in G, spheres the other way round
+  // (K 1/G 20 matrix, K 50/G 2 spheres): MT is NOT the HS lower bound; its K
+  // coincides with the HS upper K (the matrix G is the largest shear modulus).
+  h::microstructure m2{{1, 20}, {}};
+  m2.grains.push_back({"S", 0.3, h::sphere_inclusion(), {50, 2}});
+  auto const mt = h::homogenize(m2, model::mori_tanaka);
+  auto const l2 = h::homogenize(m2, model::hashin_shtrikman_lower);
+  auto const u2 = h::homogenize(m2, model::hashin_shtrikman_upper);
+  auto const [Kc, Gc] = mt_closed(0.3, 1, 20, 50, 2);
+  REQUIRE_NEAR(mt.K, Kc, 1e-10);
+  REQUIRE_NEAR(mt.G, Gc, 1e-10);
+  REQUIRE(std::abs(mt.K - l2.K) > 1e-3 * mt.K);   // not the lower bound
+  REQUIRE_NEAR(mt.K, u2.K, 1e-10);
+  // still inside Reuss/Voigt
+  auto const v2 = h::homogenize(m2, model::voigt);
+  auto const r2 = h::homogenize(m2, model::reuss);
+  REQUIRE(mt.K <= v2.K && mt.K >= r2.K && mt.G <= v2.G && mt.G >= r2.G);
+  // HS bounds themselves are ordered
+  REQUIRE(l2.K <= u2.K && l2.G <= u2.G);
+
+  // (c) matrix softest in both (documented equality) and stiffest in both
+  auto const a = h::homogenize(spheres(0.3), model::mori_tanaka);
+  REQUIRE_NEAR(a.K, h::homogenize(spheres(0.3), model::hashin_shtrikman_lower).K, 1e-10);
+  auto const stiff = h::homogenize(spheres(0.3, {3, 1}, {60, 30}), model::mori_tanaka);
+  REQUIRE_NEAR(stiff.K, h::homogenize(spheres(0.3, {3, 1}, {60, 30}), model::hashin_shtrikman_upper).K, 1e-10);
+  REQUIRE_NEAR(stiff.G, h::homogenize(spheres(0.3, {3, 1}, {60, 30}), model::hashin_shtrikman_upper).G, 1e-10);
+}
+
+void test_self_consistent_error_is_typed() {
+  // Near-void spheres at c = 0.5 are past the percolation threshold of the
+  // SC scheme: the iteration fails and must surface as self_consistent_error.
+  h::microstructure s{{3, 1}, {}};
+  s.grains.push_back({"A", 0.5, h::sphere_inclusion(), {3e-6, 1e-6}});
+  bool typed = false, other = false;
+  try { (void)h::homogenize(s, model::self_consistent); }
+  catch (h::self_consistent_error const&) { typed = true; }
+  catch (...) { other = true; }
+  REQUIRE(typed && !other);
+}
+
+void test_extraction_dimension_mismatch_throws() {
+  using T = double;
+  std::map<std::string, h::isotropic_material> mats{{"", {Ki, Gi}}};
+  std::vector<std::unique_ptr<rvegen::shape_base<T>>> c;
+  c.push_back(std::make_unique<rvegen::circle<T>>(0.5, 0.5, 0.1));
+  bool threw = false;
+  try { (void)h::extract_microstructure(c, std::array<T, 3>{1, 1, 1}, {Km, Gm}, mats); }
+  catch (std::invalid_argument const&) { threw = true; }
+  REQUIRE(threw);
+  std::vector<std::unique_ptr<rvegen::shape_base<T>>> s;
+  s.push_back(std::make_unique<rvegen::sphere<T>>(0.5, 0.5, 0.5, 0.1));
+  threw = false;
+  try { (void)h::extract_microstructure(s, std::array<T, 3>{1, 1, 0}, {Km, Gm}, mats); }
+  catch (std::invalid_argument const&) { threw = true; }
+  REQUIRE(threw);
+}
+
 } // namespace
 
 int main() {
+  test_mixed_ordering();
+  test_self_consistent_error_is_typed();
+  test_extraction_dimension_mismatch_throws();
   test_eshelby_analytic();
   test_bounds_chain_and_mt();
   test_dilute_limit();
