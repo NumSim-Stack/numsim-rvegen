@@ -18,11 +18,13 @@
 //   * `mesh_inclusion_input<T>` — schema-driven (`mesh_path`,
 //     `position_x_dist`, `position_y_dist`, `position_z_dist`).
 //   * Registered as `"mesh_inclusion_input"` in `register_inputs.h`.
-//   * The mesh file is read once at input construction and wrapped in a
-//     `std::shared_ptr<vector<triangle_type> const>`. `new_shape()`
-//     constructs a `mesh_inclusion` that captures the same shared_ptr
-//     (refcount bump only) and applies the sampled position via the
-//     primitive's O(1) offset — no triangle data is copied per shape.
+//   * The mesh file is read once at input construction into a single
+//     prototype `mesh_inclusion` — that is where the mesh is validated
+//     (closed, manifold, finite), re-oriented and its AABB / volume
+//     cached, so a broken file fails at config load. `new_shape()`
+//     copies the prototype (shared_ptr refcount bump + cached arrays)
+//     and applies the sampled position via the primitive's O(1)
+//     offset — no triangle data is copied or re-validated per shape.
 //
 // Mesh-file format dispatch:
 //   The input loads via `read_mesh_file()`, which picks STL vs PLY by
@@ -66,22 +68,11 @@ public:
   mesh_inclusion_input(std::string mesh_path,
                        distribution_base<value_type>& px,
                        distribution_base<value_type>& py,
-                       distribution_base<value_type>& pz)
+                       distribution_base<value_type>& pz,
+                       ply_read_limits limits = {})
       : _mesh_path{std::move(mesh_path)},
-        _shared_triangles{std::make_shared<std::vector<triangle_type> const>(
-            read_mesh_file<value_type>(_mesh_path))},
-        _px{px}, _py{py}, _pz{pz} {
-    // An empty triangle list yields a `mesh_inclusion` whose
-    // `is_inside` is always false. The generator's volume_fraction
-    // termination would then never satisfy and the run would loop
-    // until `max_attempts` (silent timeout) — fail fast instead.
-    if (!_shared_triangles || _shared_triangles->empty()) {
-      throw std::runtime_error{
-          "mesh_inclusion_input: mesh file '" + _mesh_path +
-          "' contained no triangles; refusing to construct an "
-          "always-empty inclusion."};
-    }
-  }
+        _prototype{load_prototype(_mesh_path, limits)},
+        _px{px}, _py{py}, _pz{pz} {}
 
   mesh_inclusion_input(parameter_handler_t const& handler,
                        distribution_map_t<value_type> const& d)
@@ -89,7 +80,8 @@ public:
             resolve_mesh_path(handler),
             *d.at(handler.template get<std::string>("position_x_dist")),
             *d.at(handler.template get<std::string>("position_y_dist")),
-            *d.at(handler.template get<std::string>("position_z_dist"))) {}
+            *d.at(handler.template get<std::string>("position_z_dist")),
+            read_limits(handler)) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -101,6 +93,10 @@ public:
         .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias)">>();
     s.template insert<std::string>("stl_path")
         .template add<numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>();
+    s.template insert<std::size_t>("max_triangles")
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::unit_label<"triangles">>()
+        .template add<numsim_core::description_label<"optional cap on the triangle count read from a PLY file (fan-triangulated output; default 5000000). Raise it for genuinely huge meshes">>();
     s.template insert<std::string>("position_x_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre x-coordinate">>();
@@ -113,11 +109,12 @@ public:
     return s;
   }
 
-  // Zero-copy placement: the shared_ptr is captured by `mesh_inclusion`,
-  // so 1000 placements share one triangle vector instead of cloning it
-  // 1000 times. set_middle_point only updates the per-shape offset.
+  // Zero-copy placement: copying the prototype shares its triangle
+  // vector, so 1000 placements share one triangle vector instead of
+  // cloning it 1000 times. set_middle_point only updates the per-shape
+  // offset.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto mesh = std::make_unique<mesh_inclusion<value_type>>(_shared_triangles);
+    auto mesh = std::make_unique<mesh_inclusion<value_type>>(_prototype);
     mesh->set_middle_point({_px(), _py(), _pz()});
     return mesh;
   }
@@ -147,8 +144,38 @@ private:
     return h.template get<std::string>(has_mesh ? "mesh_path" : "stl_path");
   }
 
+  // Read + validate the mesh once. An empty triangle list yields a
+  // `mesh_inclusion` whose `is_inside` is always false; the
+  // generator's volume_fraction termination would then never satisfy
+  // and the run would loop until `max_attempts` (silent timeout) —
+  // fail fast instead.
+  static ply_read_limits read_limits(parameter_handler_t const& h) {
+    ply_read_limits l;
+    if (h.contains("max_triangles")) {
+      l.max_triangles = h.template get<std::size_t>("max_triangles");
+    }
+    return l;
+  }
+
+  static mesh_inclusion<value_type> load_prototype(
+      std::string const& path, ply_read_limits const& limits) {
+    auto triangles = read_mesh_file<value_type>(path, limits);
+    if (triangles.empty()) {
+      throw std::runtime_error{
+          "mesh_inclusion_input: mesh file '" + path +
+          "' contained no triangles; refusing to construct an "
+          "always-empty inclusion."};
+    }
+    try {
+      return mesh_inclusion<value_type>{std::move(triangles)};
+    } catch (std::runtime_error const& e) {
+      throw std::runtime_error{"mesh_inclusion_input: mesh file '" + path +
+                               "' is invalid: " + e.what()};
+    }
+  }
+
   std::string _mesh_path;
-  std::shared_ptr<std::vector<triangle_type> const> _shared_triangles;
+  mesh_inclusion<value_type> _prototype;
   distribution_base<value_type>& _px;
   distribution_base<value_type>& _py;
   distribution_base<value_type>& _pz;

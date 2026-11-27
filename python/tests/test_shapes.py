@@ -87,18 +87,17 @@ def test_voronoi_cell_unit_cube():
 
 
 def test_mesh_inclusion_from_stl_file():
-    # Smallest STL that the ASCII reader will accept (1 facet).
-    stl = (
-        "solid one\n"
-        "  facet normal 0 0 -1\n"
-        "    outer loop\n"
-        "      vertex -0.5 -0.5 -0.5\n"
-        "      vertex  0.5  0.5 -0.5\n"
-        "      vertex  0.5 -0.5 -0.5\n"
-        "    endloop\n"
-        "  endfacet\n"
-        "endsolid one\n"
-    )
+    # Smallest closed mesh MeshInclusion accepts: a unit tetrahedron
+    # (open meshes are rejected at construction).
+    tet = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    faces = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
+    stl = "solid tet\n"
+    for face in faces:
+        stl += "  facet normal 0 0 0\n    outer loop\n"
+        for i in face:
+            stl += "      vertex {} {} {}\n".format(*tet[i])
+        stl += "    endloop\n  endfacet\n"
+    stl += "endsolid tet\n"
     with tempfile.NamedTemporaryFile(
         suffix=".stl", mode="w", delete=False
     ) as f:
@@ -106,7 +105,8 @@ def test_mesh_inclusion_from_stl_file():
         path = f.name
     try:
         m = rvegen.MeshInclusion.from_stl_file(path)
-        assert m.triangle_count == 1
+        assert m.triangle_count == 4
+        assert m.volume() == pytest.approx(1.0 / 6.0)
         # Translate via the bound mutator — confirms the binding accepts
         # three doubles and forwards to the C++ method.
         m.set_middle_point(10.0, 10.0, 10.0)
