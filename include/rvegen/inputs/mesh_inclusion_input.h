@@ -37,12 +37,23 @@
 //   was the only supported format. Exactly one of the two must be
 //   present; supplying both is rejected as ambiguous.
 //
-// Out of scope here, ships in follow-up PRs against #9:
-//   * Per-shape rotation distributions (axis-angle or Bingham
-//     orientation). Needs rotation logic in mesh_inclusion (today the
-//     primitive's offset only encodes translation).
-//   * Per-shape uniform scaling. Same primitive-side gap.
+// Optional orientation and scale (all fields optional; omitted means
+// identity rotation and unit scale, i.e. the previous behaviour):
+//   * `orientation`: "none" (default), "uniform" or "euler_zyz".
+//       - "uniform": isotropic random orientation (Shoemake uniform
+//         quaternion). `orientation_dist` names a distribution that
+//         samples U(0, 1) (e.g. {"type": "uniform_real", "a": 0,
+//         "b": 1}); three draws per placed shape.
+//       - "euler_zyz": R = Rz(alpha)·Ry(beta)·Rz(gamma) with the angles
+//         (radians) drawn from `euler_alpha_dist`, `euler_beta_dist`,
+//         `euler_gamma_dist`. NB: uniform Euler angles are not
+//         isotropic — use "uniform" for random orientation.
+//   * `scale_dist`: distribution sampled for the uniform scale factor
+//     (must be > 0) about the placed mesh's centre.
+// C++ users set the same via `set_uniform_orientation`,
+// `set_euler_zyz_orientation` and `set_scale_distribution`.
 
+#include <array>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -51,6 +62,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "../distributions/distribution_base.h"
+#include "../distributions/uniform_rotation.h"
 #include "../io/mesh_reader.h"
 #include "../shapes/mesh_inclusion.h"
 #include "../types.h"
@@ -81,7 +93,25 @@ public:
             *d.at(handler.template get<std::string>("position_x_dist")),
             *d.at(handler.template get<std::string>("position_y_dist")),
             *d.at(handler.template get<std::string>("position_z_dist")),
-            read_limits(handler)) {}
+            read_limits(handler)) {
+    apply_transform_options(handler, d);
+  }
+
+  // ---- optional orientation / scale (C++ API) ---------------------------
+  // Distributions are borrowed by reference, like the position ones.
+  void set_uniform_orientation(distribution_base<value_type>& unit_uniform) {
+    _orientation = orientation_mode::uniform;
+    _rot_dists = {&unit_uniform, nullptr, nullptr};
+  }
+  void set_euler_zyz_orientation(distribution_base<value_type>& alpha,
+                                 distribution_base<value_type>& beta,
+                                 distribution_base<value_type>& gamma) {
+    _orientation = orientation_mode::euler_zyz;
+    _rot_dists = {&alpha, &beta, &gamma};
+  }
+  void set_scale_distribution(distribution_base<value_type>& scale) {
+    _scale_dist = &scale;
+  }
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -90,7 +120,7 @@ public:
     // present (enforced at ctor time, not by the schema layer, since
     // a "one of N" group constraint isn't expressible there).
     s.template insert<std::string>("mesh_path")
-        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias)">>();
+        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias). A relative path is resolved against the process working directory, not against the JSON file">>();
     s.template insert<std::string>("stl_path")
         .template add<numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>();
     s.template insert<std::size_t>("max_triangles")
@@ -106,6 +136,18 @@ public:
     s.template insert<std::string>("position_z_dist")
         .template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"name of a distribution sampled for the placed mesh's centre z-coordinate">>();
+    s.template insert<std::string>("orientation")
+        .template add<numsim_core::description_label<"optional orientation mode: 'none' (default), 'uniform' (isotropic random rotation via Shoemake uniform quaternion; needs orientation_dist) or 'euler_zyz' (needs euler_alpha_dist, euler_beta_dist, euler_gamma_dist)">>();
+    s.template insert<std::string>("orientation_dist")
+        .template add<numsim_core::description_label<"for orientation 'uniform': name of a distribution sampling U(0, 1); three draws per placed shape">>();
+    s.template insert<std::string>("euler_alpha_dist")
+        .template add<numsim_core::description_label<"for orientation 'euler_zyz': name of a distribution sampled for the first z rotation angle (radians)">>();
+    s.template insert<std::string>("euler_beta_dist")
+        .template add<numsim_core::description_label<"for orientation 'euler_zyz': name of a distribution sampled for the y rotation angle (radians)">>();
+    s.template insert<std::string>("euler_gamma_dist")
+        .template add<numsim_core::description_label<"for orientation 'euler_zyz': name of a distribution sampled for the second z rotation angle (radians)">>();
+    s.template insert<std::string>("scale_dist")
+        .template add<numsim_core::description_label<"optional: name of a distribution sampled for the uniform scale factor (> 0) of each placed mesh; default 1">>();
     return s;
   }
 
@@ -116,6 +158,18 @@ public:
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     auto mesh = std::make_unique<mesh_inclusion<value_type>>(_prototype);
     mesh->set_middle_point({_px(), _py(), _pz()});
+    if (_orientation == orientation_mode::uniform) {
+      const value_type u1 = (*_rot_dists[0])();
+      const value_type u2 = (*_rot_dists[0])();
+      const value_type u3 = (*_rot_dists[0])();
+      mesh->set_rotation(uniform_random_rotation(u1, u2, u3));
+    } else if (_orientation == orientation_mode::euler_zyz) {
+      const value_type a = (*_rot_dists[0])();
+      const value_type b = (*_rot_dists[1])();
+      const value_type g = (*_rot_dists[2])();
+      mesh->set_rotation_euler_zyz(a, b, g);
+    }
+    if (_scale_dist) mesh->set_scale((*_scale_dist)());
     return mesh;
   }
 
@@ -174,8 +228,56 @@ private:
     }
   }
 
+  // Resolve the optional orientation / scale fields of the JSON config.
+  void apply_transform_options(parameter_handler_t const& h,
+                               distribution_map_t<value_type> const& d) {
+    auto lookup = [&](char const* key) -> distribution_base<value_type>& {
+      if (!h.contains(key)) {
+        throw std::runtime_error{
+            std::string{"mesh_inclusion_input: '"} + key +
+            "' is required for the selected orientation mode"};
+      }
+      return *d.at(h.template get<std::string>(key));
+    };
+    const std::string mode =
+        h.contains("orientation") ? h.template get<std::string>("orientation")
+                                  : std::string{"none"};
+    // Orientation keys that the active mode does not consume would be
+    // silently ignored (e.g. a mistyped or missing 'orientation'): reject.
+    struct key_mode { char const* key; char const* used_by; };
+    for (auto const& [key, used_by] : {key_mode{"orientation_dist", "uniform"},
+                                       key_mode{"euler_alpha_dist", "euler_zyz"},
+                                       key_mode{"euler_beta_dist", "euler_zyz"},
+                                       key_mode{"euler_gamma_dist", "euler_zyz"}}) {
+      if (h.contains(key) && mode != used_by) {
+        throw std::runtime_error{
+            std::string{"mesh_inclusion_input: '"} + key +
+            "' is only used with orientation '" + used_by +
+            "' but the active orientation mode is '" + mode +
+            "' (set 'orientation' accordingly or remove the key)"};
+      }
+    }
+    if (mode == "uniform") {
+      set_uniform_orientation(lookup("orientation_dist"));
+    } else if (mode == "euler_zyz") {
+      set_euler_zyz_orientation(lookup("euler_alpha_dist"),
+                                lookup("euler_beta_dist"),
+                                lookup("euler_gamma_dist"));
+    } else if (mode != "none") {
+      throw std::runtime_error{
+          "mesh_inclusion_input: unknown orientation '" + mode +
+          "' (expected 'none', 'uniform' or 'euler_zyz')"};
+    }
+    if (h.contains("scale_dist")) set_scale_distribution(lookup("scale_dist"));
+  }
+
+  enum class orientation_mode { none, uniform, euler_zyz };
+
   std::string _mesh_path;
   mesh_inclusion<value_type> _prototype;
+  orientation_mode _orientation{orientation_mode::none};
+  std::array<distribution_base<value_type>*, 3> _rot_dists{};
+  distribution_base<value_type>* _scale_dist{nullptr};
   distribution_base<value_type>& _px;
   distribution_base<value_type>& _py;
   distribution_base<value_type>& _pz;

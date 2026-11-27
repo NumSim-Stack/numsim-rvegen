@@ -4,6 +4,7 @@
 #include "../shapes/circle.h"
 #include "../shapes/convex_polygon.h"
 #include "../shapes/ellipse.h"
+#include "../shapes/mesh_inclusion.h"
 #include "../shapes/polyline_tube.h"
 #include "../shapes/rectangle.h"
 #include "../shapes/sphere.h"
@@ -13,6 +14,7 @@
 #include "../visualization/convex_polygon_mesh.h"
 #include "../visualization/ellipse_mesh.h"
 #include "../visualization/mesh_dispatcher.h"
+#include "../visualization/mesh_inclusion_mesh.h"
 #include "../visualization/polyline_tube_mesh.h"
 #include "../visualization/rectangle_mesh.h"
 #include "../visualization/sphere_mesh.h"
@@ -27,7 +29,7 @@ namespace rvegen {
 // 2D shapes (circle, rectangle, ellipse, convex_polygon) get flat
 // triangle meshes in the z=0 plane — what a 3D renderer wants when
 // asked to display a 2D RVE. 3D shapes (sphere, box, polyline_tube,
-// voronoi_cell) get full surface meshes.
+// voronoi_cell, mesh_inclusion) get full surface meshes.
 template <typename T = double>
 inline void register_all_meshes() {
   auto& d = mesh_dispatcher<T>::instance();
@@ -41,6 +43,9 @@ inline void register_all_meshes() {
   // 3D cell as a per-face fan against the cell's outward winding.
   d.template register_shape<convex_polygon<T>>();
   d.template register_shape<voronoi_cell<T>>();
+  // STL / PLY inclusions (#9): the placed (translated, rotated, scaled)
+  // triangles.
+  d.template register_shape<mesh_inclusion<T>>();
 }
 
 // Install every built-in conversion that is not registered yet, keeping

@@ -3,23 +3,29 @@
 // mesh_inclusion — a 3D shape defined by a closed triangle mesh,
 // typically loaded from STL via `read_stl_ascii`.
 //
-// What this header lands today (phase 1 of #9):
+// What this header provides (#9):
 //   * `mesh_inclusion<T>` — stores a SHARED base triangle list +
-//     a per-shape translation offset. Many placed shapes spawned
-//     from the same STL share one triangle vector; per-shape state
-//     is just the offset (24 bytes for double) instead of a full
-//     triangle copy. Loading 1000 placements of a 10k-triangle mesh
-//     allocates the triangles ONCE, not 1000 times.
-//   * `is_inside(p)` — ray-cast from `(p − offset)` against the
-//     shared base triangles via `gte::TIQuery<T, Ray3<T>,
-//     Triangle3<T>>`. Translation is linear, so testing the offset
-//     point against base triangles is equivalent to testing the
-//     original point against translated triangles.
-//   * `volume()` — translate-invariant; computed once over the base
-//     mesh via the divergence theorem and cached.
-//   * `make_bounding_box()`, `max_expansion()`, `get_middle_point()`,
-//     `set_middle_point()` (translate via offset; O(1) — the base
-//     AABB is cached), `clone()`, `shape_id()`.
+//     a per-shape placement: translation offset, rotation R (proper,
+//     3×3) and uniform scale s, applied about the base AABB centre c:
+//       world(x) = middle + s · R · (x − c).
+//     Many placed shapes spawned from the same STL share one triangle
+//     vector; per-shape state is the small placement instead of a
+//     full triangle copy. Loading 1000 placements of a 10k-triangle
+//     mesh allocates the triangles ONCE, not 1000 times.
+//   * Rotation setters: matrix, quaternion, axis-angle, z-y-z Euler
+//     (all via GTE `Rotation`). Uniformly random orientations come from
+//     `uniform_random_rotation` (Shoemake) in
+//     distributions/uniform_rotation.h.
+//   * `is_inside(p)` — maps p into base coordinates (`to_local`) and
+//     ray-casts against the shared base triangles via `gte::TIQuery<T,
+//     Ray3<T>, Triangle3<T>>`. The placement is an invertible affine
+//     map, so this equals testing p against the placed mesh.
+//   * `volume()` — base volume (divergence theorem, cached) × s³.
+//   * `make_bounding_box()`, `max_expansion()` — from the transformed
+//     vertices, cached whenever R or s changes (O(M)); translation via
+//     `set_middle_point()` stays O(1). `clone()`, `shape_id()`.
+//   * `to_mesh(mesh_inclusion)` in visualization/mesh_inclusion_mesh.h
+//     returns the placed triangles; registered in mesh_dispatcher.
 //   * Direct C++ ctor from a vector of triangles (wraps in shared_ptr)
 //     OR from an existing shared_ptr (zero-copy unless re-orienting).
 //   * Construction validates the mesh: finite vertices, closed and
@@ -36,11 +42,7 @@
 //   set_middle_point is O(1) instead of O(M).
 //
 // Out of scope here, ships in follow-up PRs against #9:
-//   * Binary STL + PLY readers.
-//   * `mesh_inclusion_input` JSON-driven loader (already PR #27).
-//   * `to_mesh(mesh_inclusion)` — VTK rendering for Tessera.
-//   * Per-shape rotation. Today the offset is translation-only;
-//     rotation needs a quaternion or rotation matrix on top.
+//   * Mesh–mesh collision dispatcher entry.
 //   * Robust ray-casting on degenerate edges (today a slightly
 //     off-axis direction dodges most parity bugs but pathological
 //     inputs can still trip it).
@@ -62,7 +64,10 @@
 
 #include <Mathematics/DistPointTriangle.h>
 #include <Mathematics/IntrRay3Triangle3.h>
+#include <Mathematics/Matrix3x3.h>
+#include <Mathematics/Quaternion.h>
 #include <Mathematics/Ray.h>
+#include <Mathematics/Rotation.h>
 #include <Mathematics/Triangle.h>
 #include <Mathematics/Vector3.h>
 
@@ -794,15 +799,22 @@ public:
   // ---- shape_base contract ----------------------------------------------
   [[nodiscard]] T area() const override { return T{0}; }   // 3D shape
 
-  // Volume is translate-invariant — computed once at construction via
-  // the divergence theorem over the validated, consistently
-  // outward-wound base mesh (cavities contribute negatively).
-  [[nodiscard]] T volume() const override { return _volume; }
+  // Volume is rotation- and translation-invariant — computed once at
+  // construction via the divergence theorem over the validated,
+  // consistently outward-wound base mesh (cavities contribute
+  // negatively) — and scales with scale³.
+  [[nodiscard]] T volume() const override {
+    return _volume * _scale * _scale * _scale;
+  }
 
+  // Half-extent of the smallest box CENTRED on the middle point that
+  // contains the transformed mesh. Under rotation the AABB is no
+  // longer centred on the base-AABB centre, so this takes the larger
+  // of the two one-sided extents per axis.
   [[nodiscard]] std::array<T, 3> max_expansion() const override {
-    return {(_base_max[0] - _base_min[0]) * T{0.5},
-            (_base_max[1] - _base_min[1]) * T{0.5},
-            (_base_max[2] - _base_min[2]) * T{0.5}};
+    return {std::max(-_rel_min[0], _rel_max[0]),
+            std::max(-_rel_min[1], _rel_max[1]),
+            std::max(-_rel_min[2], _rel_max[2])};
   }
 
   [[nodiscard]] std::array<T, 3> get_middle_point() const override {
@@ -819,18 +831,125 @@ public:
     _offset[2] = middle_point[2] - _base_centre[2];
   }
 
-  // Inside test by ray-casting from (point − offset) along a slightly
-  // off-axis +x direction. Translation is linear, so testing the
-  // offset point against the base mesh is equivalent to testing the
-  // original point against the translated mesh — and avoids any
-  // per-shape mutation of triangle data.
+  // ---- rotation / uniform scale -------------------------------------------
+  // The placed mesh is   world(x) = middle + scale · R · (x − c),
+  // where x is a base (file) vertex, c the base AABB centre and
+  // middle = get_middle_point(). R is a proper rotation (det +1), so
+  // outward winding is preserved. Setting R or the scale re-derives the
+  // cached AABB in O(M); translation stays O(1).
+
+  // Rotation matrix (column vectors rotate: v' = R·v). Throws unless R
+  // is orthonormal with det +1 to within 1e-6.
+  void set_rotation(gte::Matrix3x3<T> const& r) {
+    const auto rtr = gte::MultiplyATB(r, r);
+    T err = T{0};
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        err = std::max(err, std::abs(rtr(i, j) - (i == j ? T{1} : T{0})));
+      }
+    }
+    if (!(err <= T{1e-6}) || !(gte::Determinant(r) > T{0})) {
+      throw std::runtime_error{
+          "mesh_inclusion::set_rotation: matrix is not a proper rotation "
+          "(orthonormal, det +1)"};
+    }
+    _rotation = r;
+    _identity_rotation = (r == gte::Matrix3x3<T>::Identity());
+    update_rotated_bounds();
+  }
+
+  // Unit quaternion (x, y, z, w); normalised here, must be non-zero.
+  void set_rotation(gte::Quaternion<T> q) {
+    if (!(gte::Normalize(q) > T{0})) {
+      throw std::runtime_error{
+          "mesh_inclusion::set_rotation: zero / non-finite quaternion"};
+    }
+    set_rotation(static_cast<gte::Matrix3x3<T>>(gte::Rotation<3, T>(q)));
+  }
+
+  // Right-handed rotation by `angle` radians about `axis` (normalised
+  // here, must be non-zero).
+  void set_rotation_axis_angle(std::array<T, 3> const& axis, T angle) {
+    gte::Vector3<T> a{axis[0], axis[1], axis[2]};
+    if (!(gte::Normalize(a) > T{0}) || !std::isfinite(angle)) {
+      throw std::runtime_error{
+          "mesh_inclusion::set_rotation_axis_angle: zero / non-finite "
+          "axis or angle"};
+    }
+    set_rotation(static_cast<gte::Matrix3x3<T>>(
+        gte::Rotation<3, T>(gte::AxisAngle<3, T>(a, angle))));
+  }
+
+  // Euler angles in radians, z-y-z convention: R = Rz(alpha)·Ry(beta)·Rz(gamma).
+  void set_rotation_euler_zyz(T alpha, T beta, T gamma) {
+    if (!std::isfinite(alpha) || !std::isfinite(beta) || !std::isfinite(gamma)) {
+      throw std::runtime_error{
+          "mesh_inclusion::set_rotation_euler_zyz: non-finite angle"};
+    }
+    // GTE (mat·vec convention) composes EulerAngles(i0,i1,i2,a0,a1,a2)
+    // as R(i2,a2)·R(i1,a1)·R(i0,a0), hence the reversed angle order.
+    set_rotation(static_cast<gte::Matrix3x3<T>>(
+        gte::Rotation<3, T>(gte::EulerAngles<T>(2, 1, 2, gamma, beta, alpha))));
+  }
+
+  [[nodiscard]] gte::Matrix3x3<T> const& rotation() const noexcept {
+    return _rotation;
+  }
+
+  // Uniform scale about the middle point; must be finite and > 0, and the
+  // scaled extents and volume must stay finite.
+  void set_scale(T s) {
+    if (!(s > T{0}) || !std::isfinite(s)) {
+      throw std::runtime_error{
+          "mesh_inclusion::set_scale: scale must be finite and > 0, got " +
+          std::to_string(s)};
+    }
+    // The scaled extents and s^3 * volume must stay finite (1e300 would
+    // give an infinite bounding box / volume).
+    bool finite = std::isfinite(s * s * s * _volume);
+    for (int k = 0; k < 3; ++k) {
+      finite = finite && std::isfinite(s * _rot_min[k]) &&
+               std::isfinite(s * _rot_max[k]);
+    }
+    if (!finite) {
+      throw std::runtime_error{
+          "mesh_inclusion::set_scale: scale is so large that the scaled "
+          "extents or volume are not finite"};
+    }
+    _scale = s;
+    apply_scale_to_bounds();
+  }
+  [[nodiscard]] T scale() const noexcept { return _scale; }
+
+  // Map a base (file-space) point to world space / back.
+  [[nodiscard]] std::array<T, 3> to_world(gte::Vector3<T> const& x) const {
+    const gte::Vector3<T> c{_base_centre[0], _base_centre[1], _base_centre[2]};
+    const auto r = _identity_rotation ? (x - c) : _rotation * (x - c);
+    return {_base_centre[0] + _offset[0] + _scale * r[0],
+            _base_centre[1] + _offset[1] + _scale * r[1],
+            _base_centre[2] + _offset[2] + _scale * r[2]};
+  }
+  [[nodiscard]] gte::Vector3<T> to_local(std::array<T, 3> const& p) const {
+    gte::Vector3<T> d{p[0] - _base_centre[0] - _offset[0],
+                      p[1] - _base_centre[1] - _offset[1],
+                      p[2] - _base_centre[2] - _offset[2]};
+    if (!_identity_rotation) d = d * _rotation;   // Rᵀ·d
+    const gte::Vector3<T> c{_base_centre[0], _base_centre[1], _base_centre[2]};
+    return c + d / _scale;
+  }
+
+  // Inside test by ray-casting from the point mapped into base
+  // coordinates along a slightly off-axis +x direction. The transform
+  // is affine and invertible, so testing the mapped point against the
+  // base mesh is equivalent to testing the original point against the
+  // placed mesh — and avoids any per-shape mutation of triangle data.
   [[nodiscard]] bool is_inside(std::array<T, 3> const& point) const override {
     if (!_base || _base->empty()) return false;
     gte::Ray3<T> ray;
-    ray.origin[0] = point[0] - _offset[0];
-    ray.origin[1] = point[1] - _offset[1];
-    ray.origin[2] = point[2] - _offset[2];
-    // A point outside the cached base AABB is outside the closed mesh.
+    ray.origin = to_local(point);
+    // A point outside the cached base AABB (compared in the base frame,
+    // i.e. after undoing translation, rotation and scale) is outside
+    // the closed mesh.
     for (int k = 0; k < 3; ++k) {
       if (!(ray.origin[k] >= _base_min[k] && ray.origin[k] <= _base_max[k])) {
         return false;
@@ -860,8 +979,9 @@ public:
   void make_bounding_box() override {
     auto box = std::make_unique<box_bounding<T>>();
     for (int k = 0; k < 3; ++k) {
-      box->top_point()[k]    = _base_max[k] + _offset[k];
-      box->bottom_point()[k] = _base_min[k] + _offset[k];
+      const T mid = _base_centre[k] + _offset[k];
+      box->top_point()[k]    = mid + _rel_max[k];
+      box->bottom_point()[k] = mid + _rel_min[k];
     }
     this->_bounding_box = std::move(box);
   }
@@ -877,8 +997,8 @@ public:
   }
 
   // ---- accessors --------------------------------------------------------
-  // Triangles are exposed via the shared base; callers needing the
-  // translated form must add `_offset` to each vertex themselves.
+  // Triangles are exposed via the shared base (file space); callers
+  // needing the placed form map each vertex through `to_world`.
   [[nodiscard]] shared_triangles base_triangles() const noexcept {
     return _base;
   }
@@ -926,7 +1046,11 @@ private:
     }
     for (int k = 0; k < 3; ++k) {
       _base_centre[k] = (_base_min[k] + _base_max[k]) * T{0.5};
+      _rel_min[k] = _base_min[k] - _base_centre[k];
+      _rel_max[k] = _base_max[k] - _base_centre[k];
     }
+    _rot_min = _rel_min;
+    _rot_max = _rel_max;
     _volume = sum / T{6};
     // A closed surface that encloses no volume (e.g. a triangle and
     // its reverse) passes the topology check but is useless as an
@@ -952,11 +1076,52 @@ private:
     }
   }
 
+  // AABB of R·(x − c) over all base vertices (unit scale), cached in
+  // _rot_min/_rot_max, then scaled into _rel_min/_rel_max. O(M); the
+  // identity-rotation case is the cached base AABB.
+  void update_rotated_bounds() {
+    if (!_base || _base->empty()) return;
+    if (_identity_rotation) {
+      for (int k = 0; k < 3; ++k) {
+        _rot_min[k] = _base_min[k] - _base_centre[k];
+        _rot_max[k] = _base_max[k] - _base_centre[k];
+      }
+    } else {
+      const gte::Vector3<T> c{_base_centre[0], _base_centre[1], _base_centre[2]};
+      _rot_min.fill(std::numeric_limits<T>::max());
+      _rot_max.fill(std::numeric_limits<T>::lowest());
+      for (auto const& tri : *_base) {
+        for (int i = 0; i < 3; ++i) {
+          const auto r = _rotation * (tri.v[i] - c);
+          for (int k = 0; k < 3; ++k) {
+            _rot_min[k] = std::min(_rot_min[k], r[k]);
+            _rot_max[k] = std::max(_rot_max[k], r[k]);
+          }
+        }
+      }
+    }
+    apply_scale_to_bounds();
+  }
+
+  void apply_scale_to_bounds() {
+    for (int k = 0; k < 3; ++k) {
+      _rel_min[k] = _scale * _rot_min[k];
+      _rel_max[k] = _scale * _rot_max[k];
+    }
+  }
+
   shared_triangles _base;
   std::array<T, 3> _base_min{};
   std::array<T, 3> _base_max{};
   std::array<T, 3> _base_centre{};
   std::array<T, 3> _offset{};
+  std::array<T, 3> _rot_min{};   // AABB of R·(x − c), unit scale
+  std::array<T, 3> _rot_max{};
+  std::array<T, 3> _rel_min{};   // placed AABB relative to middle point
+  std::array<T, 3> _rel_max{};
+  gte::Matrix3x3<T> _rotation{gte::Matrix3x3<T>::Identity()};
+  bool _identity_rotation{true};
+  T _scale{1};
   T _volume{0};
   std::shared_ptr<detail::mesh_ray_grid<T> const> _grid;   // null for small meshes
 };

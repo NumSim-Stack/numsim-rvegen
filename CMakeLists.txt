@@ -198,6 +198,10 @@ add_executable(rvegen_mesh_io_test tests/mesh_io_test.cpp)
 target_link_libraries(rvegen_mesh_io_test PRIVATE rvegen_lib)
 add_test(NAME mesh_io_test COMMAND rvegen_mesh_io_test)
 
+add_executable(rvegen_mesh_transform_test tests/mesh_transform_test.cpp)
+target_link_libraries(rvegen_mesh_transform_test PRIVATE rvegen_lib)
+add_test(NAME mesh_transform_test COMMAND rvegen_mesh_transform_test)
+
 add_executable(rvegen_post_process_smoke tests/post_process_smoke.cpp)
 target_link_libraries(rvegen_post_process_smoke PRIVATE
     rvegen_lib
