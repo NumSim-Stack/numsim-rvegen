@@ -10,9 +10,8 @@
 // the depth-sorting headaches.
 //
 // Shape dispatch is by dynamic_cast (output is one-shot, not on a hot
-// loop). Supported: sphere, box, mesh_inclusion (STL / PLY, emitted as
-// an indexed BufferGeometry of its placed triangles). 2D shapes
-// (circle, rectangle, ellipse) are skipped — use svg_writer for those.
+// loop). Supported: sphere, box. 2D shapes (circle, rectangle, ellipse)
+// are skipped — use svg_writer for those.
 
 #include <array>
 #include <cstddef>
@@ -26,10 +25,8 @@
 
 #include "post_process_base.h"
 #include "../shapes/box.h"
-#include "../shapes/mesh_inclusion.h"
 #include "../shapes/sphere.h"
 #include "../types.h"
-#include "../visualization/mesh_inclusion_mesh.h"
 
 namespace rvegen {
 
@@ -144,23 +141,6 @@ const shapes = [
         out << "  { kind: 'box', x: " << cx << ", y: " << cy << ", z: " << cz
             << ", w: " << w << ", h: " << h << ", d: " << d
             << ", color: " << color << " },\n";
-      } else if (auto const* mi =
-                     dynamic_cast<mesh_inclusion<value_type> const*>(raw); mi) {
-        // STL / PLY inclusion: placed triangles in world coordinates.
-        const auto m = to_mesh(*mi);
-        if (!m.empty()) {
-          out << "  { kind: 'mesh', x: 0, y: 0, z: 0, pos: [";
-          for (std::size_t i = 0; i < m.verts.size(); ++i) {
-            auto const& v = m.verts[i];
-            out << (i ? "," : "") << v[0] << ',' << v[1] << ',' << v[2];
-          }
-          out << "], idx: [";
-          for (std::size_t i = 0; i < m.tris.size(); ++i) {
-            auto const& t = m.tris[i];
-            out << (i ? "," : "") << t[0] << ',' << t[1] << ',' << t[2];
-          }
-          out << "], color: " << color << " },\n";
-        }
       }
       ++idx;
     }
@@ -212,11 +192,6 @@ for (const s of shapes) {
     geom = new THREE.SphereGeometry(s.r, 28, 20);
   } else if (s.kind === 'box') {
     geom = new THREE.BoxGeometry(s.w, s.h, s.d);
-  } else if (s.kind === 'mesh') {
-    geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(s.pos, 3));
-    geom.setIndex(s.idx);
-    geom.computeVertexNormals();
   } else continue;
 
   const mat = new THREE.MeshStandardMaterial({

@@ -652,7 +652,7 @@ public:
     }
     _rotation = r;
     _identity_rotation = (r == gte::Matrix3x3<T>::Identity());
-    update_transformed_bounds();
+    update_rotated_bounds();
   }
 
   // Unit quaternion (x, y, z, w); normalised here, must be non-zero.
@@ -701,7 +701,7 @@ public:
           std::to_string(s)};
     }
     _scale = s;
-    update_transformed_bounds();
+    apply_scale_to_bounds();
   }
   [[nodiscard]] T scale() const noexcept { return _scale; }
 
@@ -811,6 +811,8 @@ private:
       _rel_min[k] = _base_min[k] - _base_centre[k];
       _rel_max[k] = _base_max[k] - _base_centre[k];
     }
+    _rot_min = _rel_min;
+    _rot_max = _rel_max;
     _volume = sum / T{6};
     // A closed surface that encloses no volume (e.g. a triangle and
     // its reverse) passes the topology check but is useless as an
@@ -828,29 +830,37 @@ private:
     }
   }
 
-  // AABB of scale·R·(x − c) over all base vertices, i.e. the placed
-  // mesh's AABB relative to the middle point. O(M); the rotation-free
-  // unit-scale case is the cached base AABB.
-  void update_transformed_bounds() {
+  // AABB of R·(x − c) over all base vertices (unit scale), cached in
+  // _rot_min/_rot_max, then scaled into _rel_min/_rel_max. O(M); the
+  // identity-rotation case is the cached base AABB.
+  void update_rotated_bounds() {
     if (!_base || _base->empty()) return;
     if (_identity_rotation) {
       for (int k = 0; k < 3; ++k) {
-        _rel_min[k] = _scale * (_base_min[k] - _base_centre[k]);
-        _rel_max[k] = _scale * (_base_max[k] - _base_centre[k]);
+        _rot_min[k] = _base_min[k] - _base_centre[k];
+        _rot_max[k] = _base_max[k] - _base_centre[k];
       }
-      return;
-    }
-    const gte::Vector3<T> c{_base_centre[0], _base_centre[1], _base_centre[2]};
-    _rel_min.fill(std::numeric_limits<T>::max());
-    _rel_max.fill(std::numeric_limits<T>::lowest());
-    for (auto const& tri : *_base) {
-      for (int i = 0; i < 3; ++i) {
-        const auto r = _rotation * (tri.v[i] - c);
-        for (int k = 0; k < 3; ++k) {
-          _rel_min[k] = std::min(_rel_min[k], _scale * r[k]);
-          _rel_max[k] = std::max(_rel_max[k], _scale * r[k]);
+    } else {
+      const gte::Vector3<T> c{_base_centre[0], _base_centre[1], _base_centre[2]};
+      _rot_min.fill(std::numeric_limits<T>::max());
+      _rot_max.fill(std::numeric_limits<T>::lowest());
+      for (auto const& tri : *_base) {
+        for (int i = 0; i < 3; ++i) {
+          const auto r = _rotation * (tri.v[i] - c);
+          for (int k = 0; k < 3; ++k) {
+            _rot_min[k] = std::min(_rot_min[k], r[k]);
+            _rot_max[k] = std::max(_rot_max[k], r[k]);
+          }
         }
       }
+    }
+    apply_scale_to_bounds();
+  }
+
+  void apply_scale_to_bounds() {
+    for (int k = 0; k < 3; ++k) {
+      _rel_min[k] = _scale * _rot_min[k];
+      _rel_max[k] = _scale * _rot_max[k];
     }
   }
 
@@ -859,6 +869,8 @@ private:
   std::array<T, 3> _base_max{};
   std::array<T, 3> _base_centre{};
   std::array<T, 3> _offset{};
+  std::array<T, 3> _rot_min{};   // AABB of R·(x − c), unit scale
+  std::array<T, 3> _rot_max{};
   std::array<T, 3> _rel_min{};   // placed AABB relative to middle point
   std::array<T, 3> _rel_max{};
   gte::Matrix3x3<T> _rotation{gte::Matrix3x3<T>::Identity()};

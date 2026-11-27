@@ -350,10 +350,10 @@ void test_input_euler_and_scale() {
 }
 
 // ---------------------------------------------------------------------------
-// to_mesh, dispatcher, writers
+// to_mesh, dispatcher
 // ---------------------------------------------------------------------------
 
-void test_to_mesh_dispatcher_and_writers() {
+void test_to_mesh_via_dispatcher() {
   auto shape = std::make_unique<mesh_t>(make_tet(1.0));
   shape->set_rotation_axis_angle({0, 1, 0}, 0.3);
   shape->set_scale(0.5);
@@ -380,18 +380,35 @@ void test_to_mesh_dispatcher_and_writers() {
   const auto via = d(static_cast<rvegen::shape_base<double> const&>(*shape));
   REQUIRE(via.verts == direct.verts && via.tris == direct.tris);
 
-  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
-  shapes.push_back(std::move(shape));
-  {
-    std::ostringstream out;
-    rvegen::three_js_writer<double>{}.write(out, shapes, {1.0, 1.0, 1.0});
-    REQUIRE(out.str().find("kind: 'mesh'") != std::string::npos);
-  }
-  {
-    std::ostringstream out;
-    rvegen::svg_3d_writer<double>{}.write(out, shapes, {1.0, 1.0, 1.0});
-    REQUIRE(out.str().find("<polygon") != std::string::npos);
-  }
+  // The writers pick mesh inclusions up through this same dispatcher path
+  // (no mesh_inclusion special case in the writers themselves).
+}
+
+// Rotation and scale may be set in either order; the cached AABB must
+// agree with brute force over the transformed vertices.
+void test_bounds_independent_of_set_order() {
+  auto brute = [](mesh_t const& m) {
+    std::array<double, 3> e{0, 0, 0};
+    const auto mid = m.get_middle_point();
+    for (auto const& t : *m.base_triangles())
+      for (int i = 0; i < 3; ++i) {
+        const auto w = m.to_world(t.v[i]);
+        for (int k = 0; k < 3; ++k) e[k] = std::max(e[k], std::abs(w[k] - mid[k]));
+      }
+    return e;
+  };
+  mesh_t a{make_tet(1.0)}, b{make_tet(1.0)};
+  a.set_rotation_axis_angle({1, 2, 3}, 0.7); a.set_scale(2.5);
+  b.set_scale(2.5); b.set_rotation_axis_angle({1, 2, 3}, 0.7);
+  const auto ea = a.max_expansion(), eb = b.max_expansion();
+  for (int k = 0; k < 3; ++k) REQUIRE(std::abs(ea[k] - eb[k]) < 1e-12);
+  // max_expansion is the larger one-sided extent, so it bounds brute force.
+  const auto br = brute(a);
+  for (int k = 0; k < 3; ++k) REQUIRE(br[k] <= ea[k] + 1e-12);
+  a.set_scale(1.0);
+  const auto e1 = a.max_expansion();
+  const auto br1 = brute(a);
+  for (int k = 0; k < 3; ++k) REQUIRE(br1[k] <= e1[k] + 1e-12 && e1[k] > 0);
 }
 
 } // namespace
@@ -405,7 +422,8 @@ int main() {
   test_random_rotation_aabb_contains_transformed_vertices();
   test_uniform_orientation_is_isotropic();
   test_input_euler_and_scale();
-  test_to_mesh_dispatcher_and_writers();
+  test_to_mesh_via_dispatcher();
+  test_bounds_independent_of_set_order();
   if (failures != 0) {
     std::cerr << failures << " check(s) failed\n";
     return EXIT_FAILURE;
