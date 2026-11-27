@@ -734,6 +734,98 @@ void test_tessellation_rejects_mixing() {
   REQUIRE(buf.str().empty());
 }
 
+std::vector<std::array<double, 3>> jittered_lattice(int n, double jit, unsigned seed) {
+  std::mt19937 g{seed};
+  std::uniform_real_distribution<double> u{-1.0, 1.0};
+  std::vector<std::array<double, 3>> s;
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j)
+      for (int k = 0; k < n; ++k)
+        s.push_back({(i + 0.5 + jit * u(g)) / n, (j + 0.5 + jit * u(g)) / n,
+                     (k + 0.5 + jit * u(g)) / n});
+  return s;
+}
+
+// Lattice cells meet in 8-fold degenerate vertices; jittering the seeds
+// turns them into tiny edges / faces. Above the merge tolerance the mesh
+// is regular, just below it the features are collapsed.
+void test_tessellation_jittered_lattice() {
+  const box_t box{1.0, 1.0, 1.0};
+  for (double jit : {1e-3, 1e-4, 3e-6}) {
+    rvegen::voronoi_generator_3d<double> gen{1.0, 1.0, 1.0,
+                                            jittered_lattice(3, jit, 1)};
+    auto shapes = gen.build();
+    REQUIRE(shapes.size() == 27);
+    check_tessellation(shapes, box, "gmsh_rt_tess_jitter", 0.3, 1e-4);
+  }
+}
+
+// Features far below what gmsh can handle used to be written as-is and made
+// gmsh segfault (rc 139) or fail with PLC errors. Now the writer must either
+// emit geometry that gmsh meshes or reject the cells with a clear error.
+void test_tessellation_near_degenerate_never_crashes() {
+  const box_t box{1.0, 1.0, 1.0};
+  int rejected = 0;
+  for (double jit : {1e-6, 1e-7, 1e-8, 1e-9, 1e-11}) {
+    for (unsigned seed : {1u, 2u, 3u}) {
+      rvegen::voronoi_generator_3d<double> gen{
+          1.0, 1.0, 1.0, jittered_lattice(2, jit, seed)};
+      auto shapes = gen.build();
+      rvegen::gmsh_geo_writer<double> writer{};
+      writer.set_characteristic_length_max(0.3);
+      bool threw = false;
+      try {
+        std::ostringstream buf;
+        writer.write(buf, shapes, box);
+      } catch (std::runtime_error const& e) {
+        threw = true;
+        ++rejected;
+        REQUIRE(std::string{e.what()}.find("seeds") != std::string::npos);
+      }
+      if (!threw) {
+        const cleanup_on_success cleanup{"gmsh_rt_degenerate"};
+        const auto m = write_and_mesh(writer, shapes, box, "gmsh_rt_degenerate");
+        // Merged features move vertices by <= 1e-5 of the box.
+        if (m.ok) {
+          double vol = 0.0;
+          for (std::size_t i = 0; i < shapes.size(); ++i) {
+            vol += std::max(0.0, measure_of(m, "grain_" + std::to_string(i)));
+          }
+          REQUIRE(std::abs(vol - 1.0) < 1e-4);
+        }
+      }
+    }
+  }
+  REQUIRE(rejected > 0);  // the degenerate inputs are not silently passed on
+}
+
+void test_tessellation_duplicate_seeds_and_holes() {
+  const box_t box{1.0, 1.0, 1.0};
+  rvegen::gmsh_geo_writer<double> writer{};
+  {  // coincident seeds
+    rvegen::voronoi_generator_3d<double> gen{
+        1.0, 1.0, 1.0,
+        {{0.3, 0.3, 0.3}, {0.3, 0.3, 0.3}, {0.7, 0.7, 0.7}}};
+    auto shapes = gen.build();
+    std::string msg;
+    try { std::ostringstream buf; writer.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(!msg.empty());
+    REQUIRE(msg.find("seeds") != std::string::npos);
+  }
+  {  // a missing neighbour leaves an interior face owned by one cell
+    rvegen::voronoi_generator_3d<double> gen{
+        1.0, 1.0, 1.0, {{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}}};
+    auto shapes = gen.build();
+    REQUIRE(shapes.size() == 2);
+    shapes.pop_back();
+    std::string msg;
+    try { std::ostringstream buf; writer.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(msg.find("not watertight") != std::string::npos);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -751,6 +843,9 @@ int main() {
   test_tessellation_3d();
   test_tessellation_2d();
   test_tessellation_rejects_mixing();
+  test_tessellation_jittered_lattice();
+  test_tessellation_near_degenerate_never_crashes();
+  test_tessellation_duplicate_seeds_and_holes();
   if (failures == 0) {
     std::cout << "gmsh_geo_roundtrip_test: PASS\n";
     return 0;

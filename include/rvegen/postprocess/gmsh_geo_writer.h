@@ -478,6 +478,31 @@ private:
     return r;
   }
 
+  // Watertightness: a face / edge owned by a single cell must lie on a
+  // wall of the domain box; anywhere else it is a hole (a neighbour is
+  // missing or its geometry does not match).
+  template <typename Topo>
+  static void require_on_wall(std::vector<std::size_t> const& verts,
+                              Topo const& topo,
+                              std::array<value_type, 3> const& box,
+                              char const* what) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      for (value_type wall : {value_type{0}, box[axis]}) {
+        bool all = true;
+        for (auto v : verts) {
+          if (std::abs(topo.points[v - 1][axis] - wall) > topo.tol) all = false;
+        }
+        if (all) return;
+      }
+    }
+    auto const& p = topo.points[verts.front() - 1];
+    throw std::runtime_error{
+        std::string{"gmsh_geo_writer: tessellation is not watertight: a "} +
+        what + " near (" + num(p[0]) + ", " + num(p[1]) + ", " + num(p[2]) +
+        ") belongs to one cell only and is not on the domain boundary "
+        "(missing or mismatching neighbour cell)"};
+  }
+
   void write_tessellation(std::ostream& out, shape_vector const& shapes,
                           std::array<value_type, 3> const& box,
                           bool is_3d) const {
@@ -494,7 +519,13 @@ private:
       }
     }
     topology topo;
-    topo.tol = value_type{1e-9} * std::max({box[0], box[1], box[2]});
+    // Features smaller than this (vertices closer than tol, edges and
+    // faces that collapse with them) are merged. gmsh segfaults or fails
+    // with PLC errors on slivers around 1e-8..1e-6 of the domain size, so
+    // the merge radius is well above that; nearly degenerate Voronoi
+    // vertices (jittered lattices) collapse onto one point instead.
+    const value_type L = std::max({box[0], box[1], box[2]});
+    topo.tol = value_type{1e-5} * L;
 
     // Per cell: list of faces as vertex-id rings (2D: one ring per cell).
     std::vector<std::vector<std::vector<std::size_t>>> cells(shapes.size());
@@ -527,9 +558,46 @@ private:
       }
     }
 
+    // Every cell must be a closed polyhedron / polygon after merging: at
+    // least 4 faces (3 edges in 2D) and each edge used exactly twice, once
+    // per direction. Otherwise gmsh would receive an open or collapsed
+    // volume, which it may segfault on; reject with a clear error instead.
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      if (cells[i].empty() || (is_3d && cells[i].size() < 4)) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: cell #" + std::to_string(i) +
+            " collapsed to a degenerate shape (features below " +
+            num(topo.tol) + "); seeds are duplicated or closer than that"};
+      }
+      if (!is_3d) continue;  // a 2D cell is one ring, closed by construction
+      std::map<std::pair<std::size_t, std::size_t>, std::pair<int, int>> edge;
+      for (auto const& ring : cells[i]) {
+        for (std::size_t k = 0; k < ring.size(); ++k) {
+          const auto a = ring[k];
+          const auto b = ring[(k + 1) % ring.size()];
+          auto& e = edge[std::minmax(a, b)];
+          ++e.first;
+          e.second += a < b ? 1 : -1;
+        }
+      }
+      for (auto const& [key, e] : edge) {
+        if (e.first != 2 || e.second != 0) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: cell #" + std::to_string(i) +
+              " is not a closed polyhedron after merging features below " +
+              num(topo.tol) + " (an edge is not shared by exactly two of "
+              "its faces): the seeds form a nearly degenerate configuration "
+              "(e.g. a lattice jittered by less than ~1e-5 of the domain "
+              "size, or almost coincident seeds). Separate the seeds "
+              "further or snap them exactly onto the lattice"};
+        }
+      }
+    }
+
     // Unique surfaces (3D), keyed by sorted vertex set.
     struct face_info {
       std::size_t id{};
+      std::vector<std::size_t> verts;
       std::vector<long long> lines;
       int uses{0};
     };
@@ -550,6 +618,7 @@ private:
         if (it == faces.end()) {
           face_info fi;
           fi.id = faces.size() + 1;
+          fi.verts = ring;
           for (std::size_t k = 0; k < ring.size(); ++k) {
             fi.lines.push_back(topo.line(ring[k], ring[(k + 1) % ring.size()]));
           }
@@ -558,8 +627,10 @@ private:
         ++it->second.uses;
         if (it->second.uses > 2) {
           throw std::runtime_error{
-              "gmsh_geo_writer: a face is shared by more than two cells; "
-              "the cells do not form a valid tessellation"};
+              "gmsh_geo_writer: more than two cells claim the same face "
+              "(cell #" + std::to_string(i) + " is the third); cells "
+              "overlap or seeds are duplicated / closer than " +
+              num(topo.tol) + ", so they do not form a valid tessellation"};
         }
         cell_faces[i].push_back(it->second.id);
       }
@@ -588,7 +659,10 @@ private:
         out << "Curve Loop(" << f->id << ") = {";
         write_ids(f->lines);
         out << "};\nPlane Surface(" << f->id << ") = {" << f->id << "};\n";
-        if (f->uses == 1) boundary.push_back(f->id);
+        if (f->uses == 1) {
+          require_on_wall(f->verts, topo, box, "face");
+          boundary.push_back(f->id);
+        }
       }
       for (std::size_t i = 0; i < shapes.size(); ++i) {
         out << "Surface Loop(" << i + 1 << ") = {";
@@ -605,10 +679,14 @@ private:
         const int uses = topo.line_uses.at(key);
         if (uses > 2) {
           throw std::runtime_error{
-              "gmsh_geo_writer: an edge is shared by more than two cells; "
-              "the cells do not form a valid tessellation"};
+              "gmsh_geo_writer: more than two cells share one edge; cells "
+              "overlap or seeds are duplicated / closer than " +
+              num(topo.tol) + ", so they do not form a valid tessellation"};
         }
-        if (uses == 1) boundary.push_back(id);
+        if (uses == 1) {
+          require_on_wall({key.first, key.second}, topo, box, "edge");
+          boundary.push_back(id);
+        }
       }
     }
     const char* kind = is_3d ? "Volume" : "Surface";
