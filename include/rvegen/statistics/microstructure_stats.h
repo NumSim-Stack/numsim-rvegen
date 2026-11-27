@@ -235,6 +235,7 @@ radial_distribution_2d(
       centres.push_back({double(c[0]), double(c[1])});
     }
   }
+  if (nbins == 0) return {};
   const std::size_t N = centres.size();
   const double Lx = double(domain_box[0]);
   const double Ly = double(domain_box[1]);
@@ -304,6 +305,7 @@ radial_distribution_3d(
       centres.push_back({double(c[0]), double(c[1]), double(c[2])});
     }
   }
+  if (nbins == 0) return {};
   const std::size_t N = centres.size();
   const double Lx = double(domain_box[0]);
   const double Ly = double(domain_box[1]);

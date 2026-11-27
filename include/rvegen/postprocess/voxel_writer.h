@@ -136,11 +136,13 @@ public:
     // leading `#` lines rather than counting fixed offsets, because the
     // count changes when `set_phases()` is used.
     //
-    // The version-marker token `[rvegen-voxel-format: v2]` matches the
+    // The version-marker token `[rvegen-voxel-format: v3]` matches the
     // convention used by `vtk_legacy_writer` (and any future writer)
     // — bracketed `[rvegen-<format>: v<N>]` is searchable anywhere in
     // the comment header and explicitly identifies the file format.
-    out << "# rvegen voxel grid [rvegen-voxel-format: v2]\n"
+    // v3: a 3D RVE written with nz = 1 samples the mid-plane z = Lz/2
+    // (v2 sampled the bottom face z = 0).
+    out << "# rvegen voxel grid [rvegen-voxel-format: v3]\n"
         << "# nx ny nz: " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'
         << "# Lx Ly Lz: " << domain_box[0] << ' ' << domain_box[1] << ' '
         << domain_box[2] << '\n';
