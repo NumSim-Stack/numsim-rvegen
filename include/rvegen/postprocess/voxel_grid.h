@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
+#include <string>
 #include <vector>
 
 #include "../phase/phase.h"
@@ -20,6 +21,35 @@
 namespace rvegen {
 
 using phase_id = std::uint32_t;
+
+// Upper bound on the number of voxels of one grid (2^32; the id array alone
+// is then 16 GiB). Larger grids are rejected up front instead of wrapping
+// the size_t product or failing deep inside the allocator.
+inline constexpr std::uint64_t max_voxel_count = std::uint64_t{1} << 32;
+
+// The ONE place that turns (nx, ny, nz) into a voxel count. `nz` must
+// already be the effective z count (see `effective_nz`). Throws
+// std::invalid_argument naming nx/ny/nz for a zero count, for a product that
+// would overflow, and for a product above `max_voxel_count`.
+[[nodiscard]] inline std::size_t
+checked_voxel_count(std::size_t nx, std::size_t ny, std::size_t nz) {
+  auto fail = [&](char const* why) {
+    throw std::invalid_argument{
+        std::string{"voxel grid: "} + why + " (nx=" + std::to_string(nx) +
+        ", ny=" + std::to_string(ny) + ", nz=" + std::to_string(nz) + ")"};
+  };
+  if (nx == 0 || ny == 0 || nz == 0) fail("nx, ny and nz must be >= 1");
+  // Divide instead of multiplying so no intermediate product can wrap.
+  const std::uint64_t cap = max_voxel_count;
+  if (std::uint64_t{ny} > cap / nx) {
+    fail("nx * ny * nz exceeds the 2^32 voxel limit");
+  }
+  const std::uint64_t xy = std::uint64_t{nx} * ny;  // <= 2^32
+  if (std::uint64_t{nz} > cap / xy) {
+    fail("nx * ny * nz exceeds the 2^32 voxel limit");
+  }
+  return static_cast<std::size_t>(xy * nz);
+}
 
 namespace detail {
 
@@ -37,7 +67,7 @@ sample_voxel_grid_with_ids(
   // nz = 1 must hit the mid-plane z = Lz/2, not the bottom face z = 0.
   const bool is_3d = domain_box[2] > T{0};
   const std::size_t nz_eff = is_3d ? nz : 1;
-  std::vector<phase_id> grid(nx * ny * nz_eff, 0);
+  std::vector<phase_id> grid(checked_voxel_count(nx, ny, nz_eff), 0);
 
   const auto dx = domain_box[0] / static_cast<T>(nx);
   const auto dy = domain_box[1] / static_cast<T>(ny);
