@@ -55,7 +55,7 @@
 // Numerical robustness (scale-invariant, #79):
 //   * Every half-space is normalised to a unit normal, so the 3x3
 //     determinant is dimensionless and the feasibility / merge
-//     tolerances are distances relative to the longest domain edge
+//     tolerances are distances relative to the shortest domain edge
 //     (1e-9 · scale). Domains of 1e-6 m and 1e3 m behave identically.
 //   * Bisector offsets are computed as n · midpoint (not from the
 //     difference of squared norms), avoiding cancellation for
@@ -78,6 +78,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <utility>
+#include <string>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -140,7 +141,37 @@ public:
     return _seeds.size();
   }
 
+  // Indices of cells with zero volume. Only possible in weighted mode (a
+  // plain Voronoi cell always contains its seed): a power-diagram weight set
+  // that is too spread out leaves some seeds with an empty cell.
+  [[nodiscard]] static std::vector<std::size_t>
+  empty_cell_indices(shape_vector const& cells) {
+    std::vector<std::size_t> out;
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+      if (!(cells[i]->volume() > T{0})) out.push_back(i);
+    }
+    return out;
+  }
+
+  // build() that refuses silent empty cells: throws std::runtime_error
+  // naming the empty seed indices (weighted mode) instead of returning
+  // zero-volume placeholders.
+  [[nodiscard]] shape_vector build_checked() const {
+    auto cells = build();
+    const auto empty = empty_cell_indices(cells);
+    if (!empty.empty()) {
+      std::string msg = "voronoi_generator_3d: " + std::to_string(empty.size()) +
+                        " seed(s) have an empty cell (weights too spread out"
+                        " or seed dropped); first index " +
+                        std::to_string(empty.front());
+      throw std::runtime_error{msg};
+    }
+    return cells;
+  }
+
   // Build one voronoi_cell per seed. Cell index matches seed index.
+  // In weighted mode some cells may be empty placeholders; check with
+  // empty_cell_indices() or use build_checked().
   [[nodiscard]] shape_vector build() const {
 #ifdef RVEGEN_WITH_VORO_PP
     if (_backend == voronoi_backend::voro_pp) {
@@ -170,8 +201,11 @@ private:
     T A, B, C, D;
   };
 
+  // Tolerance scale: the SHORTEST domain edge, so a thin box (e.g.
+  // 1 x 1 x 1e-4) is not resolved with a tolerance coarser than its own
+  // thickness (that lost ~5 % of the periodic volume).
   [[nodiscard]] T scale() const noexcept {
-    return std::max({_Lx, _Ly, _Lz});
+    return std::min({_Lx, _Ly, _Lz});
   }
 
   // Collect the 6 box + (N - 1) bisector half-spaces for cell `i`.

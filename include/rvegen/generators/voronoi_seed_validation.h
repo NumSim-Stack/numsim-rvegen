@@ -6,7 +6,7 @@
 //   * Seeds must lie in the closed domain `[0, L_k]` (a relative slack of
 //     `rel_tol * scale` is tolerated). Seeds ON the boundary are valid.
 //   * Coincident seeds are REJECTED with a clear `std::runtime_error`.
-//     Two seeds closer than `rel_tol * scale` (scale = longest domain
+//     Two seeds closer than `rel_tol * scale` (scale = shortest domain
 //     edge, `rel_tol = 1e-9`) would produce duplicate or zero-volume
 //     cells, and merging silently would break the "cell i <-> seed i"
 //     index contract; the caller decides how to dedupe.
@@ -32,7 +32,8 @@ void validate_voronoi_seeds(std::array<T, D> const& extent,
                             std::vector<std::array<T, D>> const& seeds,
                             char const* who, bool periodic = false) {
   T scale{0};
-  for (auto e : extent) scale = std::max(scale, e);
+  scale = extent[0];
+  for (auto e : extent) scale = std::min(scale, e);   // shortest edge
   const T tol = static_cast<T>(voronoi_rel_tol) * scale;
 
   for (std::size_t i = 0; i < seeds.size(); ++i) {
