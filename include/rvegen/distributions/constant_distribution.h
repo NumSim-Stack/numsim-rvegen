@@ -4,7 +4,6 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
 
@@ -28,17 +27,16 @@ public:
   constant_distribution(value_type value, engine_type& /*unused*/) noexcept
       : _value{value} {}
 
-  using fields = field_list<
-      field<"value", value_type, true,
-            numsim_core::description_label<"the constant value the distribution always returns">>>;
-
   // Schema-driven ctor.
   constant_distribution(parameter_handler_t const& handler,
                         engine_type& /*unused*/)
-      : _value{std::get<0>(fields::extract(handler))} {}
+      : _value{handler.template get<value_type>("value")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    return fields::schema();
+    parameter_controller_t p;
+    p.template required<value_type>("value")
+        .template add<numsim_core::description_label<"the constant value the distribution always returns">>();
+    return p;
   }
 
   [[nodiscard]] value_type operator()() noexcept override { return _value; }

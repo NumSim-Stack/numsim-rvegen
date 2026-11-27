@@ -1513,69 +1513,22 @@ void test_polyline_tube_directional_input_via_registry() {
   REQUIRE(std::abs(cl[1][0] - 0.7) < 1e-12);
 }
 
-// ----------------------------------------------------------------------------
-// field_list scaffolding (#1): a schema declared once, used by both
-// `schema()` and `extract()`.
-// ----------------------------------------------------------------------------
-void test_field_list_schema_round_trip() {
-  using fields = rvegen::field_list<
-      rvegen::field<"x",      double>,
-      rvegen::field<"y",      double>,
-      rvegen::field<"radius", double>>;
-
-  // Schema must list all three names and mark them required.
-  auto s = fields::schema();
-  REQUIRE(s.contains("x"));
-  REQUIRE(s.contains("y"));
-  REQUIRE(s.contains("radius"));
-
-  // Round-trip: populate a handler with the field values, then extract.
-  rvegen::parameter_handler_t h;
-  h.insert<double>("x", 0.25);
-  h.insert<double>("y", 0.50);
-  h.insert<double>("radius", 0.10);
-  auto values = fields::extract(h);
-  REQUIRE(std::get<0>(values) == 0.25);
-  REQUIRE(std::get<1>(values) == 0.50);
-  REQUIRE(std::get<2>(values) == 0.10);
-}
-
-void test_field_list_optional_field_not_required() {
-  using fields = rvegen::field_list<
-      rvegen::field<"required_field", double>,
-      rvegen::field<"optional_field", double, /*Required=*/false>>;
-  auto s = fields::schema();
-  REQUIRE(s.contains("required_field"));
-  REQUIRE(s.contains("optional_field"));
-}
-
-void test_field_list_empty_pack() {
-  // A no-parameter type (e.g. a future void_material with no schema
-  // fields) should produce a valid empty schema and an empty tuple.
-  using empty_fields = rvegen::field_list<>;
-  auto s = empty_fields::schema();
-  rvegen::parameter_handler_t h;
-  auto values = empty_fields::extract(h);
-  static_assert(std::tuple_size_v<decltype(values)> == 0);
-  (void)s;
-}
-
 // Helper: probe a parameter_controller slot for the hint side-bases that
 // `description_label`, `unit_label`, and `min_only`/`range` attach. Mirrors
 // the discovery pattern in tests/schema_audit_test.cpp; pulled inline here
-// so the field_list tests can verify annotations actually landed.
-struct field_list_hint_probe {
+// so the shape-schema tests can verify annotations actually landed.
+struct hint_probe {
   bool has_description = false;
   bool has_range = false;
   bool has_units = false;
 };
 
 template <typename T>
-field_list_hint_probe probe_field(rvegen::parameter_controller_t const& s,
-                                  std::string const& name) {
+hint_probe probe_field(rvegen::parameter_controller_t const& s,
+                       std::string const& name) {
   using typed_t = numsim_core::input_parameter<
       T, std::string, rvegen::parameter_handler_t>;
-  field_list_hint_probe hp;
+  hint_probe hp;
   for (auto const& [field_key, param_ptr] : s) {
     if (field_key != name) continue;
     auto const* typed = dynamic_cast<typed_t const*>(param_ptr.get());
@@ -1593,51 +1546,11 @@ field_list_hint_probe probe_field(rvegen::parameter_controller_t const& s,
   return hp;
 }
 
-void test_field_list_carries_description_and_unit_annotations() {
-  // A field with description + unit annotations must have both side-bases
-  // reachable from the controller slot — same hint discovery the
-  // schema_audit_test uses to enforce schema-quality coverage.
-  using fields = rvegen::field_list<
-      rvegen::field<"radius", double, /*Required=*/true,
-                    numsim_core::description_label<"sphere radius">,
-                    numsim_core::unit_label<"m">>>;
-  auto s = fields::schema();
-  REQUIRE(s.contains("radius"));
-  const auto hp = probe_field<double>(s, std::string{"radius"});
-  REQUIRE(hp.has_description);
-  REQUIRE(hp.has_units);
-  REQUIRE(!hp.has_range);
-}
-
-void test_field_list_carries_range_annotation() {
-  // A field with min_only<>/range<> picks up the range_hint_base side-base.
-  using fields = rvegen::field_list<
-      rvegen::field<"n_samples", std::size_t, true,
-                    rvegen::min_only<std::size_t{1}>,
-                    numsim_core::description_label<"number of samples">>>;
-  auto s = fields::schema();
-  const auto hp = probe_field<std::size_t>(s, "n_samples");
-  REQUIRE(hp.has_range);
-  REQUIRE(hp.has_description);
-}
-
-void test_field_list_no_annotations_no_hint_bases() {
-  // A bare field (no annotation pack) must NOT spuriously attach any of
-  // the hint side-bases — annotation transport is opt-in.
-  using fields = rvegen::field_list<rvegen::field<"x", double>>;
-  auto s = fields::schema();
-  const auto hp = probe_field<double>(s, "x");
-  REQUIRE(!hp.has_description);
-  REQUIRE(!hp.has_range);
-  REQUIRE(!hp.has_units);
-}
-
-// First in-tree migration of a shape to declarative field_list (circle).
-// Regression-locks the post-migration schema: all 3 fields must carry a
+// Circle schema regression lock: all 3 fields must carry a
 // description label + unit label, and `radius` must additionally carry
 // a range hint from min_only<T{0}>. If a future schema change drops one
 // of these, this test catches it.
-void test_circle_schema_post_field_list_migration() {
+void test_circle_schema_annotations() {
   auto s = rvegen::circle<double>::parameters();
   for (auto const& name :
        {std::string{"x"}, std::string{"y"}, std::string{"radius"}}) {
@@ -1651,10 +1564,8 @@ void test_circle_schema_post_field_list_migration() {
   REQUIRE(!probe_field<double>(s, std::string{"y"}).has_range);
 }
 
-// Schema-driven ctor still parses correctly after the field_list
-// migration — fields::extract(handler) unpacks into the (x, y, radius)
-// tuple-taking delegating ctor.
-void test_circle_schema_driven_ctor_via_field_list() {
+// Schema-driven ctor reads (x, y, radius) by name from the handler.
+void test_circle_schema_driven_ctor() {
   rvegen::parameter_handler_t h;
   h.insert<double>("x", 0.25);
   h.insert<double>("y", 0.75);
@@ -1666,10 +1577,10 @@ void test_circle_schema_driven_ctor_via_field_list() {
 }
 
 // Same regression coverage for sphere / rectangle / box / ellipse after
-// the field_list migration: each schema field must keep its description
+// the plain-parameters() migration: each schema field must keep its description
 // and unit annotations; size/extent fields keep their min_only<0> range
 // hint; rotation keeps its unit (rad) without a range.
-void test_sphere_schema_post_field_list_migration() {
+void test_sphere_schema_annotations() {
   auto s = rvegen::sphere<double>::parameters();
   for (auto const& name : {std::string{"x"}, std::string{"y"},
                            std::string{"z"}, std::string{"radius"}}) {
@@ -1681,7 +1592,7 @@ void test_sphere_schema_post_field_list_migration() {
   REQUIRE(!probe_field<double>(s, std::string{"x"}).has_range);
 }
 
-void test_sphere_schema_driven_ctor_via_field_list() {
+void test_sphere_schema_driven_ctor() {
   rvegen::parameter_handler_t h;
   h.insert<double>("x", 1.0);
   h.insert<double>("y", 2.0);
@@ -1693,7 +1604,7 @@ void test_sphere_schema_driven_ctor_via_field_list() {
   REQUIRE(s.radius == 0.5);
 }
 
-void test_rectangle_schema_post_field_list_migration() {
+void test_rectangle_schema_annotations() {
   auto s = rvegen::rectangle<double>::parameters();
   for (auto const& name : {std::string{"x"}, std::string{"y"},
                            std::string{"width"}, std::string{"height"}}) {
@@ -1705,7 +1616,7 @@ void test_rectangle_schema_post_field_list_migration() {
   REQUIRE(probe_field<double>(s, std::string{"height"}).has_range);
 }
 
-void test_rectangle_schema_driven_ctor_via_field_list() {
+void test_rectangle_schema_driven_ctor() {
   rvegen::parameter_handler_t h;
   h.insert<double>("x", 0.5);
   h.insert<double>("y", 0.25);
@@ -1719,7 +1630,7 @@ void test_rectangle_schema_driven_ctor_via_field_list() {
   REQUIRE(r(0) == 0.5);
 }
 
-void test_box_schema_post_field_list_migration() {
+void test_box_schema_annotations() {
   auto s = rvegen::box<double>::parameters();
   for (auto const& name :
        {std::string{"x"}, std::string{"y"}, std::string{"z"},
@@ -1732,7 +1643,7 @@ void test_box_schema_post_field_list_migration() {
   REQUIRE(probe_field<double>(s, std::string{"depth"}).has_range);
 }
 
-void test_box_schema_driven_ctor_via_field_list() {
+void test_box_schema_driven_ctor() {
   rvegen::parameter_handler_t h;
   h.insert<double>("x", 0.5);
   h.insert<double>("y", 0.25);
@@ -1746,7 +1657,7 @@ void test_box_schema_driven_ctor_via_field_list() {
   REQUIRE(std::abs(b.depth()  - 0.05) < 1e-12);
 }
 
-void test_ellipse_schema_post_field_list_migration() {
+void test_ellipse_schema_annotations() {
   auto s = rvegen::ellipse<double>::parameters();
   for (auto const& name :
        {std::string{"x"}, std::string{"y"}, std::string{"radius_a"},
@@ -1760,7 +1671,7 @@ void test_ellipse_schema_post_field_list_migration() {
   REQUIRE(!probe_field<double>(s, std::string{"rotation"}).has_range);
 }
 
-void test_ellipse_schema_driven_ctor_via_field_list() {
+void test_ellipse_schema_driven_ctor() {
   rvegen::parameter_handler_t h;
   h.insert<double>("x", 0.0);
   h.insert<double>("y", 0.0);
@@ -3801,22 +3712,16 @@ int main() {
   test_polyline_tube_input_direct_ctor();
   test_polyline_tube_input_missing_dist_throws();
   test_polyline_tube_directional_input_via_registry();
-  test_field_list_schema_round_trip();
-  test_field_list_optional_field_not_required();
-  test_field_list_empty_pack();
-  test_field_list_carries_description_and_unit_annotations();
-  test_field_list_carries_range_annotation();
-  test_field_list_no_annotations_no_hint_bases();
-  test_circle_schema_post_field_list_migration();
-  test_circle_schema_driven_ctor_via_field_list();
-  test_sphere_schema_post_field_list_migration();
-  test_sphere_schema_driven_ctor_via_field_list();
-  test_rectangle_schema_post_field_list_migration();
-  test_rectangle_schema_driven_ctor_via_field_list();
-  test_box_schema_post_field_list_migration();
-  test_box_schema_driven_ctor_via_field_list();
-  test_ellipse_schema_post_field_list_migration();
-  test_ellipse_schema_driven_ctor_via_field_list();
+  test_circle_schema_annotations();
+  test_circle_schema_driven_ctor();
+  test_sphere_schema_annotations();
+  test_sphere_schema_driven_ctor();
+  test_rectangle_schema_annotations();
+  test_rectangle_schema_driven_ctor();
+  test_box_schema_annotations();
+  test_box_schema_driven_ctor();
+  test_ellipse_schema_annotations();
+  test_ellipse_schema_driven_ctor();
   test_bingham_uniform_regime_unit_length();
   test_bingham_uniform_kappa_zero_spreads_over_sphere();
   test_bingham_operator_call_matches_sample();

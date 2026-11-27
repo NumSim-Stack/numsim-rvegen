@@ -92,8 +92,6 @@
 #include "io/stl_reader.h"
 #include "io/ply_reader.h"
 #include "io/mesh_reader.h"
-// schema scaffolding — collapse name/type duplication into one declaration
-#include "schema/field_list.h"
 
 // phase model — named regions with opaque material_config blobs that
 // downstream solvers (numsim-materials) interpret.

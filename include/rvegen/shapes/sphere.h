@@ -9,7 +9,6 @@
 #include <Mathematics/Hypersphere.h>
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../schema/field_list.h"
 #include "../types.h"
 #include "box_bounding.h"
 #include "shape_base.h"
@@ -33,26 +32,28 @@ public:
   }
 
   // Declarative schema — see circle.h for the migration pattern.
-  using fields = field_list<
-      field<"x", T, true,
-            numsim_core::description_label<"x-coordinate of the sphere centre">,
-            numsim_core::unit_label<"m">>,
-      field<"y", T, true,
-            numsim_core::description_label<"y-coordinate of the sphere centre">,
-            numsim_core::unit_label<"m">>,
-      field<"z", T, true,
-            numsim_core::description_label<"z-coordinate of the sphere centre">,
-            numsim_core::unit_label<"m">>,
-      field<"radius", T, true,
-            numsim_core::description_label<"sphere radius (must be positive)">,
-            numsim_core::unit_label<"m">,
-            min_only<T{0}>>>;
 
   explicit sphere(parameter_handler_t const& handler)
-      : sphere(fields::extract(handler)) {}
+      : sphere(handler.template get<T>("x"), handler.template get<T>("y"),
+               handler.template get<T>("z"),
+               handler.template get<T>("radius")) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    return fields::schema();
+    parameter_controller_t p;
+    p.template required<T>("x")
+        .template add<numsim_core::description_label<"x-coordinate of the sphere centre">>()
+        .template add<numsim_core::unit_label<"m">>();
+    p.template required<T>("y")
+        .template add<numsim_core::description_label<"y-coordinate of the sphere centre">>()
+        .template add<numsim_core::unit_label<"m">>();
+    p.template required<T>("z")
+        .template add<numsim_core::description_label<"z-coordinate of the sphere centre">>()
+        .template add<numsim_core::unit_label<"m">>();
+    p.template required<T>("radius")
+        .template add<numsim_core::description_label<"sphere radius (must be positive)">>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<min_only<T{0}>>();
+    return p;
   }
 
   [[nodiscard]] T operator()(size_type idx) const noexcept {
@@ -109,9 +110,6 @@ public:
   }
 
 private:
-  explicit sphere(std::tuple<T, T, T, T> v)
-      : sphere(std::get<0>(v), std::get<1>(v), std::get<2>(v),
-               std::get<3>(v)) {}
 };
 
 } // namespace rvegen
