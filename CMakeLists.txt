@@ -271,6 +271,11 @@ install(TARGETS rvegen_lib
     EXPORT rvegenTargets
 )
 
+# Licence texts: rvegen's own and those of the bundled GTE headers.
+install(FILES LICENSE THIRD_PARTY_NOTICES.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/rvegen
+)
+
 install(EXPORT rvegenTargets
     FILE rvegenTargets.cmake
     NAMESPACE rvegen::
@@ -305,6 +310,17 @@ install(FILES
 # WORKING_DIRECTORY so those relative paths resolve into the build tree
 # rather than the source tree.
 if(NOT DEFINED BUILD_TESTING OR BUILD_TESTING)
+# The wheel is built from python/ alone, so it carries copies of the licence
+# files; fail when a copy differs from the file at the repository root.
+foreach(_license_file LICENSE THIRD_PARTY_NOTICES.md)
+  add_test(
+      NAME license_files_in_sync_${_license_file}
+      COMMAND ${CMAKE_COMMAND} -E compare_files
+          ${CMAKE_CURRENT_SOURCE_DIR}/${_license_file}
+          ${CMAKE_CURRENT_SOURCE_DIR}/python/${_license_file}
+  )
+endforeach()
+
 add_test(
     NAME cli_circles_example
     COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json
