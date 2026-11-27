@@ -60,12 +60,17 @@ sample_voxel_grid_with_ids(
     if (auto const* bb = shape->bounding_box()) {
       auto const& lo = bb->bottom_point();
       auto const& hi = bb->top_point();
-      bool finite = true;
+      // Use the box only when it is finite and still encloses the shape's
+      // reference point; a stale box (shape moved without
+      // make_bounding_box()) falls back to the full scan.
+      const auto mp = shape->get_middle_point();
+      bool usable = true;
       for (int a = 0; a < 3; ++a) {
-        finite = finite && std::isfinite(double(lo[a])) &&
-                 std::isfinite(double(hi[a]));
+        usable = usable && std::isfinite(double(lo[a])) &&
+                 std::isfinite(double(hi[a])) && lo[a] <= mp[a] &&
+                 mp[a] <= hi[a];
       }
-      if (finite) {
+      if (usable) {
         std::tie(i0, i1) = range(lo[0], hi[0], dx, nx);
         std::tie(j0, j1) = range(lo[1], hi[1], dy, ny);
         if (is_3d) std::tie(k0, k1) = range(lo[2], hi[2], dz, nz_eff);
