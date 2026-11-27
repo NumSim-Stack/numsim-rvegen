@@ -240,8 +240,8 @@ int run(int argc, char** argv) {
   std::cout << "rvegen: generated " << shapes.size() << " shape"
             << (shapes.size() == 1 ? "" : "s") << '\n';
 
-  // ---- 7b. Phases: material blobs + shape -> phase assignment -----------
-  // "phases" is an array of {name, material}; "phase_assignment" stamps
+  // ---- 7b. Phases: named regions + shape -> phase assignment ------------
+  // "phases" is an array of {name}; "phase_assignment" stamps
   // phase names onto shapes the inputs left untagged. The collection is
   // handed to every post-process through post_process_base::set_phases.
   std::optional<rvegen::phase_collection<double>> phases;
@@ -267,17 +267,8 @@ int run(int argc, char** argv) {
                  "nothing was written.\n";
   } else {
     for (auto const& spec : config.at("postprocess")) {
-      // phase_assignment's "matrix" names the matrix phase; forward it to
-      // the DAMASK writer unless the writer config already picks one.
-      auto pp_spec = spec;
-      if (config.contains("phase_assignment") &&
-          config.at("phase_assignment").contains("matrix") &&
-          spec.value("type", std::string{}) == "damask_material_config" &&
-          !pp_spec.contains("matrix_phase")) {
-        pp_spec["matrix_phase"] = config.at("phase_assignment").at("matrix");
-      }
       auto pp = rvegen::build_from_json(
-          rvegen::post_process_registry_t<>::instance(), pp_spec);
+          rvegen::post_process_registry_t<>::instance(), spec);
       if (phases) pp->set_phases(&*phases);
       pp->run(shapes, domain_box);
       std::cout << "rvegen: post-process '"

@@ -35,7 +35,7 @@ public:
 
   // Generic phase hook. The pipeline calls this on EVERY post-process
   // before run(); the default ignores the collection. Writers that
-  // consume phases (voxel, gmsh_geo, vtk_legacy, damask_material_config)
+  // consume phases (voxel, gmsh_geo, vtk_legacy)
   // already expose a `set_phases(phase_collection<T> const*) noexcept`
   // with exactly this signature, which therefore overrides this virtual
   // implicitly. The pointer must outlive the next run().

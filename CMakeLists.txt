@@ -358,14 +358,14 @@ foreach(_ex IN ITEMS voronoi_2d voronoi_3d plain_weave tow_weave bingham_fibres)
   )
 endforeach()
 
-# JSON "phases" + "phase_assignment" + damask_material_config (#7).
+# JSON "phases" + "phase_assignment" written through the voxel and VTK writers (#7).
 add_test(
-    NAME cli_phases_damask_example
-    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/phases_damask.json
+    NAME cli_phases_voxel_example
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/phases_voxel.json
 )
-set_tests_properties(cli_phases_damask_example PROPERTIES
+set_tests_properties(cli_phases_voxel_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    PASS_REGULAR_EXPRESSION "phase_assignment tagged 12 shapes.*post-process 'damask_material_config' done"
+    PASS_REGULAR_EXPRESSION "phase_assignment tagged 12 shapes.*post-process 'voxel' done.*post-process 'vtk_legacy' done"
 )
 
 # CLI validation (regression tests for the pipeline's load-time checks).
