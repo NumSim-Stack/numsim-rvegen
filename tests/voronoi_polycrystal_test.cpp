@@ -233,6 +233,103 @@ void test_grain_size_300_voro_pp() {
 }
 #endif
 
+// Multi-seed robustness (regression): with sigma = 0.8 the old iteration
+// left empty cells and no flag on most engine seeds.
+void check_grain_robust(rvegen::voronoi_backend backend, double L, double sigma,
+                        unsigned first_seed, unsigned count) {
+  for (unsigned sd = first_seed; sd < first_seed + count; ++sd) {
+    std::mt19937 eng{sd};
+    auto r = rvegen::lognormal_grain_seeds_3d<double>(L, L, L, 1.0, sigma, eng,
+                                                      backend);
+    std::cout << "robust seed=" << sd << " N=" << r.seeds.size()
+              << " it=" << r.iterations << " restarts=" << r.restarts
+              << " err=" << r.max_rel_volume_error
+              << " empty=" << r.empty_cells << "\n";
+    REQUIRE(r.converged);
+    REQUIRE(r.empty_cells == 0);
+    REQUIRE(r.max_rel_volume_error <= 0.01);
+    for (double d : r.diameters) REQUIRE(d > 0.0);
+    // Returned seeds/weights reproduce the reported volumes.
+    rvegen::voronoi_generator_3d<double> gen{L, L, L, r.seeds, backend, true,
+                                             r.weights};
+    auto cells = gen.build();
+    for (std::size_t i = 0; i < cells.size(); ++i)
+      REQUIRE(std::abs(rvegen::equivalent_diameter(cells[i]->volume()) -
+                       r.diameters[i]) < 1e-6 * r.diameters[i]);
+  }
+}
+
+void test_grain_robust_in_house() {
+  check_grain_robust(rvegen::voronoi_backend::in_house, 3.5, 0.8, 1, 6);
+}
+
+// A non-convergent configuration must be flagged, not silent.
+void test_grain_nonconvergence_flagged() {
+  std::mt19937 eng{1};
+  auto r = rvegen::lognormal_grain_seeds_3d<double>(
+      3.5, 3.5, 3.5, 1.0, 0.8, eng, rvegen::voronoi_backend::in_house, true,
+      1e-12, 5, 0);
+  REQUIRE(!r.converged);
+  REQUIRE(r.max_rel_volume_error > 1e-12);
+}
+
+#ifdef RVEGEN_WITH_VORO_PP
+void test_grain_robust_voro_pp() {
+  check_grain_robust(rvegen::voronoi_backend::voro_pp, 6.0, 0.8, 1, 6);
+  check_grain_robust(rvegen::voronoi_backend::voro_pp, 6.0, 0.5, 1, 3);
+}
+#endif
+
+// ---- periodic seed validation -------------------------------------------
+void test_validation_scales_and_wraps() {
+  // 200k seeds must validate in well under a second (was O(N^2): 80 s).
+  const auto t0 = std::chrono::steady_clock::now();
+  rvegen::detail::validate_voronoi_seeds<double, 3>(
+      {1.0, 1.0, 1.0}, make_seeds3(200000, {1, 1, 1}, 9), "t", true);
+  const double secs = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - t0).count();
+  std::cout << "validate 200k periodic: " << secs << " s\n";
+  REQUIRE(secs < 5.0);
+
+  auto throws = [](seeds3_t s, std::array<double, 3> L, bool per) {
+    try {
+      rvegen::detail::validate_voronoi_seeds<double, 3>(L, s, "t", per);
+    } catch (std::runtime_error const&) { return true; }
+    return false;
+  };
+  // x = 0 and x = L are the same point modulo the box.
+  REQUIRE(throws({{0.0, 0.5, 0.5}, {1.0, 0.5, 0.5}}, {1, 1, 1}, true));
+  REQUIRE(!throws({{0.0, 0.5, 0.5}, {1.0, 0.5, 0.5}}, {1, 1, 1}, false));
+  // Within tolerance across the wrap, other axes too.
+  REQUIRE(throws({{1e-12, 0.5, 0.5}, {1.0 - 1e-12, 0.5, 0.5}}, {1, 1, 1}, true));
+  REQUIRE(throws({{0.5, 0.5, 1e-12}, {0.5, 0.5, 1.0}}, {1, 1, 1}, true));
+  REQUIRE(throws({{0.3, 0.3, 0.3}, {0.3, 0.3, 0.3 + 1e-12}}, {1, 1, 1}, false));
+  REQUIRE(!throws({{0.3, 0.3, 0.3}, {0.3, 0.3, 0.3 + 1e-6}}, {1, 1, 1}, true));
+  // Degenerate (planar) distribution must stay fast.
+  seeds3_t planar;
+  for (int i = 0; i < 100000; ++i)
+    planar.push_back({0.5, (i % 320) / 320.0, (i / 320) / 320.0});
+  const auto t1 = std::chrono::steady_clock::now();
+  rvegen::detail::validate_voronoi_seeds<double, 3>({1, 1, 1}, planar, "t",
+                                                    true);
+  REQUIRE(std::chrono::duration<double>(std::chrono::steady_clock::now() - t1)
+              .count() < 5.0);
+}
+
+// Generator-built cells carry no bounding box; wraps must still be found.
+void test_periodic_wraps_without_bbox() {
+  rvegen::voronoi_generator_3d<double> gen{
+      1.0, 1.0, 1.0, {{0.05, 0.5, 0.5}, {0.55, 0.5, 0.5}},
+      rvegen::voronoi_backend::in_house, true};
+  auto cells = gen.build();
+  std::size_t total = 0;
+  for (auto const& c : cells) {
+    REQUIRE(c->bounding_box() == nullptr);
+    total += rvegen::generate_periodic_wraps<double>(*c, {1.0, 1.0, 1.0}).size();
+  }
+  REQUIRE(total > 0);
+}
+
 } // namespace
 
 int main() {
@@ -240,9 +337,14 @@ int main() {
   test_periodic_3d_in_house();
   test_weighted_2d_3d_partition();
   test_grain_size_small_in_house();
+  test_grain_robust_in_house();
+  test_grain_nonconvergence_flagged();
+  test_validation_scales_and_wraps();
+  test_periodic_wraps_without_bbox();
 #ifdef RVEGEN_WITH_VORO_PP
   test_periodic_3d_voro_pp();
   test_grain_size_300_voro_pp();
+  test_grain_robust_voro_pp();
 #endif
   if (failures) {
     std::cerr << failures << " failure(s)\n";

@@ -29,7 +29,15 @@ generate_periodic_wraps(shape_base<T> const& primary,
                          std::array<T, 3> const& domain_box) {
   std::vector<std::unique_ptr<shape_base<T>>> wraps;
   auto const* bb = primary.bounding_box();
-  if (bb == nullptr) return wraps;
+  // A shape without a computed bounding box (e.g. generator-built Voronoi
+  // cells) must not silently get zero wraps: derive the box from a clone.
+  std::unique_ptr<shape_base<T>> bb_holder;
+  if (bb == nullptr) {
+    bb_holder = primary.clone();
+    bb_holder->make_bounding_box();
+    bb = bb_holder->bounding_box();
+    if (bb == nullptr) return wraps;
+  }
 
   // For each axis, decide if the bb pokes through:
   //   shift_dirs[axis] = -1  →  wrap to the −L side (bb pokes high face)

@@ -99,3 +99,58 @@ def test_lognormal_grain_seeds():
         2.2, 2.2, 2.2, r["seeds"], periodic=True,
         weights=r["weights"]).build()
     assert sum(c.volume() for c in cells) == pytest.approx(2.2 ** 3, rel=1e-8)
+
+
+def test_lognormal_grain_report_fields_and_robustness():
+    for sd in range(1, 4):
+        r = rvegen.lognormal_grain_seeds_3d(3.5, 1.0, 0.8, rng_seed=sd,
+                                            backend="in_house")
+        assert r["converged"]
+        assert r["empty_cells"] == 0
+        assert min(r["diameters"]) > 0
+        assert r["max_rel_volume_error"] <= 0.01
+
+
+def test_lognormal_grain_nonconvergence_warns():
+    with pytest.warns(RuntimeWarning, match="did not reach"):
+        r = rvegen.lognormal_grain_seeds_3d(
+            3.5, 1.0, 0.8, rng_seed=1, backend="in_house",
+            tolerance=1e-12, max_iterations=3, max_restarts=0)
+    assert not r["converged"]
+
+
+def test_default_backend_is_auto():
+    # The default must work without naming a backend (auto picks Voro++
+    # when built in, in-house otherwise).
+    gen = rvegen.VoronoiGenerator3d(1.0, 1.0, 1.0,
+                                    _seeds(20, (1.0, 1.0, 1.0), 3),
+                                    periodic=True)
+    assert sum(c.volume() for c in gen.build()) == pytest.approx(1.0, rel=1e-8)
+
+
+def test_build_releases_gil():
+    import threading
+    import time
+    gen = rvegen.VoronoiGenerator3d(
+        1.0, 1.0, 1.0, _seeds(150, (1.0, 1.0, 1.0), 3), periodic=True,
+        backend="in_house")
+    ticks = []
+    stop = threading.Event()
+
+    def ticker():
+        while not stop.is_set():
+            ticks.append(1)
+            time.sleep(0.001)
+
+    t = threading.Thread(target=ticker)
+    t.start()
+    try:
+        t0 = time.perf_counter()
+        gen.build()
+        elapsed = time.perf_counter() - t0
+    finally:
+        stop.set()
+        t.join()
+    assert elapsed > 0.1, "build too fast to observe GIL behaviour"
+    # With the GIL held for the whole build the ticker would get ~0 ticks.
+    assert len(ticks) > 10
