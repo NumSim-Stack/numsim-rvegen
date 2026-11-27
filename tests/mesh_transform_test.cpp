@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <random>
@@ -204,6 +205,75 @@ void test_invalid_transforms_throw() {
   REQUIRE(throws_runtime([&] { (void)rvegen::uniform_random_rotation(1.5, 0.2, 0.3); }));
 }
 
+void test_huge_scale_rejected() {
+  mesh_t m{make_tet(1.0)};
+  m.set_scale(2.0);
+  REQUIRE(throws_runtime([&] { m.set_scale(1e300); }));
+  REQUIRE(throws_runtime([&] { m.set_scale(1e110); }));   // s^3 overflows
+  REQUIRE(m.scale() == 2.0);                              // unchanged on failure
+  REQUIRE(std::isfinite(m.volume()) && std::abs(m.volume() - 8.0 / 6.0) < 1e-12);
+  m.make_bounding_box();
+  REQUIRE(std::isfinite(m.max_expansion()[0]));
+}
+
+// UV ellipsoid with semi-axes (a, b, c), centred at (cx, 0, 0): closed,
+// outward wound, 2n(n-1) triangles.
+tri_list make_ellipsoid(int n, double a, double b, double c, double cx) {
+  auto P = [&](int i, int j) {
+    if (i == 0) return gte::Vector3<double>{cx, 0, c};
+    if (i == n) return gte::Vector3<double>{cx, 0, -c};
+    const double th = pi * i / n, ph = pi * (j % (2 * n)) / n;
+    return gte::Vector3<double>{cx + a * std::sin(th) * std::cos(ph),
+                                b * std::sin(th) * std::sin(ph),
+                                c * std::cos(th)};
+  };
+  tri_list out;
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < 2 * n; ++j) {
+      const auto p0 = P(i, j), p1 = P(i + 1, j), p2 = P(i + 1, j + 1), p3 = P(i, j + 1);
+      if (i != 0) out.push_back({p0, p1, p3});
+      if (i != n - 1) out.push_back({p1, p2, p3});
+    }
+  }
+  return out;
+}
+
+void test_binned_is_inside_matches_explicit_transform() {
+  // Off-origin, asymmetric mesh (binned path) placed with rotation +
+  // scale + translation must classify every point like a mesh whose
+  // vertices were transformed explicitly (also exercises the AABB early
+  // exit in the base frame).
+  mesh_t placed{make_ellipsoid(16, 2.0, 1.0, 0.5, 5.0)};
+  REQUIRE(placed.triangle_count() > 32);
+  placed.set_rotation_euler_zyz(0.7, 1.1, -0.4);
+  placed.set_scale(1.7);
+  placed.set_middle_point({-3.0, 2.0, 1.0});
+  placed.make_bounding_box();
+
+  tri_list moved;
+  for (auto const& t : *placed.base_triangles()) {
+    gte::Triangle3<double> w;
+    for (int i = 0; i < 3; ++i) {
+      const auto q = placed.to_world(t.v[i]);
+      w.v[i] = {q[0], q[1], q[2]};
+    }
+    moved.push_back(w);
+  }
+  mesh_t reference{moved};
+  std::mt19937_64 rng{7};
+  std::uniform_real_distribution<double> u(-8.0, 8.0);
+  int mismatches = 0, inside = 0;
+  for (int i = 0; i < 100000; ++i) {
+    const std::array<double, 3> p{u(rng) + -3.0, u(rng) + 2.0, u(rng) + 1.0};
+    const bool a = placed.is_inside(p), b = reference.is_inside(p);
+    mismatches += a != b;
+    inside += a;
+  }
+  REQUIRE(mismatches == 0);
+  REQUIRE(inside > 100);
+  REQUIRE(!placed.is_inside({1e9, 0, 0}));
+}
+
 // ---------------------------------------------------------------------------
 // AABB of a randomly rotated mesh
 // ---------------------------------------------------------------------------
@@ -349,6 +419,66 @@ void test_input_euler_and_scale() {
   std::remove(path.c_str());
 }
 
+// Orientation keys that the active mode does not use are errors.
+void test_input_rejects_unused_orientation_keys() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  const auto path = write_tet_stl("/tmp/rvegen_test_mesh_transform_keys.stl");
+  std::mt19937 engine{1};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0},
+    "u": {"type": "uniform_real", "a": 0.0, "b": 1.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  using kv = std::map<std::string, std::string>;
+  auto build = [&](kv const& extra) {
+    auto spec = nlohmann::json::parse(std::string{R"({
+      "type": "mesh_inclusion_input", "mesh_path": ")"} + path + R"(",
+      "position_x_dist": "p", "position_y_dist": "p", "position_z_dist": "p"})");
+    for (auto const& [k, v] : extra) spec[k] = v;
+    return rvegen::build_from_json(rvegen::input_registry_t<>::instance(), spec, dists);
+  };
+  auto rejected = [&](kv const& extra, std::string const& key,
+                      std::string const& mode) {
+    try {
+      (void)build(extra);
+    } catch (std::runtime_error const& e) {
+      const std::string w = e.what();
+      return w.find("'" + key + "'") != std::string::npos &&
+             w.find("'" + mode + "'") != std::string::npos;
+    }
+    return false;
+  };
+  // mode absent -> "none"
+  REQUIRE(rejected({{"orientation_dist", "u"}}, "orientation_dist", "none"));
+  REQUIRE(rejected({{"euler_alpha_dist", "u"}}, "euler_alpha_dist", "none"));
+  REQUIRE(rejected({{"euler_beta_dist", "u"}}, "euler_beta_dist", "none"));
+  REQUIRE(rejected({{"euler_gamma_dist", "u"}}, "euler_gamma_dist", "none"));
+  // explicit "none"
+  REQUIRE(rejected({{"orientation", "none"}, {"orientation_dist", "u"}},
+                   "orientation_dist", "none"));
+  // "uniform" with an Euler key
+  REQUIRE(rejected({{"orientation", "uniform"}, {"orientation_dist", "u"},
+                    {"euler_alpha_dist", "u"}}, "euler_alpha_dist", "uniform"));
+  // "euler_zyz" with the uniform key
+  REQUIRE(rejected({{"orientation", "euler_zyz"}, {"euler_alpha_dist", "u"},
+                    {"euler_beta_dist", "u"}, {"euler_gamma_dist", "u"},
+                    {"orientation_dist", "u"}}, "orientation_dist", "euler_zyz"));
+  // The matching configurations still build.
+  REQUIRE(build({{"orientation", "uniform"}, {"orientation_dist", "u"}}) != nullptr);
+  REQUIRE(build({{"orientation", "euler_zyz"}, {"euler_alpha_dist", "u"},
+                 {"euler_beta_dist", "u"}, {"euler_gamma_dist", "u"}}) != nullptr);
+  REQUIRE(build({{"scale_dist", "u"}}) != nullptr);
+  REQUIRE(build({}) != nullptr);
+  std::remove(path.c_str());
+}
+
 // ---------------------------------------------------------------------------
 // to_mesh, dispatcher
 // ---------------------------------------------------------------------------
@@ -419,9 +549,12 @@ int main() {
   test_rotation_conventions_agree();
   test_rotated_scaled_inside_and_volume();
   test_invalid_transforms_throw();
+  test_huge_scale_rejected();
+  test_binned_is_inside_matches_explicit_transform();
   test_random_rotation_aabb_contains_transformed_vertices();
   test_uniform_orientation_is_isotropic();
   test_input_euler_and_scale();
+  test_input_rejects_unused_orientation_keys();
   test_to_mesh_via_dispatcher();
   test_bounds_independent_of_set_order();
   if (failures != 0) {

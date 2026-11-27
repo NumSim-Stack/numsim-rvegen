@@ -896,12 +896,25 @@ public:
     return _rotation;
   }
 
-  // Uniform scale about the middle point; must be finite and > 0.
+  // Uniform scale about the middle point; must be finite and > 0, and the
+  // scaled extents and volume must stay finite.
   void set_scale(T s) {
     if (!(s > T{0}) || !std::isfinite(s)) {
       throw std::runtime_error{
           "mesh_inclusion::set_scale: scale must be finite and > 0, got " +
           std::to_string(s)};
+    }
+    // The scaled extents and s^3 * volume must stay finite (1e300 would
+    // give an infinite bounding box / volume).
+    bool finite = std::isfinite(s * s * s * _volume);
+    for (int k = 0; k < 3; ++k) {
+      finite = finite && std::isfinite(s * _rot_min[k]) &&
+               std::isfinite(s * _rot_max[k]);
+    }
+    if (!finite) {
+      throw std::runtime_error{
+          "mesh_inclusion::set_scale: scale is so large that the scaled "
+          "extents or volume are not finite"};
     }
     _scale = s;
     apply_scale_to_bounds();

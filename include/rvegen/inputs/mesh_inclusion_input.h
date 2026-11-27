@@ -120,7 +120,7 @@ public:
     // present (enforced at ctor time, not by the schema layer, since
     // a "one of N" group constraint isn't expressible there).
     s.template insert<std::string>("mesh_path")
-        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias)">>();
+        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias). A relative path is resolved against the process working directory, not against the JSON file">>();
     s.template insert<std::string>("stl_path")
         .template add<numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>();
     s.template insert<std::size_t>("max_triangles")
@@ -242,6 +242,21 @@ private:
     const std::string mode =
         h.contains("orientation") ? h.template get<std::string>("orientation")
                                   : std::string{"none"};
+    // Orientation keys that the active mode does not consume would be
+    // silently ignored (e.g. a mistyped or missing 'orientation'): reject.
+    struct key_mode { char const* key; char const* used_by; };
+    for (auto const& [key, used_by] : {key_mode{"orientation_dist", "uniform"},
+                                       key_mode{"euler_alpha_dist", "euler_zyz"},
+                                       key_mode{"euler_beta_dist", "euler_zyz"},
+                                       key_mode{"euler_gamma_dist", "euler_zyz"}}) {
+      if (h.contains(key) && mode != used_by) {
+        throw std::runtime_error{
+            std::string{"mesh_inclusion_input: '"} + key +
+            "' is only used with orientation '" + used_by +
+            "' but the active orientation mode is '" + mode +
+            "' (set 'orientation' accordingly or remove the key)"};
+      }
+    }
     if (mode == "uniform") {
       set_uniform_orientation(lookup("orientation_dist"));
     } else if (mode == "euler_zyz") {
