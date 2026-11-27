@@ -20,19 +20,25 @@
 // rectangle, ellipse, sphere and box (not registered; constructed directly
 // from a handler built from Shape::parameters()).
 //
-// Skipped:
-//   * mesh_inclusion_input: needs a real mesh file on disk.
+// mesh_inclusion_input needs a real mesh file, so it is handled separately:
+// the test writes a closed tetrahedron as an ASCII STL into the working
+// directory, points mesh_path at it and constructs the input from that
+// config. No registered type is skipped.
+//
+// Not exercised:
 //   * Optional string keys that are not distribution references
 //     (phase_name, metadata, stl_path) are not exercised.
 
 #include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <random>
 #include <string>
+#include <system_error>
 #include <typeindex>
 
 #include <nlohmann/json.hpp>
@@ -179,6 +185,22 @@ void run_shape(std::string const& type) {
   });
 }
 
+// Writes a small closed tetrahedron as an ASCII STL.
+void write_tetrahedron_stl(std::filesystem::path const& path) {
+  std::ofstream out{path};
+  if (!out) throw std::runtime_error("cannot write " + path.string());
+  out << "solid tetra\n";
+  auto facet = [&](char const* n, char const* a, char const* b, char const* c) {
+    out << "facet normal " << n << "\nouter loop\nvertex " << a
+        << "\nvertex " << b << "\nvertex " << c << "\nendloop\nendfacet\n";
+  };
+  facet("0 0 -1", "0 0 0", "0 1 0", "1 0 0");
+  facet("0 -1 0", "0 0 0", "1 0 0", "0 0 1");
+  facet("-1 0 0", "0 0 0", "0 0 1", "0 1 0");
+  facet("0.577 0.577 0.577", "1 0 0", "0 1 0", "0 0 1");
+  out << "endsolid tetra\n";
+}
+
 } // namespace
 
 int main() {
@@ -207,6 +229,23 @@ int main() {
       rvegen::constant_distribution<double, std::mt19937>>(0.5, engine);
   run_registry(rvegen::input_registry_t<>::instance(), "input",
                "mesh_inclusion_input", dists);
+
+  // mesh_inclusion_input: same schema-driven config, plus a real mesh file.
+  {
+    auto const stl = std::filesystem::current_path() /
+                     "rvegen_schema_construct_test_tetra.stl";
+    attempt("input", "mesh_inclusion_input", [&] {
+      write_tetrahedron_stl(stl);
+      auto& reg = rvegen::input_registry_t<>::instance();
+      auto cfg = make_config(reg.schema("mesh_inclusion_input"),
+                             "mesh_inclusion_input");
+      cfg["mesh_path"] = stl.string();
+      auto obj = rvegen::build_from_json(reg, cfg, dists);
+      if (!obj) throw std::runtime_error("null object");
+    });
+    std::error_code ec;
+    std::filesystem::remove(stl, ec);
+  }
 
   run_shape<rvegen::circle<>>("circle");
   run_shape<rvegen::rectangle<>>("rectangle");
