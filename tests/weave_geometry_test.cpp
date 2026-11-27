@@ -331,6 +331,33 @@ void test_weave_validation() {
   // Valid configs still construct; flat 2D stays allowed.
   REQUIRE(!throws([] { G{{1, 1, 0.3}, 4, 4, 0.04, 0.05}; }));
   REQUIRE(!throws([] { G{{1, 1, 0.0}, 2, 2, 0.05, 0.0}; }));
+  // 2D keeps the in-plane checks: 2x2 in a unit box has spacing 0.5, so
+  // r = 0.4 makes parallel yarns overlap and leave the box.
+  REQUIRE(throws([] { G{{1, 1, 0.0}, 2, 2, 0.4, 0.0}; }));
+  REQUIRE(throws([] { G{{2, 1, 0.0}, 2, 2, 0.3, 0.0}; }));   // y spacing 0.5
+  REQUIRE(!throws([] { G{{1, 1, 0.0}, 2, 2, 0.25, 0.0}; }));  // r = s/2
+  // NaN / inf must be rejected, not slip through `x <= 0` checks.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (double lz : {0.0, 0.3}) {
+    REQUIRE(throws([&] { G{{1, 1, lz}, 2, 2, nan, 0.0}; }));
+    REQUIRE(throws([&] { G{{1, 1, lz}, 2, 2, inf, 0.0}; }));
+    REQUIRE(throws([&] { G{{nan, 1, lz}, 2, 2, 0.05, 0.0}; }));
+    REQUIRE(throws([&] { G{{1, nan, lz}, 2, 2, 0.05, 0.0}; }));
+    REQUIRE(throws([&] { G{{inf, 1, lz}, 2, 2, 0.05, 0.0}; }));
+  }
+  REQUIRE(throws([&] { G{{1, 1, nan}, 2, 2, 0.05, 0.0}; }));
+  REQUIRE(throws([&] { G{{1, 1, 0.0}, 2, 2, 0.05, nan}; }));
+  REQUIRE(throws([&] { G{{1, 1, 0.3}, 2, 2, 0.04, nan}; }));
+  // Tow generator: NaN fibre factor.
+  G base{{1, 1, 0.3}, 2, 2, 0.05, 0.06};
+  REQUIRE(throws([&] {
+    rvegen::tow_weave_generator<double>{base, 7, nan};
+  }));
+  // Tow over a 2D weave inherits the in-plane rejection.
+  REQUIRE(throws([&] {
+    rvegen::tow_weave_generator<double>{G{{1, 1, 0.0}, 2, 2, 0.4, 0.0}, 7};
+  }));
 }
 
 // ----------------------------------------------------------------------------
@@ -624,6 +651,27 @@ void test_periodic_wraps_single_side_counts_unchanged() {
   REQUIRE(std::abs(w[0]->get_middle_point()[0] - (0.98 - 1.0)) < 1e-12);
 }
 
+// build() output must carry bounding boxes so generate_periodic_wraps
+// works on it directly (it returns nothing for shapes without one).
+void test_build_output_has_bounding_box_for_wraps() {
+  const std::array<double, 3> box{1.0, 1.0, 0.3};
+  rvegen::weave_generator<double> w{box, 4, 4, 0.04, 0.05, 16};
+  const auto count = [&](auto const& shapes) {
+    std::size_t n = 0;
+    for (auto const& s : shapes) {
+      n += rvegen::generate_periodic_wraps<double>(*s, box).size();
+    }
+    return n;
+  };
+  const auto yarns = w.build();
+  REQUIRE(count(yarns) == 16);
+  rvegen::tow_weave_generator<double> tows{w, 7};
+  const auto fibres = tows.build();
+  REQUIRE(fibres.size() == 7 * yarns.size());
+  REQUIRE(count(fibres) > 0);
+  for (auto const& f : fibres) REQUIRE(f->bounding_box() != nullptr);
+}
+
 } // namespace
 
 int main() {
@@ -637,6 +685,7 @@ int main() {
   test_tow_infeasible_factor_throws();
   test_periodic_wraps_both_faces();
   test_periodic_wraps_single_side_counts_unchanged();
+  test_build_output_has_bounding_box_for_wraps();
 
   if (failures == 0) {
     std::cout << "weave_geometry_test: all tests passed\n";

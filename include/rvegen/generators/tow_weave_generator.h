@@ -7,9 +7,7 @@
 // within the yarn's circular cross-section. The fibre-bundle
 // representation matches the real-textile-composite "tow" concept
 // where each yarn is a bundle of monofilaments rather than a single
-// solid cylinder — which matters for FFT homogenization of fibre
-// composites where the intra-tow stiffness is the dominant
-// micromechanical parameter.
+// solid cylinder.
 //
 // Geometry:
 //   * Each fibre is a `polyline_tube` with radius
@@ -87,7 +85,7 @@ public:
       throw std::runtime_error{
           "tow_weave_generator: n_fibres_per_tow must be ≥ 1"};
     }
-    if (fibre_radius_factor <= T{0} || fibre_radius_factor >= T{1}) {
+    if (!(fibre_radius_factor > T{0}) || !(fibre_radius_factor < T{1})) {
       throw std::runtime_error{
           "tow_weave_generator: fibre_radius_factor must lie in (0, 1)"};
     }
@@ -187,6 +185,7 @@ public:
           centerline.push_back(cl[k] + off[0] * lateral + off[1] * normals[k]);
         }
         auto fibre = std::make_unique<polyline_tube<T>>(centerline, fibre_r);
+        fibre->make_bounding_box();
         if (!yarn_phase_name.empty()) fibre->set_phase_name(yarn_phase_name);
         out.push_back(std::move(fibre));
       }
