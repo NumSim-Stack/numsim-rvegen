@@ -98,6 +98,20 @@ double max_node_distance_to(std::vector<vec3> const& a,
   return worst;
 }
 
+// Largest 1/cos(theta/2) over the interior nodes of `cl`, theta being the
+// angle between the in-plane normals of the two adjacent segments.
+double max_mitre(std::vector<vec3> const& cl) {
+  double worst = 1.0;
+  for (std::size_t k = 1; k + 1 < cl.size(); ++k) {
+    vec3 t0 = cl[k] - cl[k - 1], t1 = cl[k + 1] - cl[k];
+    gte::Normalize(t0);
+    gte::Normalize(t1);
+    const double c = gte::Dot(t0, t1);                 // cos(theta)
+    worst = std::max(worst, 1.0 / std::sqrt(0.5 * (1.0 + c)));
+  }
+  return worst;
+}
+
 template <typename F>
 bool throws(F&& f) {
   try { f(); } catch (std::runtime_error const&) { return true; }
@@ -256,9 +270,11 @@ void test_weave_validation() {
 // ----------------------------------------------------------------------------
 // 3. Tow fibre layout.
 // ----------------------------------------------------------------------------
-void check_tow(std::size_t n_fibres, double factor) {
+void check_tow(std::size_t n_fibres, double factor,
+               std::size_t n_seg = 16) {
   const double r_yarn = 0.05;
-  rvegen::weave_generator<double> base{{1.0, 1.0, 0.3}, 2, 2, r_yarn, 0.06, 16};
+  rvegen::weave_generator<double> base{{1.0, 1.0, 0.3}, 2, 2, r_yarn, 0.06,
+                                       n_seg};
   rvegen::tow_weave_generator<double> gen{base, n_fibres, factor};
   auto yarns = base.build();
   auto fibres = gen.build();
@@ -270,9 +286,11 @@ void check_tow(std::size_t n_fibres, double factor) {
     for (std::size_t a = 0; a < n_fibres; ++a) {
       auto const& fa = as_tube(fibres[y * n_fibres + a]);
       REQUIRE(std::abs(fa.radius() - r_f) < 1e-15);
-      // Fibre tube stays inside the yarn envelope.
+      // Fibre nodes stay within the yarn envelope. Offsets are mitred, so
+      // a node on the convex side of a kink sits (R - r_f)/cos(theta/2)
+      // from the yarn node; bound that by the yarn's sharpest kink.
       REQUIRE(max_node_distance_to(fa.centerline(), yarn_cl)
-              <= r_yarn - r_f + 1e-12);
+              <= (r_yarn - r_f) * max_mitre(yarn_cl) + 1e-12);
       for (std::size_t b = a + 1; b < n_fibres; ++b) {
         auto const& fb = as_tube(fibres[y * n_fibres + b]);
         REQUIRE(polyline_distance(fa.centerline(), fb.centerline())
@@ -300,6 +318,15 @@ void test_tow_fibres_do_not_overlap() {
   check_tow(5, 0.2);      // partial ring 1 (4 of 6 sites)
   check_tow(8, 0.15);     // ring 2 with one site → centre empty
   check_tow(25, 0.125);   // 3 rings, partial ring 3 (6 of 18 sites)
+  // Exactly at the documented bound factor = 1/(2K+1): fibres touch but
+  // must not overlap anywhere along the polyline, not only at the nodes
+  // (per-node normals gave 0.977 * 2 r_f with 8 segments). check_tow
+  // measures every segment pair.
+  for (std::size_t n_seg : {8u, 16u, 32u}) {
+    check_tow(7, 1.0 / 3.0, n_seg);     // K = 1
+    check_tow(19, 1.0 / 5.0, n_seg);    // K = 2
+    check_tow(37, 1.0 / 7.0, n_seg);    // K = 3
+  }
 }
 
 void test_tow_infeasible_factor_throws() {

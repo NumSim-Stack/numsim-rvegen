@@ -35,8 +35,11 @@
 //     each centerline control point, spanned by the lateral axis
 //     (y for warp, x for weft) and the in-plane normal of the crimp
 //     (≈ z). Following the crimp's normal rather than translating
-//     rigidly in z keeps fibres d apart on the sloped flanks too, and
-//     keeps them inside the yarn envelope.
+//     rigidly in z keeps fibres d apart on the sloped flanks too. The
+//     offsets are mitred at the nodes so every fibre segment is a
+//     translate of the yarn's own segment: clearance is d along the whole
+//     polyline (not just at the nodes) and the fibres stay inside the
+//     yarn's polyline envelope.
 //
 // This is a deliberately-simple phase 1. Full Frenet-frame tow
 // twisting (each fibre helically twisting around the tow axis) is
@@ -134,20 +137,48 @@ public:
       const bool is_warp = y < _base.n_warp_yarns();
       auto const& yarn_phase_name =
           is_warp ? _base.warp_phase_name() : _base.weft_phase_name();
-      // Local frame per control point: lateral axis (y for warp,
-      // x for weft) and the crimp's in-plane unit normal, from the
-      // central-difference tangent (one-sided at the ends).
+      // Mitred offset frame. N_j is the in-plane unit normal of segment j
+      // (perpendicular to the lateral axis and the segment tangent). A
+      // fibre displaced by `off[1]` along the normal must lie on the
+      // line parallel to each adjacent segment at distance off[1], so at
+      // a node the displacement is the mitre vector
+      //   m = (N_{j-1} + N_j) / (1 + N_{j-1}·N_j),   m·N_{j-1} = m·N_j = 1,
+      // and at the ends simply N_0 / N_{last}. Every fibre segment is then
+      // a rigid translation of the yarn's own segment, so two fibres stay
+      // exactly their ring-offset apart along the whole segment, not only
+      // at the nodes (a per-node normal alone shrinks the gap by
+      // ~cos(theta/2) between nodes).
       auto const& cl = yarn->centerline();
       const gte::Vector3<T> lateral = is_warp
           ? gte::Vector3<T>{T{0}, T{1}, T{0}}
           : gte::Vector3<T>{T{1}, T{0}, T{0}};
-      std::vector<gte::Vector3<T>> normals;
+      const std::size_t nseg = cl.size() > 0 ? cl.size() - 1 : 0;
+      std::vector<gte::Vector3<T>> seg_normal;
+      seg_normal.reserve(nseg);
+      for (std::size_t j = 0; j < nseg; ++j) {
+        const gte::Vector3<T> tangent = cl[j + 1] - cl[j];
+        auto n = is_warp ? gte::UnitCross(tangent, lateral)
+                         : gte::UnitCross(lateral, tangent);
+        if (gte::Length(n) == T{0} && !seg_normal.empty()) {
+          n = seg_normal.back();   // zero-length segment
+        }
+        seg_normal.push_back(n);
+      }
+      std::vector<gte::Vector3<T>> normals;   // mitre vector per node
       normals.reserve(cl.size());
       for (std::size_t k = 0; k < cl.size(); ++k) {
-        const gte::Vector3<T> tangent =
-            cl[k + 1 == cl.size() ? k : k + 1] - cl[k == 0 ? 0 : k - 1];
-        normals.push_back(is_warp ? gte::UnitCross(tangent, lateral)
-                                  : gte::UnitCross(lateral, tangent));
+        if (nseg == 0) {
+          normals.push_back(gte::Vector3<T>{T{0}, T{0}, T{1}});
+        } else if (k == 0) {
+          normals.push_back(seg_normal.front());
+        } else if (k == nseg) {
+          normals.push_back(seg_normal.back());
+        } else {
+          auto const& n0 = seg_normal[k - 1];
+          auto const& n1 = seg_normal[k];
+          const T denom = std::max(T{1} + gte::Dot(n0, n1), T{1e-3});
+          normals.push_back((n0 + n1) / denom);
+        }
       }
       for (auto const& off : offsets) {
         std::vector<gte::Vector3<T>> centerline;
