@@ -153,6 +153,14 @@ if(RVEGEN_WITH_VORO_PP)
     ${voropp_SOURCE_DIR}/src)
   set_target_properties(rvegen_voropp PROPERTIES POSITION_INDEPENDENT_CODE ON)
   target_compile_options(rvegen_voropp PRIVATE -w)   # third-party code
+  # No FMA contraction in Voro++: its periodic weighted (container_poly)
+  # tessellation returns overlapping cells when the compiler fuses a*b+c
+  # (8 of 20 random cases bad with contraction, 0 of 20 without). GCC and
+  # Clang contract by default for -march with FMA (and on aarch64); MSVC
+  # uses /fp:precise by default, which does not contract.
+  if(NOT MSVC)
+    target_compile_options(rvegen_voropp PRIVATE -ffp-contract=off)
+  endif()
   # Voro++ calls exit() on fatal errors; force-include the shim that turns
   # that into a C++ exception (same shim the consumer-side include applies).
   if(MSVC)
