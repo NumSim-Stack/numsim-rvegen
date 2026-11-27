@@ -22,6 +22,7 @@
 // therefore the cost. Any implicit default would either hide that cost
 // (nz = nx) or silently give anisotropic voxels (a voxel budget).
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <fstream>
@@ -114,10 +115,16 @@ public:
         << "# dimension = " << (is_3d ? "3D" : "2D") << '\n'
         << "# volume_fraction = " << phi << '\n'
         << "# columns: r, S2(r), g(r)\n";
+    // g(r) is undefined for fewer than two inclusions (empty rdf). S2 is
+    // still valid, so every S2 bin gets a row and the g field stays empty.
+    if (rdf.size() < s2.size()) {
+      out << "# g(r) undefined (fewer than 2 inclusions): g column left empty\n";
+    }
 
-    const std::size_t N = std::min(s2.size(), rdf.size());
-    for (std::size_t i = 0; i < N; ++i) {
-      out << s2[i].r << ',' << s2[i].s2 << ',' << rdf[i].g << '\n';
+    for (std::size_t i = 0; i < s2.size(); ++i) {
+      out << s2[i].r << ',' << s2[i].s2 << ',';
+      if (i < rdf.size()) out << rdf[i].g;
+      out << '\n';
     }
   }
 

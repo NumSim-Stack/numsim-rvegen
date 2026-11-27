@@ -30,6 +30,7 @@
 #include "rvegen/rvegen.h"
 #include "rvegen/postprocess/statistics_post_process.h"
 #include "rvegen/postprocess/voxel_grid.h"
+#include "rvegen/postprocess/voxel_writer.h"
 #include "rvegen/postprocess/vtk_legacy_writer.h"
 #include "rvegen/shapes/circle.h"
 #include "rvegen/shapes/sphere.h"
@@ -382,6 +383,138 @@ void test_rdf_zero_bins() {
   REQUIRE(rvegen::radial_distribution_2d(c, {1.0, 1.0, 0.0}, 0).empty());
 }
 
+// Fewer than two inclusions: g(r) is undefined but S2 is not, so the CSV
+// still has one row per S2 bin (g column empty) plus an explanatory header
+// line. With two inclusions the layout is the plain three-column one.
+void test_statistics_csv_with_few_inclusions() {
+  auto data_rows = [](std::string const& text) {
+    std::vector<std::string> rows;
+    std::istringstream in{text};
+    for (std::string line; std::getline(in, line);) {
+      if (!line.empty() && line[0] != '#') rows.push_back(line);
+    }
+    return rows;
+  };
+  for (bool is3d : {false, true}) {
+    for (int count : {0, 1, 2}) {
+      shape_vector shapes;
+      for (int c = 0; c < count; ++c) {
+        const double x = 0.3 + 0.4 * c;
+        if (is3d)
+          shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(x, 0.5, 0.5, 0.2));
+        else
+          shapes.emplace_back(std::make_unique<rvegen::circle<double>>(x, 0.5, 0.2));
+      }
+      const std::string path = "voxel_stats_3d_test_few.csv";
+      const std::string cfg = std::string{R"({"type":"statistics","output_path":")"} +
+          path + R"(","nx":16,"ny":16,"nz":16,"nbins":4})";
+      const auto text = run_statistics(cfg, shapes,
+                                       {1.0, 1.0, is3d ? 1.0 : 0.0}, path);
+      const auto rows = data_rows(text);
+      REQUIRE(rows.size() == 4);
+      const bool has_note =
+          text.find("# g(r) undefined") != std::string::npos;
+      REQUIRE(has_note == (count < 2));
+      for (auto const& r : rows) {
+        const auto c1 = r.find(',');
+        const auto c2 = r.find(',', c1 + 1);
+        REQUIRE(c1 != std::string::npos && c2 != std::string::npos);
+        REQUIRE(r.find(',', c2 + 1) == std::string::npos);
+        if (c2 == std::string::npos) continue;
+        REQUIRE((c2 + 1 == r.size()) == (count < 2));
+      }
+      if (count == 1 && !rows.empty()) {
+        // S2 is kept: the first bin (r ~ 0) equals the voxel fraction > 0.
+        REQUIRE(std::stod(rows[0].substr(rows[0].find(',') + 1)) > 0.0);
+      }
+    }
+  }
+}
+
+// nx*ny*nz used to be an unchecked size_t product: it wrapped to a tiny or
+// zero grid and the sampling loops then hung or wrote out of bounds.
+void test_voxel_count_overflow_and_cap() {
+  auto throws_invalid = [](std::size_t nx, std::size_t ny, std::size_t nz) {
+    try {
+      (void)rvegen::checked_voxel_count(nx, ny, nz);
+    } catch (std::invalid_argument const& e) {
+      const std::string w = e.what();
+      return w.find("nx=") != std::string::npos &&
+             w.find("ny=") != std::string::npos &&
+             w.find("nz=") != std::string::npos;
+    } catch (...) {
+    }
+    return false;
+  };
+  const std::size_t two62p1 = (std::size_t{1} << 62) + 1;
+  REQUIRE(throws_invalid(4, two62p1, 1));                 // wraps to 4
+  REQUIRE(throws_invalid(std::size_t{1} << 32, std::size_t{1} << 32, 1));  // wraps to 0
+  REQUIRE(throws_invalid(std::size_t{1} << 22, std::size_t{1} << 22,
+                         std::size_t{1} << 20));          // wraps to 0
+  REQUIRE(throws_invalid(std::size_t{1} << 20, std::size_t{1} << 20, 8));  // over cap
+  REQUIRE(throws_invalid(0, 4, 4));
+  REQUIRE(throws_invalid(4, 0, 4));
+  REQUIRE(throws_invalid(4, 4, 0));
+  REQUIRE(rvegen::checked_voxel_count(3, 5, 7) == 105);
+  REQUIRE(rvegen::checked_voxel_count(std::size_t{1} << 16, std::size_t{1} << 16, 1) ==
+          (std::size_t{1} << 32));
+
+  // Every consumer rejects the grid before allocating or looping.
+  shape_vector shapes;
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.2));
+  const std::array<double, 3> box{1.0, 1.0, 1.0};
+  auto rejects = [](auto&& f) {
+    try { f(); } catch (std::invalid_argument const&) { return true; } catch (...) {}
+    return false;
+  };
+  REQUIRE(rejects([&] { (void)rvegen::sample_voxel_grid(shapes, box, 4, two62p1, 1); }));
+  REQUIRE(rejects([&] {
+    (void)rvegen::two_point_correlation_3d(shapes, box, std::size_t{1} << 32,
+                                           std::size_t{1} << 32, 1, 4);
+  }));
+  std::stringstream sink;
+  REQUIRE(rejects([&] {
+    rvegen::vtk_legacy_writer<double>{4, two62p1, 1}.write(sink, shapes, box);
+  }));
+  REQUIRE(rejects([&] {
+    rvegen::voxel_writer<double>{std::size_t{1} << 22, std::size_t{1} << 22,
+                                 std::size_t{1} << 20}.write(sink, shapes, box);
+  }));
+  REQUIRE(rejects([&] {
+    rvegen::voxel_writer<double>{4, 4, 0}.write(sink, shapes, box);
+  }));
+  // 2D ignores nz, so a huge nz must not trip the cap there.
+  shape_vector c;
+  c.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2));
+  REQUIRE(rvegen::sample_voxel_grid(c, {1.0, 1.0, 0.0}, 4, 4,
+                                    std::size_t{1} << 40).size() == 16);
+}
+
+// The raw voxel header must carry the box extents at round-trip precision.
+void test_voxel_header_extent_round_trips() {
+  const std::array<double, 3> box{0.1234567890123, 1.0 / 3.0, 0.0};
+  shape_vector c;
+  c.emplace_back(std::make_unique<rvegen::circle<double>>(0.05, 0.1, 0.02));
+  std::stringstream out;
+  rvegen::voxel_writer<double>{4, 4, 1}.write(out, c, box);
+  std::istringstream in{out.str()};
+  std::string line;
+  bool found = false;
+  while (std::getline(in, line)) {
+    if (line.rfind("# Lx Ly Lz:", 0) == 0) {
+      std::istringstream ls{line.substr(11)};
+      double a = 0, b = 0, d = -1;
+      ls >> a >> b >> d;
+      REQUIRE(a == box[0]);
+      REQUIRE(b == box[1]);
+      REQUIRE(d == box[2]);
+      found = true;
+    }
+  }
+  REQUIRE(found);
+  REQUIRE(out.str().find("[rvegen-voxel-format: v3]") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -394,6 +527,9 @@ int main() {
   test_vtk_cell_data_layout();
   test_vtk_spacing_round_trips();
   test_statistics_post_process_3d();
+  test_statistics_csv_with_few_inclusions();
+  test_voxel_count_overflow_and_cap();
+  test_voxel_header_extent_round_trips();
 
   if (failures > 0) {
     std::cerr << failures << " voxel/stats 3D test failure(s)\n";

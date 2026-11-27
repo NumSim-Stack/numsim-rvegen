@@ -118,6 +118,8 @@ public:
       throw std::runtime_error{
           "vtk_legacy_writer: output_path not set; cannot run() as post-process"};
     }
+    // Reject an unusable grid before the output file is created.
+    (void)checked_voxel_count(_nx, _ny, effective_nz(domain_box, _nz));
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{
@@ -179,7 +181,7 @@ public:
         << "ORIGIN 0 0 0\n"
         << "SPACING " << std::setprecision(17) << dx << ' ' << dy << ' '
         << dz << std::setprecision(old_precision) << '\n'
-        << "CELL_DATA " << (_nx * _ny * nz_eff) << '\n'
+        << "CELL_DATA " << checked_voxel_count(_nx, _ny, nz_eff) << '\n'
         << "SCALARS " << field_name << " int 1\n"
         << "LOOKUP_TABLE default\n";
 
