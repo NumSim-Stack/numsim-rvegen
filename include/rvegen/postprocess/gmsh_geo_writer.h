@@ -13,6 +13,7 @@
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
+#include <typeinfo>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,6 +50,11 @@ namespace rvegen {
 //      and every piece belongs to exactly one phase. Overlapping /
 //      nested / full-domain inputs therefore get the right phases;
 //      shapes whose boxes do not overlap an earlier one stay untouched.
+//      With periodic=true the wrap copies of one particle share the
+//      priority of its earliest copy, so the result does not depend on
+//      where the copies sit in the list, and spheres cut by a periodic
+//      face get their poles moved off planes that pass near them (gmsh
+//      cannot mesh such caps consistently on both sides).
 //      The pieces of every inclusion are tracked in `_inc_<id>()` lists
 //      (an inclusion that becomes empty is simply an empty list).
 //   4. `BooleanFragments` of the domain against all inclusions — the
@@ -265,6 +271,10 @@ public:
     const bool is_3d = box[2] > value_type{0};
 
     for (auto const v : box) require_finite(v, "domain size");
+    if (!(box[0] > value_type{0}) || !(box[1] > value_type{0}) || box[2] < value_type{0}) {
+      throw std::runtime_error{
+          "gmsh_geo_writer: domain size must be > 0 in x and y and >= 0 in z"};
+    }
     for (auto const v : {_char_length_min, _char_length_max}) {
       require_finite(v, "mesh size");
     }
@@ -693,6 +703,7 @@ private:
         out << "Sphere(" << entity_id << ") = {"
             << num((*s)(0)) << ", " << num((*s)(1)) << ", " << num((*s)(2)) << ", "
             << num(s->radius) << "};\n";
+        if (_periodic) write_pole_rotation(out, *s, entity_id, domain_box);
       } else if (auto const* b = dynamic_cast<box<value_type> const*>(raw); b) {
         const auto hx = b->width()  * value_type{0.5};
         const auto hy = b->height() * value_type{0.5};
@@ -704,6 +715,61 @@ private:
       ids.push_back(entity_id++);
     }
     return write_clips(out, shapes, ids, domain_box, "Volume");
+  }
+
+  // gmsh's OCC sphere has its poles on +-z. A sphere cut by a periodic
+  // face whose plane passes close to a pole (|offset| << r) gets a cap
+  // boundary that nearly touches the parametric singularity; gmsh's
+  // surface mesher then fails, "splits those edges and tries again", and
+  // thereby changes the 1D mesh of one boundary curve but not of its
+  // periodic partner ("curve N has 5 vertices, whereas correspondant M
+  // has 2"). Moving the poles to a better axis avoids it. The choice only
+  // depends on the centre modulo the box (distance to the nearest lattice
+  // plane), so a sphere and its periodic images are rotated identically
+  // and their cut curves keep matching seams. z (gmsh's default) is kept
+  // unless another axis is clearly better.
+  static int pole_axis(sphere<value_type> const& s,
+                       std::array<value_type, 3> const& box) {
+    std::array<value_type, 3> off{};  // signed offset to nearest lattice plane
+    std::array<bool, 3> cut{};
+    const value_type r = s.radius;
+    for (std::size_t k = 0; k < 3; ++k) {
+      if (!(box[k] > value_type{0})) continue;
+      const value_type t = s(k) / box[k];
+      off[k] = (t - std::round(t)) * box[k];
+      cut[k] = std::abs(off[k]) < r;
+    }
+    auto score = [&](std::size_t pole) {
+      value_type m = r;
+      for (std::size_t k = 0; k < 3; ++k) {
+        if (!cut[k]) continue;
+        // distance of the nearest pole to the plane along axis k
+        m = std::min(m, k == pole ? r - std::abs(off[k]) : std::abs(off[k]));
+      }
+      return m;
+    };
+    int best = 2;
+    value_type best_score = score(2);
+    if (best_score >= value_type{0.5} * r) return best;
+    for (int a : {0, 1}) {
+      const value_type sc = score(static_cast<std::size_t>(a));
+      if (sc > best_score * value_type{1.0001}) {
+        best = a;
+        best_score = sc;
+      }
+    }
+    return best;
+  }
+
+  static void write_pole_rotation(std::ostream& out, sphere<value_type> const& s,
+                                  std::size_t id,
+                                  std::array<value_type, 3> const& box) {
+    const int axis = pole_axis(s, box);
+    if (axis == 2) return;
+    // z -> x : rotate about y; z -> -y : rotate about x.
+    out << "Rotate {{" << (axis == 0 ? "0, 1, 0" : "1, 0, 0") << "}, {"
+        << num(s(0)) << ", " << num(s(1)) << ", " << num(s(2))
+        << "}, Pi/2} { Volume{" << id << "}; }\n";
   }
 
   // gmsh's OCC Disk needs rx >= ry; swap the semi-axes and rotate a
@@ -751,6 +817,41 @@ private:
         << "Plane Surface(" << id << ") = {_ll};\n";
   }
 
+  // First-wins priority of every shape. Normally the shape index. With
+  // periodic=true the wrap copies of one particle (same type and size,
+  // centres differing by whole box lengths) share the priority of the
+  // earliest copy: otherwise the order A, B, A', B' would let A beat B on
+  // one side of the box but B' beat A' on the other, and the two faces
+  // could no longer be paired.
+  std::vector<std::size_t> priorities(
+      shape_vector const& shapes, std::vector<extent_box> const& extents,
+      std::array<value_type, 3> const& box) const {
+    std::vector<std::size_t> prio(shapes.size());
+    for (std::size_t i = 0; i < shapes.size(); ++i) prio[i] = i;
+    if (!_periodic) return prio;
+    const value_type tol = value_type{1e-9} * std::max({box[0], box[1], box[2]});
+    auto images = [&](std::size_t i, std::size_t j) {
+      if (typeid(*shapes[i]) != typeid(*shapes[j])) return false;
+      const auto mi = shapes[i]->get_middle_point();
+      const auto mj = shapes[j]->get_middle_point();
+      for (std::size_t k = 0; k < 3; ++k) {
+        const value_type size_i = extents[i].top[k] - extents[i].bottom[k];
+        const value_type size_j = extents[j].top[k] - extents[j].bottom[k];
+        if (std::abs(size_i - size_j) > tol) return false;
+        if (!(box[k] > value_type{0})) continue;
+        const value_type d = (mi[k] - mj[k]) / box[k];
+        if (std::abs(d - std::round(d)) * box[k] > tol) return false;
+      }
+      return true;
+    };
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      for (std::size_t j = 0; j < i; ++j) {
+        if (prio[j] == j && images(i, j)) { prio[i] = j; break; }
+      }
+    }
+    return prio;
+  }
+
   // Reduce every inclusion to its final pieces, in shape order:
   //   1. clip to the domain if it leaves it (BooleanIntersection);
   //   2. first shape wins: subtract all earlier inclusions whose
@@ -763,26 +864,31 @@ private:
       std::ostream& out, shape_vector const& shapes,
       std::vector<std::size_t> const& ids,
       std::array<value_type, 3> const& domain_box, char const* kind) const {
-    std::vector<inclusion_ref> refs;
-    refs.reserve(shapes.size());
+    std::vector<inclusion_ref> refs(shapes.size());
     bool header_done = false;
     std::vector<extent_box> extents;
     extents.reserve(shapes.size());
     for (auto const& sh : shapes) extents.push_back(extent_of(*sh));
-    for (std::size_t i = 0; i < shapes.size(); ++i) {
+    const auto prio = priorities(shapes, extents, domain_box);
+    std::vector<std::size_t> order(shapes.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](std::size_t a, std::size_t b) { return prio[a] < prio[b]; });
+    for (std::size_t i : order) {
       const auto id = std::to_string(ids[i]);
       const auto var = "_inc_" + id + "()";
       const bool clip = needs_clip(*shapes[i], domain_box);
 
       std::vector<std::string> tools;
-      for (std::size_t j = 0; j < i; ++j) {
-        if (aabb_overlap(extents[i], extents[j])) {
+      for (std::size_t j = 0; j < shapes.size(); ++j) {
+        const bool before = prio[j] < prio[i] || (prio[j] == prio[i] && j < i);
+        if (before && aabb_overlap(extents[i], extents[j])) {
           tools.push_back(refs[j].ref);
         }
       }
 
       if (!clip && tools.empty()) {
-        refs.push_back({id, shapes[i]->phase_name()});
+        refs[i] = {id, shapes[i]->phase_name()};
         continue;
       }
       if (!header_done) {
@@ -806,7 +912,7 @@ private:
             << "}; Delete; }{ " << kind << "{_tool()}; };\n"
             << "EndIf\n";
       }
-      refs.push_back({var, shapes[i]->phase_name()});
+      refs[i] = {var, shapes[i]->phase_name()};
     }
     return refs;
   }
