@@ -15,7 +15,7 @@ a PNG:
 and writes `<out>/README.md`, an index that GitHub renders as the gallery.
 
     scripts/make_gallery.py                      # all of examples/
-    scripts/make_gallery.py examples/mixed_*.json --out /tmp/g
+    scripts/make_gallery.py examples/mixed_*.json --out /tmp/g --index
     cmake --build build --target gallery         # same, via CMake
 
 Only the rvegen binary, Python 3, numpy and matplotlib are required.
@@ -23,10 +23,22 @@ Inkscape (or ImageMagick), Chrome and gmsh are optional: outputs that
 need a missing tool are reported as skipped. The three.js pages load
 three.js from unpkg, so screenshots of them need network access.
 
+Exit status is non-zero when rvegen fails on a config, when a config's
+post-process does not write its output, or when a renderer that is
+available fails on an output (a missing tool is a skip, not a failure).
+
 A config may carry a top-level "_comment" string; it becomes the
-caption. Relative "*_path" inputs (e.g. "mesh_path") are resolved
-against the config's directory; "output_path" values are reduced to
-their basename so every output lands in the scratch directory.
+caption. The rvegen CLI resolves relative paths against its working
+directory; the gallery runs each config as if from the config's own
+directory (`cd examples && rvegen x.json`), so relative "*_path" inputs
+(e.g. "mesh_path") are resolved against the config's directory.
+"output_path" values are reduced to their basename so every output
+lands in the scratch directory. Configs whose file names share a stem
+(e.g. a/x.json and b/x.json) get distinct output names.
+
+The README.md index is written when the whole default examples/
+directory is rendered, or with --index; a run on a subset leaves an
+existing index alone so it does not drop the other configs.
 """
 from __future__ import annotations
 
@@ -84,6 +96,16 @@ class Tools:
     browser: str | None
     width: int
     timeout: int
+    no_sandbox: bool = False
+
+
+def run_tool(cmd: list[str], timeout: int, **kw) -> subprocess.CompletedProcess:
+    """Run an external tool; on failure raise with the tail of its output."""
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+    if proc.returncode != 0:
+        tail = (proc.stderr.strip() or proc.stdout.strip())[-400:]
+        raise RuntimeError(f"{Path(cmd[0]).name} exited {proc.returncode}: {tail}")
+    return proc
 
 
 def find_rvegen(explicit: str | None) -> Path:
@@ -149,13 +171,42 @@ class Result:
     message: str = ""
     shapes: int | None = None
     images: list[tuple[str, str]] = field(default_factory=list)  # (png name, label)
-    skipped: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)  # a needed tool is missing
+    failed: list[str] = field(default_factory=list)  # an output could not be rendered
+    slug: str = ""
 
 
-def process(cfg_path: Path, out_dir: Path, work_root: Path, tools: Tools) -> Result:
+def assign_slugs(configs: list[Path]) -> list[tuple[Path, str]]:
+    """Give every config a unique name for its work dir and PNGs.
+
+    The stem is used as is unless another config shares it; then the
+    parent directory names are prepended until the names differ, with a
+    numeric suffix as the last resort.
+    """
+    by_stem: dict[str, list[Path]] = {}
+    for c in configs:
+        by_stem.setdefault(c.stem, []).append(c)
+    used: set[str] = set()
+    out = []
+    for c in configs:
+        if len(by_stem[c.stem]) == 1:
+            slug = c.stem
+        else:
+            parts = [p for p in c.parent.parts if p not in ("/", "")]
+            slug = f"{parts[-1]}_{c.stem}" if parts else c.stem
+        base, n = slug, 2
+        while slug in used:
+            slug = f"{base}-{n}"
+            n += 1
+        used.add(slug)
+        out.append((c, slug))
+    return out
+
+
+def process(cfg_path: Path, slug: str, out_dir: Path, work_root: Path, tools: Tools) -> Result:
     cfg = json.loads(cfg_path.read_text())
-    res = Result(cfg_path, cfg)
-    stem = cfg_path.stem
+    res = Result(cfg_path, cfg, slug=slug)
+    stem = slug
     work = work_root / stem
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -183,7 +234,7 @@ def process(cfg_path: Path, out_dir: Path, work_root: Path, tools: Tools) -> Res
         src = work / output
         kind = pp.get("type", src.suffix.lstrip("."))
         if not src.is_file():
-            res.skipped.append(f"{output}: not written by rvegen")
+            res.failed.append(f"{output}: not written by rvegen")
             continue
         name = f"{stem}-{kind}.png"
         n = 2
@@ -194,8 +245,8 @@ def process(cfg_path: Path, out_dir: Path, work_root: Path, tools: Tools) -> Res
         dst = out_dir / name
         try:
             label = render(src, dst, kind, is_3d, work, tools)
-        except Exception as e:  # noqa: BLE001 - report and keep going
-            res.skipped.append(f"{output}: {type(e).__name__}: {e}")
+        except Exception as e:  # noqa: BLE001 - report, keep going, fail at the end
+            res.failed.append(f"{output}: {type(e).__name__}: {e}")
             continue
         if label is None:
             continue
@@ -257,7 +308,9 @@ def render_svg(src: Path, dst: Path, tools: Tools) -> str:
     else:
         cmd = tools.svg + [str(src), "-background", "white", "-flatten",
                            "-resize", f"{tools.width}x", str(dst)]
-    subprocess.run(cmd, check=True, capture_output=True, timeout=tools.timeout)
+    run_tool(cmd, tools.timeout)
+    if not dst.is_file():
+        raise RuntimeError(f"{tools.svg_kind} produced no PNG")
     return "SVG"
 
 
@@ -269,11 +322,12 @@ def render_html(src: Path, dst: Path, tools: Tools) -> str:
     with tempfile.TemporaryDirectory(prefix="rvegen-gallery-chrome-") as profile:
         cmd = [tools.browser, "--headless=new", "--hide-scrollbars", "--no-first-run",
                f"--user-data-dir={profile}",
+               *(["--no-sandbox"] if tools.no_sandbox else []),
                "--enable-unsafe-swiftshader", "--use-angle=swiftshader",
                f"--window-size={tools.width},{height}",
                "--virtual-time-budget=15000",
                f"--screenshot={dst}", src.resolve().as_uri()]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=tools.timeout)
+        run_tool(cmd, tools.timeout)
     if not dst.is_file():
         raise RuntimeError("browser produced no screenshot")
     return "three.js viewer (screenshot)"
@@ -606,9 +660,9 @@ def write_index(results: list[Result], out_dir: Path) -> None:
         "`scripts/make_gallery.py` or `cmake --build build --target gallery`.",
         "",
     ]
-    for res in sorted(results, key=lambda r: r.config.name):
+    for res in sorted(results, key=lambda r: r.slug):
         rel = os.path.relpath(res.config, out_dir)
-        lines.append(f"## {res.config.stem}")
+        lines.append(f"## {res.slug}")
         lines.append("")
         lines.append(f"[`{res.config.name}`]({rel}) · {describe(res.cfg, res.shapes)}")
         lines.append("")
@@ -620,12 +674,14 @@ def write_index(results: list[Result], out_dir: Path) -> None:
             lines.append("")
             continue
         for name, label in res.images:
-            lines.append(f'<img src="{name}" alt="{res.config.stem}: {label}" width="440">')
+            lines.append(f'<img src="{name}" alt="{res.slug}: {label}" width="440">')
         if res.images:
             lines.append("")
+        for note in res.failed:
+            lines.append(f"- **failed** {note}")
         for note in res.skipped:
             lines.append(f"- _skipped_ {note}")
-        if res.skipped:
+        if res.skipped or res.failed:
             lines.append("")
     (out_dir / "README.md").write_text("\n".join(lines))
 
@@ -640,7 +696,8 @@ def collect_configs(paths: list[str]) -> list[Path]:
             configs.append(p)
         else:
             sys.exit(f"make_gallery: no such file or directory: {p}")
-    return [c.resolve() for c in configs]
+    # The same file named twice (e.g. a dir and a file in it) runs once.
+    return list(dict.fromkeys(c.resolve() for c in configs))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -654,15 +711,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=600, help="per-step timeout in seconds")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1)
     ap.add_argument("--work", help="keep intermediate files in this directory")
-    ap.add_argument("--no-index", action="store_true", help="do not write README.md")
+    ap.add_argument("--browser-no-sandbox", action="store_true",
+                    help="pass --no-sandbox to Chrome (implied when running as root)")
+    idx = ap.add_mutually_exclusive_group()
+    idx.add_argument("--index", action="store_true",
+                     help="write README.md even for an explicit list of configs")
+    idx.add_argument("--no-index", action="store_true", help="do not write README.md")
     args = ap.parse_args(argv)
+    # A subset run would replace the full index with a partial one.
+    write_idx = args.index or (not args.no_index and not args.configs)
 
     gmsh = None if args.gmsh in (None, "none") else shutil.which(args.gmsh)
     if args.gmsh not in (None, "none") and gmsh is None:
         print(f"make_gallery: gmsh '{args.gmsh}' not found; .geo outputs will be skipped")
     svg_kind, svg_cmd = find_svg_converter()
+    # Chrome refuses to start its sandbox as root (e.g. in containers).
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     tools = Tools(find_rvegen(args.rvegen), gmsh, svg_cmd, svg_kind,
-                  find_browser(args.browser), args.width, args.timeout)
+                  find_browser(args.browser), args.width, args.timeout,
+                  no_sandbox=args.browser_no_sandbox or is_root)
     configs = collect_configs(args.configs)
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -679,24 +746,35 @@ def main(argv: list[str] | None = None) -> int:
           f" · browser: {tools.browser or '-'}\nconfigs: {len(configs)} -> {out_dir}")
     try:
         with futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-            jobs = {pool.submit(process, c, out_dir, work_root, tools): c for c in configs}
+            jobs = {pool.submit(process, c, slug, out_dir, work_root, tools): c
+                    for c, slug in assign_slugs(configs)}
             results = []
             for fut in futures.as_completed(jobs):
                 res = fut.result()
                 results.append(res)
-                status = "ok " if res.ok else "ERR"
+                status = "ERR" if not res.ok or res.failed else "ok "
                 detail = ", ".join(n for n, _ in res.images) if res.ok else res.message
-                print(f"[{status}] {res.config.name}: {detail}")
+                name = res.config.name
+                if res.slug != res.config.stem:
+                    name += f" (as {res.slug})"
+                print(f"[{status}] {name}: {detail}")
+                for note in res.failed:
+                    print(f"      FAILED {note}")
                 for note in res.skipped:
                     print(f"      skipped {note}")
     finally:
         if tmp:
             tmp.cleanup()
 
-    if not args.no_index:
+    if write_idx:
         write_index(results, out_dir)
         print(f"index: {out_dir / 'README.md'}")
-    return 0 if all(r.ok for r in results) else 1
+    bad = [r for r in results if not r.ok or r.failed]
+    if bad:
+        print(f"make_gallery: {len(bad)} of {len(results)} configs failed: "
+              + ", ".join(sorted(r.config.name for r in bad)), file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

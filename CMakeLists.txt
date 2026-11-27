@@ -245,7 +245,7 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py
                 --rvegen $<TARGET_FILE:rvegen>
-                --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery
+                --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery --index
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples
         DEPENDS rvegen
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -365,6 +365,26 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# make_gallery.py regressions: a failing renderer must give a non-zero
+# exit, and same-stem configs must not overwrite each other. Needs
+# numpy + matplotlib, like the script itself.
+if(Python3_Interpreter_FOUND)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import numpy, matplotlib"
+    RESULT_VARIABLE _rvegen_py_plot_rc
+    OUTPUT_QUIET ERROR_QUIET)
+  if(_rvegen_py_plot_rc EQUAL 0)
+    add_test(NAME gallery_script_check
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tests/gallery_script_check.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    set_tests_properties(gallery_script_check PROPERTIES TIMEOUT 900 LABELS "cli")
+  else()
+    message(STATUS "numpy/matplotlib not found - skipping gallery_script_check")
+  endif()
+endif()
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
