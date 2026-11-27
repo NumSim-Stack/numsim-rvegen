@@ -548,17 +548,22 @@ private:
       const Eigen::Vector3<T> bitangent =
           n_out.cross(tangent).normalized();
 
-      // Sort by angle around the centroid.
-      std::sort(face_verts.begin(), face_verts.end(),
-                [&](std::size_t a, std::size_t b) {
-                  const auto da = verts[a] - centroid;
-                  const auto db = verts[b] - centroid;
-                  const T ang_a = std::atan2(da.dot(bitangent),
-                                             da.dot(tangent));
-                  const T ang_b = std::atan2(db.dot(bitangent),
-                                             db.dot(tangent));
-                  return ang_a < ang_b;
-                });
+      // Sort by angle around the centroid. The angle of every vertex is
+      // computed ONCE and the sort compares stored numbers: recomputing it
+      // inside the comparator lets a compiler that contracts a*b+c (FMA,
+      // -march=native) evaluate the same vertex differently in different
+      // comparisons. A vertex on the atan2 branch cut (angle +-pi, typical
+      // for symmetric seed sets) then flips sign between comparisons, the
+      // comparator stops being a strict weak order and the face loop comes
+      // out scrambled (periodic cells lost ~0.5 % of their volume).
+      std::vector<std::pair<T, std::size_t>> keyed;
+      keyed.reserve(face_verts.size());
+      for (auto v : face_verts) {
+        const auto d = verts[v] - centroid;
+        keyed.emplace_back(std::atan2(d.dot(bitangent), d.dot(tangent)), v);
+      }
+      std::sort(keyed.begin(), keyed.end());
+      for (std::size_t k = 0; k < keyed.size(); ++k) face_verts[k] = keyed[k].second;
       faces.push_back(std::move(face_verts));
     }
 

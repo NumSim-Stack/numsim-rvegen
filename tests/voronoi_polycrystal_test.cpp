@@ -547,6 +547,67 @@ void test_cancel_hook() {
   REQUIRE(secs < 60.0);
 }
 
+// Symmetric / lattice-like seed sets put many vertices on exactly degenerate
+// positions (and on the atan2 branch cut of the face ordering). With a
+// compiler that contracts a*b+c into FMA the in-house backend used to lose
+// ~0.5 % of the volume on some of them; the volume-sum check in build()
+// throws then, so merely building them is the assertion. Unweighted lattices
+// additionally must give equal cells.
+void test_symmetric_periodic_seed_sets() {
+  using rvegen::voronoi_backend;
+  auto run = [](seeds3_t const& s, std::vector<double> w, bool per) {
+    rvegen::voronoi_generator_3d<double> g{1, 1, 1, s, voronoi_backend::in_house,
+                                           per, std::move(w)};
+    return g.build();   // throws std::runtime_error on a volume mismatch
+  };
+  seeds3_t three{{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}, {0.5, 0.2, 0.8}};
+  for (bool per : {true, false}) {
+    run(three, {}, per);
+    run(three, {0, 0, 0}, per);
+    run(three, {-10, 0, 0}, per);   // empties seed 0
+    run(three, {0, -10, 0}, per);
+    run(three, {0, 0, -10}, per);
+    for (int n : {2, 3}) {
+      seeds3_t lat, corner;
+      for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) for (int k = 0; k < n; ++k) {
+        lat.push_back({(i + .5) / n, (j + .5) / n, (k + .5) / n});
+        corner.push_back({double(i) / n, double(j) / n, double(k) / n});
+      }
+      const double each = 1.0 / double(lat.size());
+      if (per) {
+        for (auto const& c : run(lat, {}, true)) REQUIRE(std::abs(c->volume() - each) < 1e-9);
+        for (auto const& c : run(corner, {}, true)) REQUIRE(std::abs(c->volume() - each) < 1e-9);
+      } else {
+        run(lat, {}, false); run(corner, {}, false);
+      }
+      run(lat, std::vector<double>(lat.size(), 0.0), per);
+      std::vector<double> w(lat.size(), 0.0);
+      w[0] = -10;                       // a weight that empties a cell
+      run(lat, w, per);
+      w.assign(lat.size(), 0.0); w[1] = 0.01; w[2] = -0.01;
+      run(lat, w, per);
+    }
+    seeds3_t bcc{{0.25, 0.25, 0.25}, {0.75, 0.75, 0.75}};
+    run(bcc, {}, per); run(bcc, {0, 0.02}, per);
+    seeds3_t half{{0.25, 0.25, 0.25}, {0.75, 0.25, 0.25}, {0.25, 0.75, 0.25}, {0.75, 0.75, 0.75}};
+    run(half, {}, per); run(half, {-10, 0, 0, 0}, per);
+    seeds3_t fcc{{0, 0, 0}, {.5, .5, 0}, {.5, 0, .5}, {0, .5, .5}};
+    run(fcc, {}, per); run(fcc, {0, 0, 0, 0}, per);
+    std::mt19937 e{5};
+    std::uniform_int_distribution<int> q{0, 7};
+    for (int rep = 0; rep < 60; ++rep) {   // random points of an 8^3 grid
+      seeds3_t u;
+      for (int i = 0; i < 3 + rep % 6; ++i) {
+        std::array<double, 3> p{q(e) / 8.0, q(e) / 8.0, q(e) / 8.0};
+        if (std::find(u.begin(), u.end(), p) == u.end()) u.push_back(p);
+      }
+      std::vector<double> w;
+      if (rep % 4 == 1) for (std::size_t i = 0; i < u.size(); ++i) w.push_back((q(e) - 4) * 0.01);
+      run(u, w, per);
+    }
+  }
+}
+
 // Periodic cells returned by voronoi_to_shapes must cover the whole box.
 void test_voronoi_to_shapes_periodic_coverage_2d() {
   const double Lx = 2.0, Ly = 1.5;
@@ -658,6 +719,7 @@ int main() {
   test_periodic_wraps_without_bbox();
   test_volume_sum_check();
   test_periodic_close_pairs();
+  test_symmetric_periodic_seed_sets();
   test_grain_request_too_large_for_box();
   test_in_house_grain_cap();
   test_cancel_hook();
