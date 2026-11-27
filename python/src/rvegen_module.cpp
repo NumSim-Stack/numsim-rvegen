@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <limits>
 #include <optional>
 
 #include "rvegen/phase/phase_assignment.h"
@@ -59,8 +60,28 @@ using shape_ptr = std::unique_ptr<rvegen::shape_base<double>>;
 
 // ---- JSON <-> Python helpers (via the stdlib json module; no extra dep) ----
 nlohmann::json py_to_json(py::handle obj) {
-  auto const text =
-      py::module_::import("json").attr("dumps")(obj).cast<std::string>();
+  // numpy scalars / arrays are converted via .tolist(); NaN / inf are
+  // rejected up front (they are not JSON and would otherwise surface as an
+  // opaque parse error).
+  auto fallback = py::cpp_function([](py::handle o) -> py::object {
+    if (py::hasattr(o, "tolist")) return o.attr("tolist")();
+    throw py::type_error("rvegen config: value of type '" +
+                         py::str(py::type::handle_of(o).attr("__name__"))
+                             .cast<std::string>() +
+                         "' is not JSON-serialisable");
+  });
+  std::string text;
+  try {
+    text = py::module_::import("json")
+               .attr("dumps")(obj, py::arg("default") = fallback,
+                              py::arg("allow_nan") = false)
+               .cast<std::string>();
+  } catch (py::error_already_set& e) {
+    if (e.matches(PyExc_ValueError))
+      throw py::value_error(
+          "rvegen config contains NaN or infinity, which is not valid JSON");
+    throw;
+  }
   return nlohmann::json::parse(text);
 }
 
@@ -471,11 +492,17 @@ PYBIND11_MODULE(_core, m) {
         rvegen::pipeline_options opts;
         opts.seed = seed;
         opts.run_postprocess = postprocess;
+        std::vector<std::string> warnings_out;   // surfaced as UserWarning below
+        opts.warn = [&warnings_out](std::string const& w) {
+          warnings_out.push_back(w);
+        };
         rvegen::pipeline_result res;
         {
           py::gil_scoped_release release;   // pure C++ until the result is built
           res = rvegen::run_pipeline(cfg, opts);
         }
+        for (auto const& w : warnings_out)
+          PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1);
         run_result out;
         py::dict sm;
         sm["seed"] = res.seed;
@@ -505,6 +532,11 @@ PYBIND11_MODULE(_core, m) {
       [](std::vector<rvegen::shape_base<double> const*> const& shapes,
          std::array<double, 3> domain, std::size_t nx, std::size_t ny,
          std::size_t nz) {
+        if (nx == 0 || ny == 0 || nz == 0)
+          throw py::value_error("rvegen.voxelize: nx, ny and nz must be >= 1");
+        constexpr auto lim = std::numeric_limits<std::size_t>::max() / 4;
+        if (nx > lim / ny || nx * ny > lim / nz)
+          throw py::value_error("rvegen.voxelize: grid size overflows");
         // sample_voxel_grid wants unique_ptrs; clone() leaves the caller's
         // shapes untouched.
         std::vector<shape_ptr> owned;
@@ -533,6 +565,8 @@ PYBIND11_MODULE(_core, m) {
       py::arg("shapes"), py::arg("domain"), py::arg("nx"), py::arg("ny"),
       py::arg("nz") = 1,
       "Sample shapes onto an nx*ny*nz grid; returns a uint32 array indexed "
-      "[i, j, k]. Voxel value = 1-based index of the first containing shape "
+      "[i, j, k] with shape (nx, ny, nz_eff). The array is Fortran-ordered "
+      "(F-contiguous, x fastest; zero-copy view of the sampled buffer): "
+      "use numpy.ascontiguousarray() if you need C order. Voxel value = 1-based index of the first containing shape "
       "(0 = outside). 2D domains (z == 0) collapse to nz = 1.");
 }

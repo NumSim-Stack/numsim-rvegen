@@ -15,9 +15,11 @@
 // CLI prints ("rvegen: generated N shapes", ...) go through
 // `pipeline_options::info` / `warn` so embedders stay silent by default.
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -81,9 +83,38 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
     out.domain_box[1] = db.at(1).get<double>();
     out.domain_box[2] = db.size() >= 3 ? db.at(2).get<double>() : 0.0;
   }
-  out.seed = opts.seed ? *opts.seed
-                       : config.value<std::uint64_t>("seed", 42);
-  std::mt19937 engine{out.seed};
+  // Warn about unknown top-level keys (typos would otherwise be ignored).
+  for (auto const& [key, value] : config.items()) {
+    static constexpr std::array<char const*, 10> known{
+        "domain_box", "seed", "distributions", "direction_distributions",
+        "shapes", "generator", "termination", "postprocess", "phases",
+        "phase_assignment"};
+    if (key.starts_with('_')) continue;   // "_comment" style annotations
+    if (std::find_if(known.begin(), known.end(), [&](char const* k) {
+          return key == k;
+        }) == known.end()) {
+      opts.warn("rvegen: warning - unknown top-level key '" + key +
+                "' is ignored");
+    }
+  }
+  // The sampling engine is a 32-bit mt19937: reject seeds it would silently
+  // truncate (or wrap, for negative JSON values) instead of mis-reporting.
+  if (opts.seed) {
+    out.seed = *opts.seed;
+  } else if (config.contains("seed")) {
+    auto const& sj = config.at("seed");
+    if (!sj.is_number_integer() ||
+        (!sj.is_number_unsigned() && sj.get<std::int64_t>() < 0)) {
+      throw std::runtime_error{
+          "'seed' must be an integer in [0, 4294967295] (32-bit engine)"};
+    }
+    out.seed = sj.get<std::uint64_t>();
+  }
+  if (out.seed > std::numeric_limits<std::uint32_t>::max()) {
+    throw std::runtime_error{
+        "'seed' must be an integer in [0, 4294967295] (32-bit engine)"};
+  }
+  std::mt19937 engine{static_cast<std::uint32_t>(out.seed)};
 
   // Distributions.
   distribution_map_t<double> dists;
@@ -120,6 +151,25 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
   // tow_weave, voronoi_*) build their shapes from the generator params.
   rve_generator_base<double>::input_vector inputs;
   for (auto const& spec : config.value("shapes", nlohmann::json::array())) {
+    // A direction distribution in a scalar slot would otherwise only fail
+    // at the first new_shape(); catch it here and name the key.
+    if (spec.is_object()) {
+      for (auto const& [key, value] : spec.items()) {
+        if (key == "direction_dist" || !value.is_string() ||
+            !key.ends_with("_dist"))
+          continue;
+        auto const it = dists.find(value.get<std::string>());
+        if (it != dists.end() &&
+            dynamic_cast<direction_distribution_holder<double>*>(
+                it->second.get()) != nullptr) {
+          throw std::runtime_error{
+              "shape input '" + spec.value("type", std::string{"?"}) +
+              "': key '" + key + "' refers to direction distribution '" +
+              value.get<std::string>() +
+              "', but a scalar distribution is required"};
+        }
+      }
+    }
     inputs.push_back(
         build_from_json(input_registry_t<>::instance(), spec, dists));
   }
@@ -133,7 +183,14 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
       dynamic_cast<deterministic_generator<double>*>(generator.get()) !=
       nullptr;
   std::unique_ptr<termination_base<double>> termination;
-  if (deterministic && !config.contains("termination")) {
+  if (deterministic) {
+    auto const gtype = config.at("generator").value("type", std::string{"?"});
+    if (config.contains("shapes") && !config.at("shapes").empty())
+      opts.warn("rvegen: warning - generator '" + gtype +
+                "' is deterministic: \"shapes\" is ignored");
+    if (config.contains("termination"))
+      opts.warn("rvegen: warning - generator '" + gtype +
+                "' is deterministic: \"termination\" is ignored");
     termination = std::make_unique<number_of_inclusions<double>>(std::size_t{1});
   } else {
     termination = build_from_json(termination_registry_t<>::instance(),
@@ -157,7 +214,7 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
     }
     const auto assigned = phase_assignment<double>::from_json(
                               config.at("phase_assignment"), *out.phases)
-                              .apply(out.shapes);
+                              .apply(out.shapes, out.domain_box);
     opts.info("rvegen: phase_assignment tagged " + std::to_string(assigned) +
               " shape" + (assigned == 1 ? "" : "s"));
   }
@@ -175,7 +232,16 @@ inline void run_post_processes(nlohmann::json const& config,
     return;
   }
   for (auto const& spec : config.at("postprocess")) {
-    auto pp = build_from_json(post_process_registry_t<>::instance(), spec);
+    // phase_assignment's "matrix" names the matrix phase; forward it to
+    // the DAMASK writer unless the writer config already picks one.
+    auto pp_spec = spec;
+    if (config.contains("phase_assignment") &&
+        config.at("phase_assignment").contains("matrix") &&
+        spec.value("type", std::string{}) == "damask_material_config" &&
+        !pp_spec.contains("matrix_phase")) {
+      pp_spec["matrix_phase"] = config.at("phase_assignment").at("matrix");
+    }
+    auto pp = build_from_json(post_process_registry_t<>::instance(), pp_spec);
     if (result.phases) pp->set_phases(&*result.phases);
     pp->run(result.shapes, result.domain_box);
     auto type = spec.at("type").get<std::string>();

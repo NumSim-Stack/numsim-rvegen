@@ -114,7 +114,9 @@ for s in res:
 # "shapes" / "termination" sections.
 
 # numpy uint32 grid indexed [i, j, k]; value = 1-based index of the first
-# containing shape, 0 = outside. 2D domains collapse to nz = 1.
+# containing shape, 0 = outside. 2D domains collapse to nz = 1. The array is
+# Fortran-ordered (grid.flags.f_contiguous, x fastest, zero-copy); use
+# numpy.ascontiguousarray(grid) when C order is required. nx/ny/nz >= 1.
 grid = rvegen.voxelize(list(res), [1.0, 1.0, 0.0], nx=64, ny=64, nz=1)
 
 # Registry introspection: distributions, direction_distributions,

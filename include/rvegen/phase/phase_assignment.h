@@ -17,10 +17,12 @@
 //     set by an input always wins.
 //   * Precedence, most specific first: by_index > by_shape_type >
 //     all_inclusions.
-//   * by_index keys address positions in the generated shape vector:
-//     "N", "N-M" (inclusive) or "N-" (to the end). With the periodic
-//     generator the vector also holds wrap copies, so prefer
-//     by_shape_type / all_inclusions there.
+//   * by_index keys address UNIQUE INCLUSIONS in generation order: "N",
+//     "N-M" (inclusive) or "N-" (to the end). When a domain box is given
+//     to apply(), periodic wrap copies (centre outside the box) are not
+//     counted: a wrap takes the index of the primary preceding it, so
+//     both get the same phase. Ranges must not overlap (the JSON object
+//     key order is not file order, so overlaps would be ambiguous).
 //   * Shape-type names: circle, ellipse, rectangle, sphere, box,
 //     polyline_tube, convex_polygon, voronoi_cell, mesh_inclusion.
 //   * "matrix" documents which declared phase is the matrix; it is
@@ -29,6 +31,7 @@
 //   * Every referenced phase must exist in the phase_collection; unknown
 //     keys / names / shape types throw at load time, not at write time.
 
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <optional>
@@ -49,6 +52,7 @@
 #include "../shapes/shape_base.h"
 #include "../shapes/sphere.h"
 #include "../shapes/voronoi_cell.h"
+#include "../intersection/aabb_overlap.h"
 #include "phase.h"
 
 namespace rvegen {
@@ -119,6 +123,10 @@ public:
           throw std::runtime_error{"phase_assignment: by_index must be an object"};
         for (auto const& [range, ph] : val.items()) {
           auto [lo, hi] = parse_range(range);
+          for (auto const& e : a._by_index)
+            if (lo <= e.hi && e.lo <= hi)
+              throw std::runtime_error{"phase_assignment: by_index range '" +
+                                       range + "' overlaps another range"};
           a._by_index.push_back({lo, hi, require_phase("by_index." + range, ph)});
         }
       } else {
@@ -131,9 +139,9 @@ public:
   // Phase for the shape at `index`, or nullopt if no rule applies.
   [[nodiscard]] std::optional<std::string>
   resolve(shape_base<T> const& s, std::size_t index) const {
-    // Later by_index entries override earlier ones on overlap.
-    for (auto it = _by_index.rbegin(); it != _by_index.rend(); ++it)
-      if (index >= it->lo && index <= it->hi) return it->phase;
+    // Ranges are disjoint (checked at load), so at most one matches.
+    for (auto const& e : _by_index)
+      if (index >= e.lo && index <= e.hi) return e.phase;
     if (!_by_type.empty()) {
       if (auto t = _by_type.find(shape_type_name(s)); t != _by_type.end())
         return t->second;
@@ -142,14 +150,23 @@ public:
   }
 
   // Stamp phase names onto shapes that have none. Returns the number of
-  // shapes assigned.
+  // shapes assigned. With `domain_box`, by_index counts unique inclusions
+  // (periodic wraps share their primary's index); without it every shape
+  // counts.
   template <typename ShapeVector>
-  std::size_t apply(ShapeVector& shapes) const {
+  std::size_t apply(ShapeVector& shapes,
+                    std::optional<std::array<T, 3>> domain_box = std::nullopt) const {
     std::size_t n = 0;
+    std::size_t incl = 0;
+    bool first = true;
     for (std::size_t i = 0; i < shapes.size(); ++i) {
       auto& s = *shapes[i];
+      if (!domain_box || is_centre_in_domain(s.get_middle_point(), *domain_box)) {
+        if (!first) ++incl;
+        first = false;
+      }
       if (!s.phase_name().empty()) continue;
-      if (auto p = resolve(s, i)) {
+      if (auto p = resolve(s, incl)) {
         s.info().set_phase_name(*p);
         ++n;
       }
@@ -166,7 +183,11 @@ private:
     auto to_num = [&](std::string const& t) {
       if (t.empty() || t.find_first_not_of("0123456789") != std::string::npos)
         throw bad();
-      return static_cast<std::size_t>(std::stoull(t));
+      try {
+        return static_cast<std::size_t>(std::stoull(t));
+      } catch (std::exception const&) {
+        throw bad();   // out of range: name the offending key
+      }
     };
     auto dash = k.find('-');
     if (dash == std::string::npos) {

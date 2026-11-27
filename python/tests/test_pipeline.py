@@ -171,6 +171,29 @@ def test_voxelize_3d_orientation_and_ids():
     assert grid[8, 4, 2] == 0                # between them
 
 
+def test_voxelize_layout_is_fortran_and_documented():
+    grid = rvegen.voxelize([rvegen.Circle(0.5, 0.5, 0.25)], [1.0, 1.0, 0.0], 8, 6, 1)
+    assert grid.flags.f_contiguous
+    assert "F-contiguous" in rvegen.voxelize.__doc__
+    c = np.ascontiguousarray(grid)
+    assert c.flags.c_contiguous and np.array_equal(c, grid)
+
+
+def test_voxelize_rejects_zero_dims():
+    for dims in [(0, 4, 1), (4, 0, 1), (4, 4, 0)]:
+        with pytest.raises(ValueError):
+            rvegen.voxelize([rvegen.Circle(0.5, 0.5, 0.25)], [1.0, 1.0, 0.0], *dims)
+
+
+def test_config_accepts_numpy_scalars_and_rejects_nan():
+    cfg = {"domain_box": [np.float64(1.0), 1.0, 0.0],
+           "generator": {"type": "voronoi_2d", "n_seeds": np.int64(4), "seed": 2}}
+    assert len(rvegen.run(cfg, postprocess=False)) == 4
+    cfg["domain_box"] = [float("nan"), 1.0, 0.0]
+    with pytest.raises(ValueError, match="NaN"):
+        rvegen.run(cfg, postprocess=False)
+
+
 def test_voxelize_run_output_and_shape_reuse():
     shapes = list(rvegen.run(CIRCLES))
     grid = rvegen.voxelize(shapes, [1.0, 1.0, 0.0], 32, 32, 1)

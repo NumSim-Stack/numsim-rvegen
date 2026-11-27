@@ -376,6 +376,22 @@ set_tests_properties(cli_phases_damask_example PROPERTIES
     PASS_REGULAR_EXPRESSION "phase_assignment tagged 12 shapes.*post-process 'damask_material_config' done"
 )
 
+# CLI validation (regression tests for the pipeline's load-time checks).
+# PASS_REGULAR_EXPRESSION overrides the exit code, so these match the message.
+function(rvegen_cli_msg_test name cfg regex)
+  add_test(NAME cli_${name}
+           COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli/${cfg})
+  set_tests_properties(cli_${name} PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+rvegen_cli_msg_test(direction_in_scalar_slot direction_in_scalar_slot.json
+    "refers to direction distribution 'd'")
+rvegen_cli_msg_test(seed_too_large seed_too_large.json "'seed' must be an integer")
+rvegen_cli_msg_test(seed_negative seed_negative.json "'seed' must be an integer")
+rvegen_cli_msg_test(deterministic_ignored_keys deterministic_ignored_keys.json
+    "\"shapes\" is ignored.*\"termination\" is ignored")
+
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
 # ---------------------------------------------------------------------------

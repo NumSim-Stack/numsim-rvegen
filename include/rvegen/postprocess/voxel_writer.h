@@ -90,7 +90,7 @@ public:
   // the 1-based shape index. Caller retains ownership; the pointer must
   // outlive the writer's next `run()` / `write()` / `sample()` call.
   // Passing nullptr clears the attachment and restores shape-index mode.
-  void set_phases(phase_collection<value_type> const* phases) noexcept {
+  void set_phases(phase_collection<value_type> const* phases) noexcept override {
     _phases = phases;
   }
   [[nodiscard]] phase_collection<value_type> const* phases() const noexcept {
