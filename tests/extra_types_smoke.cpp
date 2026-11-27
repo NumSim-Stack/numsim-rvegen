@@ -2752,14 +2752,12 @@ void test_svg_writer_emits_polygon_element_for_convex_polygon() {
 }
 
 // ----------------------------------------------------------------------------
-// phase + phase_collection: name + opaque material_config; ids start at 1.
+// phase + phase_collection: named labels; ids start at 1.
 // ----------------------------------------------------------------------------
 void test_phase_collection_basics_and_ids() {
   rvegen::phase_collection<double> phases;
-  auto const& matrix = phases.add("matrix",
-      nlohmann::json{{"type", "linear_elasticity"}, {"K", 1.6e9}, {"G", 0.8e9}});
-  auto const& fibre  = phases.add("fibre",
-      nlohmann::json{{"type", "linear_elasticity"}, {"K", 5.0e10}, {"G", 3.0e10}});
+  auto const& matrix = phases.add("matrix");
+  auto const& fibre  = phases.add("fibre");
 
   REQUIRE(matrix.id == 1);
   REQUIRE(fibre.id == 2);
@@ -2768,9 +2766,6 @@ void test_phase_collection_basics_and_ids() {
   REQUIRE(phases.id_of("fibre") == 2);
   REQUIRE(phases.contains("matrix"));
   REQUIRE(!phases.contains("void"));
-
-  // Material config is opaque pass-through.
-  REQUIRE(phases.at("fibre").material_config["K"].get<double>() == 5.0e10);
 }
 
 void test_phase_collection_duplicate_throws() {
@@ -3264,15 +3259,16 @@ void test_load_phases_from_json_rejects_non_array() {
 }
 
 void test_load_phases_from_json_rejects_missing_name() {
-  const auto cfg = nlohmann::json::parse(R"([{"material": {"K": 1.0}}])");
+  const auto cfg = nlohmann::json::parse(R"([{"id": 1}])");
   bool threw = false;
   try { rvegen::load_phases_from_json<double>(cfg); }
   catch (std::runtime_error const&) { threw = true; }
   REQUIRE(threw);
 }
 
-void test_load_phases_from_json_rejects_non_object_material() {
-  const auto cfg = nlohmann::json::parse(R"([{"name": "x", "material": 42}])");
+// Phases are geometry labels only: a "material" entry is rejected.
+void test_load_phases_from_json_rejects_material() {
+  const auto cfg = nlohmann::json::parse(R"([{"name": "x", "material": {"K": 1.0}}])");
   bool threw = false;
   try { rvegen::load_phases_from_json<double>(cfg); }
   catch (std::runtime_error const&) { threw = true; }
@@ -3281,14 +3277,13 @@ void test_load_phases_from_json_rejects_non_object_material() {
 
 void test_load_phases_from_json_round_trip() {
   const auto cfg = nlohmann::json::parse(R"([
-    {"name": "matrix", "material": {"type": "linear_elasticity", "K": 1.6e9, "G": 0.8e9}},
-    {"name": "fibre",  "material": {"type": "linear_elasticity", "K": 5.0e10, "G": 3.0e10}}
+    {"name": "matrix"},
+    {"name": "fibre"}
   ])");
   auto phases = rvegen::load_phases_from_json<double>(cfg);
   REQUIRE(phases.size() == 2);
   REQUIRE(phases.id_of("matrix") == 1);
   REQUIRE(phases.id_of("fibre") == 2);
-  REQUIRE(phases.at("matrix").material_config["G"].get<double>() == 0.8e9);
 
   // Insertion order preserved in ordered() view.
   auto const& ord = phases.ordered();
@@ -3882,7 +3877,7 @@ int main() {
   test_info_generic_metadata_round_trip();
   test_load_phases_from_json_rejects_non_array();
   test_load_phases_from_json_rejects_missing_name();
-  test_load_phases_from_json_rejects_non_object_material();
+  test_load_phases_from_json_rejects_material();
   test_voxel_writer_emits_phase_ids_from_phase_collection();
   test_vtk_legacy_writer_emits_phase_ids_from_phase_collection();
   test_voxel_writer_unknown_phase_name_throws();

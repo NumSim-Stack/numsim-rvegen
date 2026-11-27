@@ -206,7 +206,7 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
   opts.info("rvegen: generated " + std::to_string(out.shapes.size()) +
             " shape" + (out.shapes.size() == 1 ? "" : "s"));
 
-  // Phases: material blobs + shape -> phase assignment. The collection is
+  // Phases: named regions + shape -> phase assignment. The collection is
   // handed to every post-process through post_process_base::set_phases.
   if (config.contains("phases")) {
     out.phases.emplace(load_phases_from_json<double>(config.at("phases")));
@@ -236,16 +236,7 @@ inline void run_post_processes(nlohmann::json const& config,
     return;
   }
   for (auto const& spec : config.at("postprocess")) {
-    // phase_assignment's "matrix" names the matrix phase; forward it to
-    // the DAMASK writer unless the writer config already picks one.
-    auto pp_spec = spec;
-    if (config.contains("phase_assignment") &&
-        config.at("phase_assignment").contains("matrix") &&
-        spec.value("type", std::string{}) == "damask_material_config" &&
-        !pp_spec.contains("matrix_phase")) {
-      pp_spec["matrix_phase"] = config.at("phase_assignment").at("matrix");
-    }
-    auto pp = build_from_json(post_process_registry_t<>::instance(), pp_spec);
+    auto pp = build_from_json(post_process_registry_t<>::instance(), spec);
     if (result.phases) pp->set_phases(&*result.phases);
     pp->run(result.shapes, result.domain_box);
     auto type = spec.at("type").get<std::string>();

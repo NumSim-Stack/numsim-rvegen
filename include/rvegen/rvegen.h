@@ -95,8 +95,7 @@
 // schema scaffolding — collapse name/type duplication into one declaration
 #include "schema/field_list.h"
 
-// phase model — named regions with opaque material_config blobs that
-// downstream solvers (numsim-materials) interpret.
+// phase model — named geometric regions (labels only; no material data).
 #include "phase/phase.h"
 
 // inputs
@@ -134,7 +133,6 @@
 // postprocess (writers + the base they inherit from)
 #include "phase/phase_assignment.h"
 #include "postprocess/post_process_base.h"
-#include "postprocess/damask_material_config.h"
 #include "postprocess/voxel_grid.h"
 #include "postprocess/gmsh_geo_writer.h"
 #include "postprocess/svg_writer.h"

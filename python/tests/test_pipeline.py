@@ -38,7 +38,7 @@ CIRCLES = {
         (rvegen.generators, "weave"),
         (rvegen.generators, "voronoi_3d"),
         (rvegen.terminations, "number_of_inclusions"),
-        (rvegen.post_processes, "damask_material_config"),
+        (rvegen.post_processes, "voxel"),
     ],
 )
 def test_keys(category, expected):
@@ -134,7 +134,7 @@ def test_run_deterministic_generators_need_no_termination():
 
 def test_run_phases():
     cfg = dict(CIRCLES)
-    cfg["phases"] = [{"name": "fibre", "material": {"E": 1.0, "nu": 0.3}}]
+    cfg["phases"] = [{"name": "fibre"}]
     cfg["phase_assignment"] = {"all_inclusions": "fibre"}
     res = rvegen.run(cfg)
     assert res.summary["phases"] == ["fibre"]

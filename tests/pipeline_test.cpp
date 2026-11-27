@@ -38,7 +38,7 @@ json circles_config() {
                 "pos_y_dist": "x", "radius_dist": "r"}],
     "generator": {"type": "only_inside", "max_attempts": 100000},
     "termination": {"type": "number_of_inclusions", "target": 6},
-    "phases": [{"name": "fibre", "material": {}}],
+    "phases": [{"name": "fibre"}],
     "phase_assignment": {"all_inclusions": "fibre"}
   })");
 }
@@ -68,17 +68,15 @@ void test_generate() {
 
 void test_postprocess_toggle() {
   auto cfg = circles_config();
-  cfg["postprocess"] = json::array({json{{"type", "damask_material_config"},
-                                         {"output_path", "pipeline_test.yaml"}}});
-  cfg["phases"][0]["material"] = json{{"E", 1.0e9}, {"nu", 0.3}};
-  cfg["phases"].push_back(json{{"name", "matrix"},
-                               {"material", json{{"E", 1.0e8}, {"nu", 0.3}}}});
+  cfg["postprocess"] = json::array({json{{"type", "svg"},
+                                         {"canvas_width", 200},
+                                         {"output_path", "pipeline_test.svg"}}});
   rvegen::pipeline_options off;
   off.run_postprocess = false;
   REQUIRE(rvegen::run_pipeline(cfg, off).post_processes_run.empty());
   auto on = rvegen::run_pipeline(cfg);
   REQUIRE(on.post_processes_run.size() == 1);
-  REQUIRE(on.post_processes_run[0] == "damask_material_config");
+  REQUIRE(on.post_processes_run[0] == "svg");
 }
 
 void test_seed_and_warnings() {

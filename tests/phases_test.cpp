@@ -1,5 +1,5 @@
 // JSON phases path (#7): phase_assignment forms, the generic
-// post_process_base::set_phases hook, and the DAMASK material.yaml writer.
+// post_process_base::set_phases hook, and phase-loading validation.
 
 #include <array>
 #include <cstdlib>
@@ -39,9 +39,9 @@ shapes_t sample_shapes() {
 
 rvegen::phase_collection<double> make_phases() {
   return rvegen::load_phases_from_json<double>(json::parse(R"([
-    {"name": "matrix", "material": {"K": 3.0e9, "G": 1.0e9}},
-    {"name": "fibre",  "material": {"E": 240.0e9, "nu": 0.25}},
-    {"name": "filler", "material": {"damask": {"elastic": {"type": "Hooke"}}}}
+    {"name": "matrix"},
+    {"name": "fibre"},
+    {"name": "filler"}
   ])"));
 }
 
@@ -100,7 +100,7 @@ void test_set_phases_hook_reaches_writers() {
   rvegen::register_all_post_processes<>();
   auto phases = make_phases();
   auto& reg = rvegen::post_process_registry_t<>::instance();
-  REQUIRE(reg.contains("damask_material_config"));
+  REQUIRE(!reg.contains("damask_material_config"));   // geometry only
 
   auto pp = rvegen::build_from_json(
       reg, json{{"type", "voxel"}, {"nx", 4}, {"ny", 4}, {"nz", 1},
@@ -117,118 +117,23 @@ void test_set_phases_hook_reaches_writers() {
   REQUIRE(gw != nullptr && gw->phases() == &phases);
 }
 
-void test_damask_yaml() {
-  rvegen::damask_material_config<double> w;
-  auto phases = make_phases();
-  w.set_phases(&phases);
-  std::ostringstream out;
-  w.write(out);
-  auto const y = out.str();
-  REQUIRE(y.find("\"matrix\":") != std::string::npos);
-  REQUIRE(y.find("\"fibre\":") != std::string::npos);
-  REQUIRE(y.find("N_constituents: 1") != std::string::npos);
-  // matrix K=3e9, G=1e9 -> C_11 = K + 4G/3 = 4.333e9, C_44 = G.
-  REQUIRE(y.find("\"C_44\":1000000000.0") != std::string::npos);
-  REQUIRE(y.find("\"C_11\":4333333333.33") != std::string::npos);
-  // E/nu path: G = E/(2(1+nu)) = 96e9.
-  REQUIRE(y.find("\"C_44\":96000000000.0") != std::string::npos);
-  // damask passthrough block.
-  REQUIRE(y.find("{\"elastic\":{\"type\":\"Hooke\"}}") != std::string::npos);
-  // one material entry per phase.
-  std::size_t count = 0;
-  for (auto pos = y.find("\n    constituents:"); pos != std::string::npos;
-       pos = y.find("\n    constituents:", pos + 1)) ++count;
-  REQUIRE(count == 4);   // matrix (voxel id 0) + 3 phases
-
-  // No usable material -> throws, naming the phase.
-  rvegen::phase_collection<double> bad;
-  bad.add("matrix", json{{"K", 3e9}, {"G", 1e9}});
-  bad.add("mystery", json{{"type", "void"}});
-  rvegen::damask_material_config<double> w2;
-  w2.set_phases(&bad);
-  bool threw = false;
-  try { std::ostringstream o; w2.write(o); }
-  catch (std::runtime_error const& e) {
-    threw = std::string{e.what()}.find("mystery") != std::string::npos;
-  }
-  REQUIRE(threw);
-
-  // Without phases attached it refuses rather than writing an empty file.
-  rvegen::damask_material_config<double> w3;
-  threw = false;
-  try { std::ostringstream o; w3.write(o); } catch (std::runtime_error const&) { threw = true; }
-  REQUIRE(threw);
-}
-
-bool writes_throw(rvegen::phase_collection<double> const& ph,
-                  std::string* msg = nullptr) {
-  rvegen::damask_material_config<double> w;
-  w.set_phases(&ph);
-  try { std::ostringstream o; w.write(o); }
-  catch (std::runtime_error const& e) { if (msg) *msg = e.what(); return true; }
-  return false;
-}
-
-void test_damask_hardening() {
-  using rvegen::phase_collection;
-  // Injection through the phase name: newline must not create YAML lines.
-  phase_collection<double> inj;
-  inj.add("matrix", json{{"K", 3e9}, {"G", 1e9}});
-  inj.add("a\nhomogenization: {evil: 1}", json{{"K", 3e9}, {"G", 1e9}});
-  rvegen::damask_material_config<double> w;
-  w.set_phases(&inj);
-  std::ostringstream out;
-  w.write(out);
-  std::istringstream in{out.str()};
-  std::string line;
-  int top_homog = 0;
-  while (std::getline(in, line))
-    if (line.rfind("homogenization:", 0) == 0) ++top_homog;
-  REQUIRE(top_homog == 1);
-
-  // Impossible constants are rejected, never written as null.
-  phase_collection<double> imp;
-  imp.add("matrix", json{{"E", 1e9}, {"nu", 0.5}});
-  REQUIRE(writes_throw(imp));
-  phase_collection<double> neg;
-  neg.add("matrix", json{{"K", -1.0}, {"G", 1.0}});
-  REQUIRE(writes_throw(neg));
-  phase_collection<double> lam;   // K = lambda + 2mu/3 < 0
-  lam.add("matrix", json{{"lambda", -1e9}, {"mu", 1e9}});
-  REQUIRE(writes_throw(lam));
-
-  // Homogenization name is validated.
-  rvegen::register_all_post_processes<>();
-  bool hthrew = false;
-  try {
-    (void)rvegen::build_from_json(
-        rvegen::post_process_registry_t<>::instance(),
-        json{{"type", "damask_material_config"}, {"output_path", "x.yaml"},
-             {"homogenization", "SX\nevil: 1"}});
-  } catch (std::exception const&) { hthrew = true; }
-  REQUIRE(hthrew);
-
-  // Lattice is configurable and validated.
-  phase_collection<double> hex;
-  hex.add("matrix", json{{"K", 3e9}, {"G", 1e9}, {"lattice", "hP"}});
-  rvegen::damask_material_config<double> wl;
-  wl.set_phases(&hex);
-  std::ostringstream lo;
-  wl.write(lo);
-  REQUIRE(lo.str().find("lattice: hP") != std::string::npos);
-  REQUIRE(lo.str().find("\"C_13\"") != std::string::npos);
-  phase_collection<double> badlat;
-  badlat.add("matrix", json{{"K", 3e9}, {"G", 1e9}, {"lattice", "zz"}});
-  REQUIRE(writes_throw(badlat));
-
-  // No matrix phase -> clear error; matrix entry first otherwise.
-  phase_collection<double> nomat;
-  nomat.add("fibre", json{{"K", 3e9}, {"G", 1e9}});
-  std::string msg;
-  REQUIRE(writes_throw(nomat, &msg) && msg.find("matrix") != std::string::npos);
-  std::string const y = out.str();
-  auto first_entry = y.find("voxel id 0 (matrix)");
-  REQUIRE(first_entry != std::string::npos);
+// Phases are geometry labels: a "material" entry or any other key besides
+// "name" is rejected at load time, naming the phase and the key.
+void test_phases_reject_material_and_unknown_keys() {
+  auto load_error = [](char const* text) -> std::string {
+    try {
+      (void)rvegen::load_phases_from_json<double>(json::parse(text));
+    } catch (std::runtime_error const& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto mat = load_error(R"([{"name": "fibre", "material": {"K": 1.0}}])");
+  REQUIRE(mat.find("fibre") != std::string::npos);
+  REQUIRE(mat.find("material") != std::string::npos);
+  const auto unk = load_error(R"([{"name": "fibre", "colour": "red"}])");
+  REQUIRE(unk.find("colour") != std::string::npos);
+  REQUIRE(load_error(R"([{"name": "matrix"}, {"name": "fibre"}])").empty());
 }
 
 void test_by_index_unique_inclusions() {
@@ -281,7 +186,7 @@ void test_by_index_overlap_and_order() {
 } // namespace
 
 int main() {
-  test_damask_hardening();
+  test_phases_reject_material_and_unknown_keys();
   test_by_index_unique_inclusions();
   test_by_index_overlap_and_order();
   test_all_inclusions();
@@ -289,7 +194,6 @@ int main() {
   test_by_index_ranges();
   test_assignment_errors();
   test_set_phases_hook_reaches_writers();
-  test_damask_yaml();
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "phases_test OK\n";
   return EXIT_SUCCESS;
