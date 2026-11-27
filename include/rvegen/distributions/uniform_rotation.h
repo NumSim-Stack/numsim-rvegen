@@ -25,6 +25,8 @@
 #include <Mathematics/Quaternion.h>
 #include <Mathematics/Rotation.h>
 
+#include "portable_random.h"
+
 namespace rvegen {
 
 template <typename T>
@@ -51,7 +53,7 @@ template <typename T>
 
 template <typename T = double, typename Engine>
 [[nodiscard]] gte::Matrix3x3<T> uniform_random_rotation(Engine& engine) {
-  std::uniform_real_distribution<T> u{T{0}, T{1}};
+  portable_uniform_real<T> u{T{0}, T{1}};
   const T u1 = u(engine), u2 = u(engine), u3 = u(engine);
   return uniform_random_rotation(u1, u2, u3);
 }
