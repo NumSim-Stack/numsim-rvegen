@@ -13,8 +13,9 @@
 // Relationship to the Advani-Tucker A2 tensor (the typical FOD input):
 //   * mean_angle  = ½ atan2(2·A12, A11 - A22)
 //   * order S2    = √((A11-A22)² + (2·A12)²) ∈ [0, 1]
-//   * S2 → κ:    use S2 = I1(2κ)/I0(2κ); not closed-form, but
-//     S2 ≈ tanh(κ) for small κ and S2 ≈ 1 - 1/(2κ) for large κ.
+//   * S2 → κ:    for the density f(θ) ∝ exp(κ·cos(θ−μ)) drawn here,
+//     S2 = ⟨cos 2(θ−μ)⟩ = I2(κ)/I0(κ); not closed-form, but
+//     S2 ≈ κ²/8 for small κ and S2 ≈ 1 − 2/κ for large κ.
 // Users with raw A2 should compute kappa once via a small helper and
 // pass kappa here.
 //
@@ -22,10 +23,12 @@
 // by 3×3 A2 directly. Deferred — see issue #6 for the design.
 
 #include <cmath>
+#include <cstddef>
 #include <functional>
 #include <numbers>
 #include <random>
 #include <stdexcept>
+#include <tuple>
 
 #include <numsim-core/input_parameter_controller.h>
 
@@ -46,9 +49,9 @@ public:
                                  engine_type& engine)
       : _mean{mean_angle}, _kappa{kappa}, _engine{engine},
         _uniform{value_type{0}, value_type{1}} {
-    if (_kappa < value_type{0}) {
+    if (!std::isfinite(_kappa) || _kappa < value_type{0}) {
       throw std::invalid_argument{
-          "oriented_uniform_distribution: kappa must be ≥ 0"};
+          "oriented_uniform_distribution: kappa must be finite and ≥ 0"};
     }
   }
 
@@ -79,14 +82,29 @@ public:
       // Uniform on [-π, π].
       return _mean + (_uniform(_engine.get()) - value_type{0.5}) * two_pi;
     }
+    if (_kappa > value_type{1e12}) {
+      // Point mass at the mean. Above ~1e15 the rejection test's
+      // c = κ·(r − f) loses all precision to cancellation and nothing is
+      // ever accepted; up to 1e12 the sampler is still exact (κ·Var(θ) =
+      // 1.002 over 20k draws, same as at κ = 1e4), and there the spread 1/√κ ≤ 1e-6 rad is below any useful resolution.
+      return _mean;
+    }
 
+    // a = 1 + √(1 + 4κ²); hypot avoids overflowing κ² for huge κ.
     const value_type a = value_type{1}
-        + std::sqrt(value_type{1} + value_type{4} * _kappa * _kappa);
-    const value_type b = (a - std::sqrt(value_type{2} * a))
-        / (value_type{2} * _kappa);
+        + std::hypot(value_type{1}, value_type{2} * _kappa);
+    // Best-Fisher's b = (a − √(2a)) / (2κ), rewritten cancellation-free:
+    // (a − √(2a))(a + √(2a)) = a² − 2a = 4κ², so b = 2κ / (a + √(2a)).
+    // The textbook form cancels to b = 0 (r = inf, NaN, endless loop) for
+    // κ ≈ 1e-9 … 2e-8.
+    const value_type b = value_type{2} * _kappa
+        / (a + std::sqrt(value_type{2} * a));
     const value_type r = (value_type{1} + b * b) / (value_type{2} * b);
 
-    while (true) {
+    // Best-Fisher accepts ≥ ~66 % of candidates for every κ, so hitting
+    // this cap means a numerical breakdown, not bad luck.
+    constexpr std::size_t max_iterations = 10000;
+    for (std::size_t it = 0; it < max_iterations; ++it) {
       const value_type u1 = _uniform(_engine.get());
       const value_type z  = std::cos(pi * u1);
       const value_type f  = (value_type{1} + r * z) / (r + z);
@@ -101,6 +119,10 @@ public:
         return _mean + sign * std::acos(f);
       }
     }
+    throw std::runtime_error{
+        "oriented_uniform_distribution: rejection sampler accepted no "
+        "candidate in 10000 tries (numerical breakdown; please report "
+        "the kappa used)"};
   }
 
   [[nodiscard]] value_type mean_angle() const noexcept { return _mean; }

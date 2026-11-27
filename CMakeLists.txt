@@ -142,6 +142,10 @@ target_link_libraries(rvegen_json_visitor_smoke PRIVATE
 )
 add_test(NAME json_visitor_smoke COMMAND rvegen_json_visitor_smoke)
 
+add_executable(rvegen_orientation_sampler_test tests/orientation_sampler_test.cpp)
+target_link_libraries(rvegen_orientation_sampler_test PRIVATE rvegen_lib)
+add_test(NAME orientation_sampler_test COMMAND rvegen_orientation_sampler_test)
+
 add_executable(rvegen_registry_smoke tests/registry_smoke.cpp)
 target_link_libraries(rvegen_registry_smoke PRIVATE
     rvegen_lib
