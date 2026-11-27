@@ -72,13 +72,21 @@ inline constexpr double a2_psd_tolerance = 1e-9;
 // Above this κ oriented_uniform_distribution returns the mean exactly.
 inline constexpr double von_mises_point_mass_kappa = 1e12;
 
+// κ above which std::cyl_bessel_i is replaced by the asymptotic series.
+// cyl_bessel_i overflows at κ ≈ ln(max<T>) (≈ 709 double, ≈ 88 float), so
+// the switch scales with the type: 0.7·ln(max<T>) capped at 500 (the series
+// is already exact to rounding there; for float it is exact from κ ≈ 60).
+template <typename T> T bessel_asymptotic_threshold() {
+  return std::min(T{500}, T{0.7} * std::log(std::numeric_limits<T>::max()));
+}
+
 // I1(κ)/I0(κ). std::cyl_bessel_i overflows near κ ≈ 700, so large κ uses
 // the Hankel asymptotic series of both functions (the common
-// e^κ/√(2πκ) prefactor cancels); 12 terms at κ ≥ 500 are exact to
+// e^κ/√(2πκ) prefactor cancels); 12 terms above the switch (bessel_asymptotic_threshold) are exact to
 // rounding.
 template <typename T> T bessel_i1_over_i0(T k) {
   if (k <= T{0}) return T{0};
-  if (k < T{500}) {
+  if (k < bessel_asymptotic_threshold<T>()) {
     return std::cyl_bessel_i(T{1}, k) / std::cyl_bessel_i(T{0}, k);
   }
   T s0{1}, s1{1}, t0{1}, t1{1};
@@ -129,7 +137,7 @@ template <typename T> T check_trace(T tr) {
 template <typename T> T von_mises_s2(T kappa) {
   if (!(kappa > T{0})) return T{0};
   if (kappa > T(detail::von_mises_point_mass_kappa)) return T{1};
-  if (kappa < T{500}) {
+  if (kappa < detail::bessel_asymptotic_threshold<T>()) {
     return std::cyl_bessel_i(T{2}, kappa) / std::cyl_bessel_i(T{0}, kappa);
   }
   // I2 = I0 − (2/κ) I1 (Bessel recurrence).

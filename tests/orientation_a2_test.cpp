@@ -234,9 +234,37 @@ void test_json_registry() {
   REQUIRE(std::abs(v[0] * v[0] + v[1] * v[1] + v[2] * v[2] - 1.0) < 1e-9);
 }
 
+void test_float_bessel_switch() {
+  // float cyl_bessel_i overflows near kappa ~ 88; the asymptotic switch
+  // must scale with the type (was hard-coded to 500 -> NaN).
+  for (float s2 : {0.5f, 0.9f, 0.98f, 0.99f, 0.999f}) {
+    const float k = rvegen::von_mises_kappa_from_s2<float>(s2);
+    REQUIRE(std::isfinite(k));
+    const float back = rvegen::von_mises_s2<float>(k);
+    REQUIRE(std::isfinite(back));
+    REQUIRE(std::abs(back - s2) < 1e-3f);
+  }
+  const auto f = rvegen::fit_von_mises_a2<float>(0.99f, 0.01f, 0.0f);
+  REQUIRE(std::isfinite(f.kappa));
+  REQUIRE(std::isfinite(f.residual));
+  REQUIRE(f.residual < 1e-3f);
+  const auto w = rvegen::fit_watson_a2<float>(
+      rvegen::orientation_tensor_3d<float>{0.99f, 0.005f, 0.005f, 0, 0, 0});
+  REQUIRE(std::isfinite(w.kappa));
+  REQUIRE(std::isfinite(w.residual));
+  // double and float agree across the switch
+  for (double k : {50.0, 80.0, 100.0, 400.0, 600.0}) {
+    const double d = rvegen::von_mises_s2<double>(k);
+    const float fl = rvegen::von_mises_s2<float>(static_cast<float>(k));
+    REQUIRE(std::isfinite(fl));
+    REQUIRE(std::abs(d - fl) < 1e-5);
+  }
+}
+
 } // namespace
 
 int main() {
+  test_float_bessel_switch();
   test_2d_acceptance();
   test_3d_acceptance();
   test_3d_non_axisymmetric_projection();
