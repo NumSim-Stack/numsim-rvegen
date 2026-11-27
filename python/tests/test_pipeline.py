@@ -234,16 +234,28 @@ def test_run_is_interruptible():
 
 @pytest.mark.skipif(not hasattr(signal, "raise_signal"), reason="needs signal.raise_signal")
 def test_voxelize_is_interruptible():
-    shapes = [rvegen.Circle(0.5, 0.5, 0.3)]
-    timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT))
+    # The job is sized from timed runs, so the signal lands inside the call
+    # however fast the machine is: add shapes until an uninterrupted call
+    # takes at least a second, then interrupt a quarter of the way in.
+    domain, n = [1.0, 1.0, 1.0], 160
+    shapes = [rvegen.Sphere(0.5, 0.5, 0.5, 0.45)] * 8
+    while True:
+        t0 = time.monotonic()
+        rvegen.voxelize(shapes, domain, n, n, n)
+        full = time.monotonic() - t0
+        if full >= 1.0:
+            break
+        assert len(shapes) < 100_000, "voxelize is too fast to interrupt"
+        shapes = shapes * 2
+    timer = threading.Timer(full / 4, lambda: signal.raise_signal(signal.SIGINT))
     timer.start()
     t0 = time.monotonic()
     try:
         with pytest.raises(KeyboardInterrupt):
-            rvegen.voxelize(shapes, [1.0, 1.0, 1.0], 400, 400, 400)
+            rvegen.voxelize(shapes, domain, n, n, n)
     finally:
         timer.cancel()
-    assert time.monotonic() - t0 < 5.0
+    assert time.monotonic() - t0 < full
 
 
 def test_run_not_interrupted_without_signal():
