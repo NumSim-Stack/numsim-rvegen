@@ -813,6 +813,19 @@ void test_tessellation_duplicate_seeds_and_holes() {
     REQUIRE(!msg.empty());
     REQUIRE(msg.find("seeds") != std::string::npos);
   }
+  {  // phases would be silently ignored: rejected
+    rvegen::voronoi_generator_3d<double> gen{
+        1.0, 1.0, 1.0, {{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}}};
+    auto shapes = gen.build();
+    rvegen::phase_collection<double> phases;
+    phases.add("a");
+    rvegen::gmsh_geo_writer<double> pw{};
+    pw.set_phases(&phases);
+    std::string msg;
+    try { std::ostringstream buf; pw.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(msg.find("phases are not supported") != std::string::npos);
+  }
   {  // a missing neighbour leaves an interior face owned by one cell
     rvegen::voronoi_generator_3d<double> gen{
         1.0, 1.0, 1.0, {{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}}};

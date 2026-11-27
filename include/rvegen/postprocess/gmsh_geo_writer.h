@@ -128,7 +128,10 @@ public:
                        : 0},
         _recombine_quads{handler.contains("recombine_quads")
                              ? handler.template get<bool>("recombine_quads")
-                             : false} {}
+                             : false},
+        _tessellation{handler.contains("tessellation")
+                          ? handler.template get<bool>("tessellation")
+                          : false} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -155,6 +158,8 @@ public:
         .template add<numsim_core::range<0, 10>>();
     s.template insert<bool>("recombine_quads")
         .template add<numsim_core::description_label<"if true, emits Mesh.RecombineAll = 1 in the header — gmsh recombines the triangular mesh into quadrilateral / hexahedral elements. Useful for FE-RVE workflows that need structured-style elements. Default false.">>();
+    s.template insert<bool>("tessellation")
+        .template add<numsim_core::description_label<"if true, 2D convex_polygon shapes are written as a conforming tessellation (partition of the domain with shared edges, physical groups grain_<i> and boundary) instead of inclusions in a matrix. 3D voronoi_cell shapes are always written this way. Not combinable with periodic. Default false.">>();
     return s;
   }
 
@@ -293,6 +298,12 @@ public:
         throw std::runtime_error{
             "gmsh_geo_writer: periodic output is not supported for "
             "tessellations (cells are not wrapped)"};
+      }
+      if (_phases) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: phases are not supported in tessellation mode "
+            "(grains get \"grain_<i>\" physical groups); detach the "
+            "phase_collection"};
       }
       std::ostringstream buf;
       write_tessellation(buf, shapes, box, is_3d);
@@ -1136,7 +1147,6 @@ private:
 
   std::string _output_path;
   bool _periodic{false};
-  bool _tessellation{false};
   phase_collection<value_type> const* _phases{nullptr};
   bool _phase_strict{false};
   value_type _char_length_min{0};
@@ -1144,6 +1154,7 @@ private:
   int _element_order{0};
   int _algorithm{0};
   bool _recombine_quads{false};
+  bool _tessellation{false};
 };
 
 } // namespace rvegen
