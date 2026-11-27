@@ -29,6 +29,13 @@ if(NOT numsim-core_FOUND)
     "package gains a CMake config.")
 endif()
 
+# Mean-field homogenization (rvegen::homogenization): only present when
+# rvegen was built with RVEGEN_WITH_HOMOGENIZATION against an installed
+# numsim-materials, which in turn resolves tmech and numsim-core.
+if(@RVEGEN_HOMOGENIZATION_EXPORTED@)
+  find_dependency(numsim-materials CONFIG)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/rvegenTargets.cmake")
 
 check_required_components(rvegen)

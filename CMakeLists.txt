@@ -89,9 +89,23 @@ endif()
 option(RVEGEN_WITH_HOMOGENIZATION "Build the mean-field homogenization module (needs numsim-materials + tmech)" OFF)
 set(RVEGEN_NUMSIM_MATERIALS_DIR "" CACHE PATH
     "numsim-materials checkout providing mean_field/ (used if no installed package is found)")
+set(RVEGEN_HOMOGENIZATION_EXPORTED FALSE)  # numsim-materials came from an installed package
 if(RVEGEN_WITH_HOMOGENIZATION)
   find_package(numsim-materials CONFIG QUIET)
-  if(NOT TARGET numsim-materials::numsim-materials)
+  if(TARGET numsim-materials::numsim-materials)
+    # An installed package must actually provide mean_field/ (older installs
+    # do not); fail early with a clear message instead of a compile error.
+    get_target_property(_rvegen_nm_inc numsim-materials::numsim-materials INTERFACE_INCLUDE_DIRECTORIES)
+    find_path(_rvegen_nm_mf_dir numsim-materials/mean_field/kernel_registry.h
+        HINTS ${_rvegen_nm_inc} NO_DEFAULT_PATH)
+    if(NOT _rvegen_nm_mf_dir)
+      message(FATAL_ERROR
+        "RVEGEN_WITH_HOMOGENIZATION=ON: the installed numsim-materials package "
+        "(${numsim-materials_DIR}) has no numsim-materials/mean_field/kernel_registry.h; "
+        "install a numsim-materials with mean_field/ support.")
+    endif()
+    set(RVEGEN_HOMOGENIZATION_EXPORTED TRUE)
+  else()
     if(NOT RVEGEN_NUMSIM_MATERIALS_DIR OR
        NOT EXISTS "${RVEGEN_NUMSIM_MATERIALS_DIR}/include/numsim-materials/mean_field/kernel_registry.h")
       message(FATAL_ERROR
@@ -99,14 +113,20 @@ if(RVEGEN_WITH_HOMOGENIZATION)
         "install it, or set -DRVEGEN_NUMSIM_MATERIALS_DIR=<checkout>.")
     endif()
     get_filename_component(_rvegen_devel "${RVEGEN_NUMSIM_MATERIALS_DIR}" DIRECTORY)
-    set(NUMSIM_DEVEL_DIR "${_rvegen_devel}" CACHE PATH "" FORCE)
+    # Plain (directory-scope) variables, not FORCE'd cache entries: they
+    # steer the sub-project without clobbering a user's -D choices.
+    if(NOT DEFINED NUMSIM_DEVEL_DIR)
+      set(NUMSIM_DEVEL_DIR "${_rvegen_devel}")
+    endif()
     if(NOT DEFINED FETCHCONTENT_SOURCE_DIR_NUMSIM-CMAKE AND
        EXISTS "${_rvegen_devel}/numsim-cmake/cmake/NumSimDependency.cmake")
       set(FETCHCONTENT_SOURCE_DIR_NUMSIM-CMAKE "${_rvegen_devel}/numsim-cmake")
     endif()
-    set(NUMSIM_MATERIALS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(NUMSIM_MATERIALS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(NUMSIM_MATERIALS_INSTALL OFF CACHE BOOL "" FORCE)
+    foreach(_opt NUMSIM_MATERIALS_BUILD_TESTS NUMSIM_MATERIALS_BUILD_EXAMPLES NUMSIM_MATERIALS_INSTALL)
+      if(NOT DEFINED ${_opt})
+        set(${_opt} OFF)
+      endif()
+    endforeach()
     add_subdirectory("${RVEGEN_NUMSIM_MATERIALS_DIR}" numsim-materials EXCLUDE_FROM_ALL)
   endif()
 endif()
@@ -288,7 +308,20 @@ install(DIRECTORY external/GeometricTools/GTE/Mathematics
     FILES_MATCHING PATTERN "*.h"
 )
 
-install(TARGETS rvegen_lib
+# Installed consumers of the homogenization headers get numsim-materials
+# (and through it tmech / numsim-core) via rvegen::homogenization. Only
+# exportable when numsim-materials is an installed package; an in-tree
+# add_subdirectory build of it cannot be part of an export set.
+set(_rvegen_export_targets rvegen_lib)
+if(RVEGEN_HOMOGENIZATION_EXPORTED)
+  add_library(rvegen_homogenization INTERFACE)
+  set_target_properties(rvegen_homogenization PROPERTIES EXPORT_NAME homogenization)
+  target_link_libraries(rvegen_homogenization INTERFACE
+      rvegen_lib numsim-materials::numsim-materials)
+  list(APPEND _rvegen_export_targets rvegen_homogenization)
+endif()
+
+install(TARGETS ${_rvegen_export_targets}
     EXPORT rvegenTargets
 )
 
