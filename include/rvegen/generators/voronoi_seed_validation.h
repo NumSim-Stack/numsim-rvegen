@@ -31,9 +31,9 @@ template <typename T, std::size_t D>
 void validate_voronoi_seeds(std::array<T, D> const& extent,
                             std::vector<std::array<T, D>> const& seeds,
                             char const* who, bool periodic = false) {
-  T scale{0};
-  scale = extent[0];
-  for (auto e : extent) scale = std::min(scale, e);   // shortest edge
+  // Smallest extent: a thin slab must not lose resolution to its long edges.
+  T scale = extent[0];
+  for (auto e : extent) scale = std::min(scale, e);
   const T tol = static_cast<T>(voronoi_rel_tol) * scale;
 
   for (std::size_t i = 0; i < seeds.size(); ++i) {

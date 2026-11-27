@@ -208,6 +208,21 @@ private:
     return std::min({_Lx, _Ly, _Lz});
   }
 
+  // Distance tolerance for feasibility / vertex merging. Relative to the
+  // SHORTEST edge (so a thin slab keeps its resolution) and deliberately
+  // far below the seed-coincidence threshold: near-degenerate vertex
+  // clusters (jittered lattices) only resolve correctly when the merge
+  // tolerance is much smaller than the feature size. The second term is
+  // the roundoff floor of the 3x3 solves, which grows with the domain
+  // aspect ratio (nearly parallel bisectors).
+  [[nodiscard]] T geometric_tol() const noexcept {
+    const T lmin = scale();
+    const T lmax = std::max({_Lx, _Ly, _Lz});
+    return std::max(T{1e-12} * lmin,
+                    T{64} * std::numeric_limits<T>::epsilon() * lmax *
+                        (lmax / lmin));
+  }
+
   // Collect the 6 box + (N - 1) bisector half-spaces for cell `i`.
   [[nodiscard]] std::vector<half_space> half_spaces_for(std::size_t i) const {
     std::vector<half_space> hs;
@@ -321,7 +336,7 @@ private:
     };
     std::vector<candidate> cands;
     // Distance tolerance, relative to the domain size.
-    const T tol = static_cast<T>(detail::voronoi_rel_tol) * scale();
+    const T tol = geometric_tol();
 
     for (std::size_t a = 0; a < H; ++a) {
       for (std::size_t b = a + 1; b < H; ++b) {

@@ -5,6 +5,8 @@
 #include <cmath>
 #include <iostream>
 #include <random>
+#include <sstream>
+#include <tuple>
 #include <stdexcept>
 #include <vector>
 
@@ -182,6 +184,59 @@ void test_voronoi_cell_volume_centroid() {
 
 } // namespace
 
+// Review follow-up (#93): tolerance scales with the SHORTEST edge, and
+// near-degenerate (jittered lattice) inputs still partition the box.
+void test_thin_slab_and_jittered_lattice() {
+  // Thin slab, random seeds.
+  for (double Lz : {1e-2, 1e-4}) {
+    std::mt19937 eng{7};
+    std::uniform_real_distribution<double> u{0.0, 1.0};
+    std::vector<std::array<double, 3>> s;
+    for (int i = 0; i < 12; ++i) s.push_back({u(eng), u(eng), u(eng) * Lz});
+    rvegen::voronoi_generator_3d<double> gen{1.0, 1.0, Lz, s};
+    double total = 0.0;
+    for (auto const& c : gen.build()) total += c->volume();
+    REQUIRE(std::abs(total / Lz - 1.0) < 1e-9);
+  }
+  // Regular lattice in a 1e-4 slab (exactly degenerate vertices).
+  auto lattice = [](int m, double jit, double Lz) {
+    std::mt19937 eng{1};
+    std::uniform_real_distribution<double> nj{-1.0, 1.0};
+    std::vector<std::array<double, 3>> s;
+    for (int i = 0; i < m; ++i)
+      for (int j = 0; j < m; ++j)
+        for (int k = 0; k < m; ++k)
+          s.push_back({(i + .5) / m + jit * nj(eng), (j + .5) / m + jit * nj(eng),
+                       ((k + .5) / m + jit * nj(eng)) * Lz});
+    return s;
+  };
+  for (auto const& [m, jit, Lz] :
+       {std::tuple{3, 0.0, 1e-4}, std::tuple{4, 1e-9, 1.0},
+        std::tuple{4, 1e-8, 1.0}, std::tuple{4, 1e-10, 1.0}}) {
+    auto s = lattice(m, jit, Lz);
+    rvegen::voronoi_generator_3d<double> gen{1.0, 1.0, Lz, s};
+    auto cells = gen.build();
+    double total = 0.0;
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+      total += cells[i]->volume();
+      REQUIRE(cells[i]->is_inside(s[i]));
+    }
+    REQUIRE(std::abs(total / Lz - 1.0) < 1e-6);
+  }
+}
+
+// An empty/collapsed polygon placeholder must not emit `Line Loop() = {}`.
+void test_gmsh_skips_empty_polygon() {
+  rvegen::gmsh_geo_writer<double>::shape_vector shapes;
+  shapes.push_back(std::make_unique<rvegen::convex_polygon<double>>());
+  shapes.push_back(std::make_unique<rvegen::convex_polygon<double>>(
+      std::vector<std::array<double, 2>>{{0, 0}, {1, 0}, {1, 1}}));
+  std::ostringstream out;
+  rvegen::gmsh_geo_writer<double>{}.write(out, shapes, {1.0, 1.0, 0.0});
+  REQUIRE(out.str().find("= {};") == std::string::npos);
+  REQUIRE(out.str().find("Plane Surface") != std::string::npos);
+}
+
 int main() {
   test_partition_of_unity_across_scales();
   test_coincident_seeds_rejected();
@@ -192,6 +247,8 @@ int main() {
   test_empty_polygon_bounding_box_and_expansion();
   test_polygon_is_inside_scale_relative();
   test_voronoi_cell_volume_centroid();
+  test_thin_slab_and_jittered_lattice();
+  test_gmsh_skips_empty_polygon();
   if (failures) {
     std::cerr << failures << " failure(s)\n";
     return 1;

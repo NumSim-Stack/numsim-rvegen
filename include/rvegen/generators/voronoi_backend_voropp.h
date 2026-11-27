@@ -35,7 +35,9 @@
 #include <stdexcept>
 #include <vector>
 
+#include "voronoi_voropp_exit_shim.h"   // defines the `exit` redirect
 #include <voro++.hh>
+#undef exit   // restore `exit` for the rest of the TU (shim macro)
 
 #include "../shapes/shape_base.h"
 #include "../shapes/voronoi_cell.h"
@@ -66,16 +68,22 @@ build_voronoi_cells_voro_pp(T Lx, T Ly, T Lz,
   voro::container_poly poly(0.0, ux, 0.0, uy, 0.0, uz, bx, by, bz, periodic,
                             periodic, periodic, 8);
 
-  // Voro++ silently drops points with coordinate == upper bound, so seeds
-  // on the upper faces are moved inward by one ulp (a ~1e-16 relative shift).
-  auto inward = [](double x, double hi) {
-    return x >= hi ? std::nextafter(hi, 0.0) : x;
+  // Voro++ silently drops points whose block index rounds to (or past) the
+  // container edge: seeds on the upper faces, and seeds a hair outside the
+  // lower faces (validation tolerates ~1e-9 slack). Clamp every coordinate
+  // into [0, u*(1 - 1e-12)] in non-dimensional units: the margin is many
+  // ulps of the block-index arithmetic, so it is robust at any box size and
+  // aspect ratio, yet moves a seed by only ~1e-12 of its own axis extent.
+  // The final seed-count check below still guards against any other drop.
+  constexpr double margin = 1e-12;
+  auto inside = [](double x, double hi) {
+    return std::clamp(x, 0.0, hi * (1.0 - margin));
   };
   double wmin = 0.0;
   if (weighted) wmin = static_cast<double>(*std::min_element(weights.begin(), weights.end()));
   for (std::size_t i = 0; i < n; ++i) {
-    const double px = inward(seeds[i][0] / sc, ux), py = inward(seeds[i][1] / sc, uy),
-                 pz = inward(seeds[i][2] / sc, uz);
+    const double px = inside(seeds[i][0] / sc, ux), py = inside(seeds[i][1] / sc, uy),
+                 pz = inside(seeds[i][2] / sc, uz);
     if (weighted) {
       const double r = std::sqrt((static_cast<double>(weights[i]) - wmin) / (sc * sc));
       poly.put(static_cast<int>(i), px, py, pz, r);
