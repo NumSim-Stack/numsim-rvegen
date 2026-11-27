@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -27,6 +28,8 @@ namespace rvegen {
 //   1..N    — index (1-based) of the inclusion the voxel falls inside
 //
 // 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz = 1).
+// For a 3D RVE written with nz = 1 the single slice is the mid-plane
+// z = Lz/2 (voxel centres, as along x and y).
 //
 // Output format: ASCII header + flat array, voxels in (k, j, i) order
 // (z-slice fastest-varying-axis is k). The format is intentionally
@@ -112,6 +115,8 @@ public:
       throw std::runtime_error{
           "voxel_writer: output_path not set; cannot run() as post-process"};
     }
+    // Reject an unusable grid before the output file is created.
+    (void)checked_voxel_count(_nx, _ny, effective_nz(domain_box, _nz));
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{
@@ -134,14 +139,21 @@ public:
     // leading `#` lines rather than counting fixed offsets, because the
     // count changes when `set_phases()` is used.
     //
-    // The version-marker token `[rvegen-voxel-format: v2]` matches the
+    // The version-marker token `[rvegen-voxel-format: v3]` matches the
     // convention used by `vtk_legacy_writer` (and any future writer)
     // — bracketed `[rvegen-<format>: v<N>]` is searchable anywhere in
     // the comment header and explicitly identifies the file format.
-    out << "# rvegen voxel grid [rvegen-voxel-format: v2]\n"
+    // v3: a 3D RVE written with nz = 1 samples the mid-plane z = Lz/2
+    // (v2 sampled the bottom face z = 0).
+    // The extents are written with round-trip precision (17 significant
+    // digits, as the VTK SPACING line) so h = L/n is recoverable exactly;
+    // the layout, and so the format version, is unchanged.
+    const auto old_precision = out.precision();
+    out << "# rvegen voxel grid [rvegen-voxel-format: v3]\n"
         << "# nx ny nz: " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'
-        << "# Lx Ly Lz: " << domain_box[0] << ' ' << domain_box[1] << ' '
-        << domain_box[2] << '\n';
+        << "# Lx Ly Lz: " << std::setprecision(17) << domain_box[0] << ' '
+        << domain_box[1] << ' ' << domain_box[2]
+        << std::setprecision(old_precision) << '\n';
     if (_phases) {
       out << "# id scheme: phase ids from phase_collection (0 = matrix / untagged)\n";
       for (auto const* p : _phases->ordered()) {

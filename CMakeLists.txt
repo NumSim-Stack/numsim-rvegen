@@ -201,6 +201,10 @@ target_link_libraries(rvegen_post_process_smoke PRIVATE
 )
 add_test(NAME post_process_smoke COMMAND rvegen_post_process_smoke)
 
+add_executable(rvegen_voxel_stats_3d_test tests/voxel_stats_3d_test.cpp)
+target_link_libraries(rvegen_voxel_stats_3d_test PRIVATE rvegen_lib)
+add_test(NAME voxel_stats_3d_test COMMAND rvegen_voxel_stats_3d_test)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
