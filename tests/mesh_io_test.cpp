@@ -10,6 +10,8 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -642,6 +644,112 @@ endsolid x
   REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{tris}, "zero volume");
 }
 
+void test_mesh_inclusion_empty_triangle_list_throws() {
+  REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{tri_list{}}, "empty triangle list");
+  REQUIRE_THROWS_WITH(
+      rvegen::mesh_inclusion<double>{
+          std::make_shared<tri_list const>(tri_list{})},
+      "empty triangle list");
+  REQUIRE_THROWS_WITH(
+      rvegen::mesh_inclusion<double>{
+          rvegen::mesh_inclusion<double>::shared_triangles{}},
+      "empty triangle list");
+
+  // Through the readers: an empty ASCII solid and a binary STL with count 0.
+  std::stringstream ascii{"solid x\nendsolid x\n"};
+  REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{rvegen::read_stl_ascii<double>(ascii)},
+                      "empty triangle list");
+  std::stringstream bin;
+  for (int i = 0; i < 80; ++i) bin.put(0);
+  write_le_u32(bin, 0);
+  REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{rvegen::read_stl_binary<double>(bin)},
+                      "empty triangle list");
+}
+
+void test_mesh_inclusion_interpenetrating_components_throw() {
+  // Two unit cubes offset by (0.5, 0.5, 0.5): previously accepted with
+  // volume 2 and a hole in is_inside.
+  for (bool flip_second : {false, true}) {
+    auto tris = make_cube();
+    auto other = make_cube(1.0, 0.5);
+    if (flip_second) for (auto& t : other) flip(t);
+    tris.insert(tris.end(), other.begin(), other.end());
+    REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{tris}, "interpenetrate");
+  }
+  // Partial overlap (only some vertices of the second cube inside).
+  {
+    auto tris = make_cube();
+    auto other = make_cube(1.0, 0.0);
+    for (auto& t : other) { t.v[0][0] += 0.5; t.v[1][0] += 0.5; t.v[2][0] += 0.5; }
+    for (auto& t : other) for (auto& v : t.v) { v[1] += 0.25; v[2] += 0.25; }
+    tris.insert(tris.end(), other.begin(), other.end());
+    REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{tris}, "interpenetrate");
+  }
+  // Same through the binned (large mesh) path: two overlapping spheres.
+  {
+    auto tris = make_sphere(20, 1.0);
+    auto other = make_sphere(20, 1.0);
+    for (auto& t : other) for (auto& v : t.v) v[0] += 0.7;
+    tris.insert(tris.end(), other.begin(), other.end());
+    REQUIRE_THROWS_WITH(rvegen::mesh_inclusion<double>{tris}, "interpenetrate");
+  }
+}
+
+void test_mesh_inclusion_nested_disjoint_touching_still_accepted() {
+  // Fully nested (cavity), fully disjoint, nested sphere in sphere.
+  auto nested = make_cube(3.0);
+  auto inner = make_cube(1.0, 1.0);
+  nested.insert(nested.end(), inner.begin(), inner.end());
+  REQUIRE(std::abs(rvegen::mesh_inclusion<double>{nested}.volume() - 26.0) < 1e-9);
+
+  auto disjoint = make_cube();
+  auto far = make_cube(1.0, 5.0);
+  disjoint.insert(disjoint.end(), far.begin(), far.end());
+  REQUIRE(std::abs(rvegen::mesh_inclusion<double>{disjoint}.volume() - 2.0) < 1e-12);
+
+  auto spheres = make_sphere(20, 1.0);
+  const double outer_vol = signed_volume(spheres);
+  auto small = make_sphere(20, 0.3);
+  const double small_vol = signed_volume(small);
+  spheres.insert(spheres.end(), small.begin(), small.end());
+  REQUIRE(std::abs(rvegen::mesh_inclusion<double>{spheres}.volume() -
+                   (outer_vol - small_vol)) < 1e-9);
+
+  // Vertex-touching cubes: the shared vertex classifies as on-surface
+  // and is ignored, so they stay accepted as two separate solids.
+  auto touching = make_cube();
+  auto other = make_cube(1.0, 1.0);
+  touching.insert(touching.end(), other.begin(), other.end());
+  REQUIRE(std::abs(rvegen::mesh_inclusion<double>{touching}.volume() - 2.0) < 1e-12);
+}
+
+void test_mesh_inclusion_binned_is_inside_matches_geometry() {
+  // Fine sphere (binned ray lookup): clear inside / outside points, and
+  // points outside the cached AABB (early exit) in every direction.
+  const rvegen::mesh_inclusion<double> mesh{make_sphere(40, 1.0)};
+  REQUIRE(mesh.triangle_count() > 1000);
+  int bad = 0;
+  for (int i = -12; i <= 12; ++i)
+    for (int j = -12; j <= 12; ++j)
+      for (int k = -12; k <= 12; ++k) {
+        const std::array<double, 3> p{i * 0.1, j * 0.1, k * 0.1};
+        const double r = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        if (r > 0.99 && r < 1.01) continue;   // too close to the facets
+        if (mesh.is_inside(p) != (r < 1.0)) ++bad;
+      }
+  REQUIRE(bad == 0);
+  REQUIRE(!mesh.is_inside({1e9, 0, 0}));
+  REQUIRE(!mesh.is_inside({0, -1e9, 0}));
+  REQUIRE(!mesh.is_inside({0, 0, std::numeric_limits<double>::quiet_NaN()}));
+
+  // Translated copy tests the point in the base frame.
+  auto moved = mesh;
+  moved.set_middle_point({10, 20, 30});
+  REQUIRE(moved.is_inside({10.2, 20.1, 29.9}));
+  REQUIRE(!moved.is_inside({0.2, 0.1, -0.1}));
+  REQUIRE(!moved.is_inside({11.2, 20, 30}));
+}
+
 void test_ply_fan_triangle_limit() {
   // 4 faces, each a 200-gon over 200 uchar-indexed vertices: 792 fan
   // triangles. A lowered limit must throw; the default must not.
@@ -756,6 +864,10 @@ int main() {
   test_mesh_inclusion_corner_touching_cubes();
   test_mesh_inclusion_many_cavities_and_parts();
   test_mesh_inclusion_zero_volume_throws();
+  test_mesh_inclusion_empty_triangle_list_throws();
+  test_mesh_inclusion_interpenetrating_components_throw();
+  test_mesh_inclusion_nested_disjoint_touching_still_accepted();
+  test_mesh_inclusion_binned_is_inside_matches_geometry();
   test_ply_fan_triangle_limit();
   test_ply_face_first_large_fan();
   test_stl_printable_binary_header_detected_by_size();
