@@ -37,7 +37,7 @@ A new ports directory under `vcpkg/ports/rvegen/`:
   "version-string": "0.1.0",
   "description": "RVE geometry generator",
   "homepage": "https://github.com/NumSim-Stack/rvegen",
-  "license": "GPL-3.0-or-later",
+  "license": "BSD-3-Clause",
   "dependencies": [
     "boost-container",
     "eigen3",
@@ -101,7 +101,7 @@ requirements:
 
 about:
   home: https://github.com/NumSim-Stack/rvegen
-  license: GPL-3.0-or-later
+  license: BSD-3-Clause
   summary: RVE geometry generator
 ```
 

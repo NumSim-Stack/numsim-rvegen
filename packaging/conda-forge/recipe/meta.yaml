@@ -46,8 +46,11 @@ test:
 
 about:
   home: https://github.com/NumSim-Stack/numsim-rvegen
-  license: GPL-3.0-or-later
-  license_file: LICENSE
+  license: BSD-3-Clause
+  license_family: BSD
+  license_file:
+    - LICENSE
+    - THIRD_PARTY_NOTICES.md
   summary: RVE geometry generator
   description: |
     rvegen is a C++23 header-only library for generating Representative

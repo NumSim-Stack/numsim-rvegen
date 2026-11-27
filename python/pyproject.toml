@@ -1,5 +1,5 @@
 [build-system]
-requires = ["scikit-build-core>=0.8", "pybind11>=2.13"]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.13"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -7,7 +7,11 @@ name = "rvegen"
 version = "0.1.0"
 description = "RVE (Representative Volume Element) geometry generator — Python bindings"
 readme = "README.md"
-license = "GPL-3.0-or-later"
+# LICENSE and THIRD_PARTY_NOTICES.md are copies of the files at the repository
+# root (the wheel is built from python/ alone); the license_files_in_sync_*
+# ctests fail when they differ.
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 authors = [
     { name = "Peter Lenz", email = "peterlenz89.pl@gmail.com" },
 ]

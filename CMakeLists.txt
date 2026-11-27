@@ -190,6 +190,22 @@ add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
 add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
 
+# gmsh round-trip (#74): meshes gmsh_geo_writer output with a real gmsh
+# and checks validity, conformity, clipping and periodic node matching.
+# Only registered when gmsh is on the PATH (or RVEGEN_GMSH_EXECUTABLE is
+# set explicitly).
+find_program(RVEGEN_GMSH_EXECUTABLE gmsh)
+if(RVEGEN_GMSH_EXECUTABLE)
+  add_executable(rvegen_gmsh_geo_roundtrip_test tests/gmsh_geo_roundtrip_test.cpp)
+  target_link_libraries(rvegen_gmsh_geo_roundtrip_test PRIVATE rvegen_lib)
+  target_compile_definitions(rvegen_gmsh_geo_roundtrip_test PRIVATE
+      RVEGEN_GMSH_EXECUTABLE="${RVEGEN_GMSH_EXECUTABLE}")
+  add_test(NAME gmsh_geo_roundtrip_test COMMAND rvegen_gmsh_geo_roundtrip_test
+           WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+else()
+  message(STATUS "gmsh not found — skipping gmsh_geo_roundtrip_test")
+endif()
+
 # Collision-dispatch comparison benchmark. Not added to ctest —
 # benchmarks produce numbers, not pass/fail. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console
@@ -248,6 +264,11 @@ install(TARGETS rvegen_lib
     EXPORT rvegenTargets
 )
 
+# Licence texts: rvegen's own and those of the bundled GTE headers.
+install(FILES LICENSE THIRD_PARTY_NOTICES.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/rvegen
+)
+
 install(EXPORT rvegenTargets
     FILE rvegenTargets.cmake
     NAMESPACE rvegen::
@@ -282,6 +303,17 @@ install(FILES
 # WORKING_DIRECTORY so those relative paths resolve into the build tree
 # rather than the source tree.
 if(NOT DEFINED BUILD_TESTING OR BUILD_TESTING)
+# The wheel is built from python/ alone, so it carries copies of the licence
+# files; fail when a copy differs from the file at the repository root.
+foreach(_license_file LICENSE THIRD_PARTY_NOTICES.md)
+  add_test(
+      NAME license_files_in_sync_${_license_file}
+      COMMAND ${CMAKE_COMMAND} -E compare_files
+          ${CMAKE_CURRENT_SOURCE_DIR}/${_license_file}
+          ${CMAKE_CURRENT_SOURCE_DIR}/python/${_license_file}
+  )
+endforeach()
+
 add_test(
     NAME cli_circles_example
     COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json
