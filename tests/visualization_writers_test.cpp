@@ -136,16 +136,29 @@ void test_tube_rendered_via_dispatcher() {
   REQUIRE(cerr_buf.str().empty());   // rendered, nothing warned
 }
 
+// Shape with no mesh registered anywhere (id outside every table).
+struct dummy_shape final : rvegen::shape_base<double> {
+  double area() const override { return 0; }
+  double volume() const override { return 0; }
+  std::array<double, 3> max_expansion() const override { return {0, 0, 0}; }
+  std::array<double, 3> get_middle_point() const override { return {0, 0, 0}; }
+  void set_middle_point(std::array<double, 3>) override {}
+  bool is_inside(std::array<double, 3> const&) const override { return false; }
+  void make_bounding_box() override {}
+  std::unique_ptr<rvegen::shape_base<double>> clone() const override { return nullptr; }
+  numsim_core::type_id shape_id() const noexcept override { return 100000; }
+};
+
 void test_unrenderable_shape_warns_once() {
-  // Dispatcher knows only the sphere => circle has no mesh.
+  // A shape nobody registered a mesh for (built-ins are auto-registered).
   auto& d = rvegen::mesh_dispatcher<double>::instance();
   d.clear();
   d.register_shape<rvegen::sphere<double>>();
   rvegen::reset_unrendered_warnings();
 
   shapes_t shapes;
-  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
-  shapes.emplace_back(std::make_unique<rvegen::circle<double>>(0.2, 0.2, 0.1));
+  shapes.emplace_back(std::make_unique<dummy_shape>());
+  shapes.emplace_back(std::make_unique<dummy_shape>());
 
   std::ostringstream cerr_buf;
   auto* old = std::cerr.rdbuf(cerr_buf.rdbuf());
@@ -169,6 +182,57 @@ void test_unrenderable_shape_warns_once() {
   REQUIRE(count_of(eb.str(), "svg_writer: skipping") == 1);
   d.clear();
 }
+void test_degenerate_domain_and_thin_zoom() {
+  shapes_t shapes;
+  std::ostringstream os;
+  rvegen::three_js_writer<double>{}.write(os, shapes, {0, 0, 0});
+  const auto z = os.str();
+  REQUIRE(z.find("nan") == std::string::npos && z.find("inf") == std::string::npos);
+  REQUIRE(js_number(z, "distance") > 0 && js_number(z, "near") > 0);
+  REQUIRE(js_number(z, "far") > js_number(z, "near"));
+
+  // Anisotropic 1000 x 1 x 1: can zoom to the thin dimension, not only to
+  // 5 % of the framing distance.
+  std::ostringstream os2;
+  rvegen::three_js_writer<double>{}.write(os2, shapes, {1000, 1, 1});
+  const auto t = os2.str();
+  REQUIRE(js_number(t, "minDistance") < 0.02 * js_number(t, "distance"));
+  REQUIRE(js_number(t, "minDistance") >= 1.5 * js_number(t, "near"));
+  // Portrait-window refit is emitted in the page script.
+  REQUIRE(t.find("const fit") != std::string::npos);
+}
+
+void test_custom_registration_keeps_builtins() {
+  auto& d = rvegen::mesh_dispatcher<double>::instance();
+  d.clear();
+  rvegen::reset_unrendered_warnings();
+  // Host registers only one shape; the tube must still be meshed.
+  d.register_shape<rvegen::sphere<double>>();
+  shapes_t shapes;
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  shapes.emplace_back(std::make_unique<rvegen::polyline_tube<double>>(
+      std::vector<std::array<double, 3>>{{0.1, 0.5, 0.5}, {0.9, 0.5, 0.5}}, 0.05));
+  std::ostringstream js;
+  rvegen::three_js_writer<double>{}.write(js, shapes, {1, 1, 1});
+  REQUIRE(js.str().find("kind: 'mesh'") != std::string::npos);
+  d.clear();
+}
+
+void test_warning_uses_readable_type_name() {
+  rvegen::mesh_dispatcher<double>::instance().clear();
+  rvegen::reset_unrendered_warnings();
+  shapes_t shapes;
+  shapes.emplace_back(std::make_unique<dummy_shape>());
+  std::ostringstream eb;
+  auto* old = std::cerr.rdbuf(eb.rdbuf());
+  std::ostringstream js;
+  rvegen::three_js_writer<double>{}.write(js, shapes, {1, 1, 1});
+  std::cerr.rdbuf(old);
+  REQUIRE(eb.str().find("dummy_shape") != std::string::npos);
+  REQUIRE(eb.str().find("Z") == std::string::npos || eb.str().find("::") != std::string::npos);
+  rvegen::mesh_dispatcher<double>::instance().clear();
+}
+
 void test_concurrent_writers_auto_register() {
   // Empty dispatcher + many writers at once: the lazy built-in
   // registration must not race (checked under -fsanitize=thread).
@@ -194,6 +258,9 @@ void test_concurrent_writers_auto_register() {
 } // namespace
 
 int main() {
+  test_degenerate_domain_and_thin_zoom();
+  test_custom_registration_keeps_builtins();
+  test_warning_uses_readable_type_name();
   test_concurrent_writers_auto_register();
   test_tube_winding_outward();
   test_camera_scales_with_domain();

@@ -9,6 +9,11 @@
 // silently. `reset_unrendered_warnings()` re-arms the warnings (tests).
 
 #include <cstddef>
+#include <cstdlib>
+#include <memory>
+#if defined(__GNUC__) || defined(__clang__)
+#include <cxxabi.h>
+#endif
 #include <iostream>
 #include <mutex>
 #include <set>
@@ -25,6 +30,17 @@
 namespace rvegen {
 
 namespace detail {
+// Demangled type name where the ABI supports it, raw name otherwise.
+inline std::string readable_type_name(std::type_info const& ti) {
+#if defined(__GNUC__) || defined(__clang__)
+  int status = 0;
+  std::unique_ptr<char, void (*)(void*)> p{
+      abi::__cxa_demangle(ti.name(), nullptr, nullptr, &status), std::free};
+  if (status == 0 && p) return p.get();
+#endif
+  return ti.name();
+}
+
 struct unrendered_registry {
   std::mutex mtx;
   std::set<std::pair<std::string, std::type_index>> seen;
@@ -49,7 +65,7 @@ inline void warn_unrendered_once(shape_base<T> const& shape,
   std::lock_guard<std::mutex> lk{r.mtx};
   if (!r.seen.emplace(writer_name, std::type_index{typeid(shape)}).second) return;
   std::cerr << "rvegen: " << writer_name << ": skipping unsupported shape type '"
-            << typeid(shape).name()
+            << detail::readable_type_name(typeid(shape))
             << "' (no mesh registered / not drawable); further shapes of this"
                " type are skipped silently\n";
 }
@@ -62,15 +78,22 @@ template <typename T>
 mesh_or_warn(shape_base<T> const& shape, char const* writer_name) {
   auto& d = mesh_dispatcher<T>::instance();
   // Nobody else populates the singleton in library code; if the host app
-  // never registered anything, install the built-in shapes. The
+  // has no conversion for this shape, install any missing built-ins
+  // (host registrations, including overrides of built-ins, are kept). The
   // check-and-register runs under a lock so concurrent writers do not race
   // on the table; the lock also orders the registration before every
   // writer's subsequent read. (Hosts that register their own shapes must
   // still do so before starting writers.)
   {
     static std::mutex reg_mtx;
+    static std::size_t seen_generation = static_cast<std::size_t>(-1);
     std::lock_guard<std::mutex> lk{reg_mtx};
-    if (d.size() == 0) register_all_meshes<T>();
+    // Only touch the table when it changed since the last check, so the
+    // steady state is read-only (no writes racing with concurrent meshing).
+    if (!d.handles(shape) && d.generation() != seen_generation) {
+      register_missing_meshes<T>();
+      seen_generation = d.generation();
+    }
   }
   auto m = d(shape);
   if (m.empty()) warn_unrendered_once(shape, writer_name);

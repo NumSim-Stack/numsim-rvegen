@@ -46,6 +46,26 @@ public:
   void register_shape() {
     grow_to_fit(Shape::m_id);
     _table[Shape::m_id] = &dispatch<Shape>;
+    ++_generation;
+  }
+
+  // Table entries as they are now / put back every entry that was set in
+  // `saved`, overriding whatever was registered since. Used to layer the
+  // built-ins underneath a host's own registrations.
+  [[nodiscard]] std::vector<fn_t> snapshot() const { return _table; }
+  void restore_present(std::vector<fn_t> const& saved) {
+    ++_generation;
+    for (std::size_t i = 0; i < saved.size(); ++i) {
+      if (saved[i]) {
+        if (_table.size() <= i) _table.resize(i + 1, nullptr);
+        _table[i] = saved[i];
+      }
+    }
+  }
+
+  // True if `s`'s dynamic type has a registered conversion.
+  [[nodiscard]] bool handles(shape_base<T> const& s) const {
+    return has_id(static_cast<numsim_core::type_id>(s.shape_id()));
   }
 
   // Convert a polymorphic shape to a triangle mesh. Returns an empty mesh
@@ -66,10 +86,19 @@ public:
     return n;
   }
 
-  void clear() noexcept { _table.clear(); }
+  void clear() noexcept { _table.clear(); ++_generation; }
+
+  // Bumped by every table mutation; lets callers detect "changed since I
+  // last looked" without scanning the table.
+  [[nodiscard]] std::size_t generation() const noexcept { return _generation; }
 
 private:
   mesh_dispatcher() = default;
+
+  bool has_id(numsim_core::type_id id) const {
+    const auto idx = static_cast<std::size_t>(id);
+    return idx < _table.size() && _table[idx] != nullptr;
+  }
 
   void grow_to_fit(numsim_core::type_id max_id) {
     const std::size_t needed = static_cast<std::size_t>(max_id) + 1;
@@ -88,6 +117,7 @@ private:
   }
 
   std::vector<fn_t> _table;
+  std::size_t _generation{0};
 };
 
 } // namespace rvegen

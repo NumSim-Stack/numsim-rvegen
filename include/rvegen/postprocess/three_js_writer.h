@@ -92,14 +92,27 @@ public:
 
     // Frame the domain's bounding sphere with a perspective camera.
     constexpr double fov_deg = 45.0;
+    // A degenerate (all-zero / non-finite) domain would put the camera at
+    // its own target with near == far == 0; frame a unit cube instead.
+    double Fx = Lx, Fy = Ly, Fz = Lz;
+    if (!(std::isfinite(Fx) && std::isfinite(Fy) && std::isfinite(Fz)) ||
+        !(Fx > 0 || Fy > 0 || Fz > 0)) {
+      Fx = Fy = Fz = 1.0;
+    }
     const double half_diag =
-        0.5 * std::sqrt(double(Lx) * Lx + double(Ly) * Ly + double(Lz) * Lz);
-    const double max_dim = std::max({double(Lx), double(Ly), double(Lz)});
+        0.5 * std::sqrt(Fx * Fx + Fy * Fy + Fz * Fz);
+    const double max_dim = std::max({Fx, Fy, Fz});
+    // Smallest non-zero extent: zooming may go down to half of it.
+    double min_dim = max_dim;
+    for (double e : {Fx, Fy, Fz}) if (e > 0) min_dim = std::min(min_dim, e);
     const double dist = 1.15 * half_diag /
         std::sin(0.5 * fov_deg * std::numbers::pi / 180.0);
     gte::Vector3<double> dir{1.0, 0.8, 1.0};
     gte::Normalize(dir);
-    const double cx0 = 0.5 * Lx, cy0 = 0.5 * Ly, cz0 = 0.5 * Lz;
+    const double cx0 = 0.5 * Fx, cy0 = 0.5 * Fy, cz0 = 0.5 * Fz;
+    const double near_d = dist * 2e-3, far_d = dist * 10.0;
+    const double min_distance =
+        std::max(1.5 * near_d, std::min(0.05 * dist, 0.5 * min_dim));
 
     const auto old_prec = out.precision(10);
     struct prec_restore {
@@ -146,8 +159,9 @@ const view = {
         << cz0 + dir[2] * dist << R"(],
   distance: )" << dist << R"(,
   fov: )" << fov_deg << R"(,
-  near: )" << dist * 1e-2 << R"(,
-  far: )" << dist * 20.0 << R"(,
+  near: )" << near_d << R"(,
+  far: )" << far_d << R"(,
+  minDistance: )" << min_distance << R"(,
   maxDim: )" << max_dim << R"(
 };
 const shapes = [
@@ -208,9 +222,16 @@ const [Lx, Ly, Lz] = domain;
 const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0xf4f6f8);
 
+// three.js fov is VERTICAL; in a portrait window the horizontal field is
+// narrower, so pull the camera back (fit >= 1) until the domain's bounding
+// sphere fits both ways. Applied once at load; the user's orbit is kept on
+// resize.
+const halfV = 0.5 * view.fov * Math.PI / 180;
+const halfEff = Math.atan(Math.tan(halfV) * Math.min(1, window.innerWidth / window.innerHeight));
+const fit = Math.sin(halfV) / Math.sin(halfEff);
 const camera = new THREE.PerspectiveCamera(
-    view.fov, window.innerWidth/window.innerHeight, view.near, view.far);
-camera.position.set(...view.position);
+    view.fov, window.innerWidth/window.innerHeight, view.near, view.far * fit);
+camera.position.set(...view.position.map((p, i) => view.center[i] + (p - view.center[i]) * fit));
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -220,8 +241,8 @@ document.body.appendChild(renderer.domElement);
 // Orbit camera around the box centre.
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(...view.center);
-controls.minDistance = view.distance * 0.05;
-controls.maxDistance = view.distance * 5;
+controls.minDistance = view.minDistance;
+controls.maxDistance = view.distance * 5 * fit;
 controls.update();
 
 // Lighting — directional + ambient for solid shading.
