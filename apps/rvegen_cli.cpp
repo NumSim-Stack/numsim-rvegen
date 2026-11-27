@@ -182,9 +182,10 @@ int run(int argc, char** argv) {
   // Deterministic generators ignore the termination predicate (#73), so
   // the "termination" section is optional for them; a placeholder keeps
   // the compute() signature uniform. Sampling generators still need it.
-  const bool deterministic =
-      dynamic_cast<rvegen::deterministic_generator<double>*>(generator.get()) !=
-      nullptr;
+  auto* const det_gen =
+      dynamic_cast<rvegen::deterministic_generator<double>*>(generator.get());
+  const bool deterministic = det_gen != nullptr;
+  if (det_gen) det_gen->set_pipeline_seed(seed);
   std::unique_ptr<rvegen::termination_base<double>> termination;
   if (deterministic) {
     if (config.contains("shapes") && !config.at("shapes").empty())

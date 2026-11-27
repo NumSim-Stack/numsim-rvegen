@@ -87,9 +87,9 @@ public:
                        distribution_map_t<value_type> const& d)
       : mesh_inclusion_input(
             resolve_mesh_path(handler),
-            *d.at(handler.template get<std::string>("position_x_dist")),
-            *d.at(handler.template get<std::string>("position_y_dist")),
-            *d.at(handler.template get<std::string>("position_z_dist"))) {}
+            lookup_distribution(d, handler, "position_x_dist"),
+            lookup_distribution(d, handler, "position_y_dist"),
+            lookup_distribution(d, handler, "position_z_dist")) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;

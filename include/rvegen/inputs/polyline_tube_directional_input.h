@@ -70,14 +70,14 @@ public:
   polyline_tube_directional_input(parameter_handler_t const& handler,
                                   distribution_map_t<value_type> const& d)
       : polyline_tube_directional_input(
-            *d.at(handler.template get<std::string>("position_x_dist")),
-            *d.at(handler.template get<std::string>("position_y_dist")),
-            *d.at(handler.template get<std::string>("position_z_dist")),
-            *d.at(handler.template get<std::string>("direction_x_dist")),
-            *d.at(handler.template get<std::string>("direction_y_dist")),
-            *d.at(handler.template get<std::string>("direction_z_dist")),
-            *d.at(handler.template get<std::string>("length_dist")),
-            *d.at(handler.template get<std::string>("radius_dist"))) {
+            lookup_distribution(d, handler, "position_x_dist"),
+            lookup_distribution(d, handler, "position_y_dist"),
+            lookup_distribution(d, handler, "position_z_dist"),
+            lookup_distribution(d, handler, "direction_x_dist"),
+            lookup_distribution(d, handler, "direction_y_dist"),
+            lookup_distribution(d, handler, "direction_z_dist"),
+            lookup_distribution(d, handler, "length_dist"),
+            lookup_distribution(d, handler, "radius_dist")) {
     this->read_metadata(handler);
   }
 

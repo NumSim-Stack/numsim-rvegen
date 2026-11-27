@@ -12,12 +12,16 @@
 //   * `inputs` are ignored (the config may omit the "shapes" section);
 //   * `termination` is ignored: a deterministic generator runs exactly
 //     once and its output size is fixed by its parameters;
+//   * the pipeline's top-level `seed` reaches them through
+//     `set_pipeline_seed()` (compute() has no engine to draw from);
+//     only generators that sample (Voronoi) use it;
 //   * `opts.cancel` is polled once before the build, `opts.on_progress`
 //     is invoked once after it with shapes_placed == shapes_target.
 //
 // Derived classes implement `build(domain_box)` only.
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 #include "rve_generator_base.h"
@@ -29,6 +33,11 @@ class deterministic_generator : public rve_generator_base<T> {
 public:
   using shape_vector = typename rve_generator_base<T>::shape_vector;
   using input_vector = typename rve_generator_base<T>::input_vector;
+
+  // Seed of the surrounding pipeline (top-level "seed"). Called by the
+  // pipeline after construction; generators that sample take their RNG
+  // seed from it unless they have an explicit override of their own.
+  virtual void set_pipeline_seed(std::uint64_t /*seed*/) {}
 
   [[nodiscard]] shape_vector
   compute(input_vector& /*inputs*/,

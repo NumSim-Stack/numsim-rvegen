@@ -32,11 +32,11 @@ public:
   ellipse_input(parameter_handler_t const& handler,
                 distribution_map_t<value_type> const& distributions)
       : ellipse_input(
-            *distributions.at(handler.template get<std::string>("pos_x_dist")),
-            *distributions.at(handler.template get<std::string>("pos_y_dist")),
-            *distributions.at(handler.template get<std::string>("radius_a_dist")),
-            *distributions.at(handler.template get<std::string>("radius_b_dist")),
-            *distributions.at(handler.template get<std::string>("rotation_dist"))) {
+            lookup_distribution(distributions, handler, "pos_x_dist"),
+            lookup_distribution(distributions, handler, "pos_y_dist"),
+            lookup_distribution(distributions, handler, "radius_a_dist"),
+            lookup_distribution(distributions, handler, "radius_b_dist"),
+            lookup_distribution(distributions, handler, "rotation_dist")) {
     this->read_metadata(handler);
   }
 
