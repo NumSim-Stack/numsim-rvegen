@@ -17,6 +17,7 @@
 #include <limits>
 #include <numbers>
 #include <random>
+#include <string>
 #include <stdexcept>
 
 #include <nlohmann/json.hpp>
@@ -127,7 +128,7 @@ void test_3d_non_axisymmetric_projection() {
   // Example from #6: three distinct eigenvalues.
   const a2_3d in{0.7, 0.2, 0.1, 0.05, 0.0, 0.0};
   std::mt19937 engine{303};
-  rvegen::bingham_a2_distribution<double> d{in, engine};
+  rvegen::bingham_a2_distribution<double> d{in, engine, /*allow_projection=*/true};
   const auto fit = rvegen::watson_a2(d.mean_axis(), d.kappa());
   const auto emp = empirical_a2(d);
   const double dev_fit = max_abs_diff(emp, fit);
@@ -197,9 +198,97 @@ void test_validation() {
   REQUIRE(throws_invalid_argument([&] { bg d{a2_3d{0.5, 0.5, 0.5, 0, 0, 0}, engine}; }));
   REQUIRE(throws_invalid_argument([&] { bg d{a2_3d{0.5, 0.5, 0.0, 0.6, 0, 0}, engine}; }));
   REQUIRE(throws_invalid_argument([&] { bg d{a2_3d{nan_v, 0.5, 0.5, 0, 0, 0}, engine}; }));
-  // Slightly off-trace measured input is renormalised, not rejected.
-  vm ok{0.703, 0.300, 0.1, engine};
+  // The trace must be 1 within 1e-6: a 0.3 % error is rejected (it used to
+  // be silently renormalised), rounding-level noise is accepted.
+  REQUIRE(throws_invalid_argument([&] { vm d{0.703, 0.300, 0.1, engine}; }));
+  REQUIRE(throws_invalid_argument([&] { vm d{0.7, 0.3 + 1e-5, 0.1, engine}; }));
+  REQUIRE(throws_invalid_argument(
+      [&] { bg d{a2_3d{0.6 * 1.003, 0.2 * 1.003, 0.2 * 1.003, 0, 0, 0}, engine}; }));
+  try {
+    vm d{0.7, 0.3 + 1e-5, 0.1, engine};
+  } catch (std::invalid_argument const& e) {
+    REQUIRE(std::string{e.what()}.find("1e-6") != std::string::npos);
+  }
+  vm ok{0.7 + 1e-9, 0.300, 0.1, engine};
   REQUIRE(std::isfinite(ok()));
+  bg ok3{a2_3d{0.6 + 1e-9, 0.2, 0.2, 0, 0, 0}, engine};
+  REQUIRE(std::abs(gte::Length(ok3.sample()) - 1.0) < 1e-9);
+}
+
+void test_non_axisymmetric_is_rejected_unless_allowed() {
+  using bg = rvegen::bingham_a2_distribution<double>;
+  std::mt19937 engine{6};
+  // Three distinct eigenvalues (reviewer case): projecting gives
+  // (0.6, 0.2, 0.2), residual 0.141 -- must not happen silently.
+  const a2_3d three{0.6, 0.3, 0.1, 0, 0, 0};
+  bool threw = false;
+  try {
+    bg d{three, engine};
+  } catch (std::invalid_argument const& e) {
+    threw = true;
+    const std::string msg = e.what();
+    REQUIRE(msg.find("0.14") != std::string::npos);        // residual
+    REQUIRE(msg.find("axisymmetric") != std::string::npos);
+    REQUIRE(msg.find("allow_projection") != std::string::npos);
+  }
+  REQUIRE(threw);
+  // Opt-in restores the projection and reports the residual.
+  bg d{three, engine, true};
+  REQUIRE(std::abs(d.residual() - 0.1414) < 1e-3);
+  REQUIRE(d.kappa() > 0);
+  // Axisymmetric input (any frame) and a slightly non-axisymmetric one
+  // below the tolerance are accepted without the flag.
+  REQUIRE(std::isfinite(bg{axisymmetric({0, 0, 1}, 0.7), engine}.residual()));
+  bg near{a2_3d{0.6, 0.2 + 0.004, 0.2 - 0.004, 0, 0, 0}, engine};
+  REQUIRE(near.residual() < bg::default_projection_tolerance);
+  // Same on the JSON path, including the optional key and the schema.
+  rvegen::register_all_direction_distributions<>();
+  auto& reg = rvegen::direction_distribution_registry_t<>::instance();
+  const std::string base = R"("type": "bingham_a2", "a11": 0.6, "a22": 0.3,
+                              "a33": 0.1, "a12": 0.0, "a13": 0.0, "a23": 0.0)";
+  REQUIRE(throws_invalid_argument([&] {
+    (void)rvegen::build_from_json(
+        reg, nlohmann::json::parse("{" + base + "}"), engine);
+  }));
+  REQUIRE(throws_invalid_argument([&] {
+    (void)rvegen::build_from_json(
+        reg, nlohmann::json::parse("{" + base + R"(, "allow_projection": false})"),
+        engine);
+  }));
+  auto ok = rvegen::build_from_json(
+      reg, nlohmann::json::parse("{" + base + R"(, "allow_projection": true})"),
+      engine);
+  REQUIRE(ok != nullptr);
+  const auto v = (*ok)();
+  REQUIRE(std::abs(v[0] * v[0] + v[1] * v[1] + v[2] * v[2] - 1.0) < 1e-9);
+  (void)bg::parameters();   // schema with the optional key builds
+}
+
+void test_near_aligned_is_reproduced() {
+  // a11 = 0.999999 used to clamp at kappa = 1e5 (minor eigenvalue 5e-6, 10x
+  // too large); with the raised sampler bound it is inverted.
+  std::mt19937 engine{8};
+  const a2_3d in{0.999999, 5e-7, 5e-7, 0, 0, 0};
+  rvegen::bingham_a2_distribution<double> d{in, engine};
+  REQUIRE(d.kappa() > 5e5 && d.kappa() < 2e6);   // ~ 1/(1 - m) = 1e6
+  REQUIRE(d.residual() < 1e-9);
+  const int n = 400000;
+  double a22 = 0, a33 = 0;
+  for (int i = 0; i < n; ++i) {
+    const auto x = d();
+    a22 += x[1] * x[1];
+    a33 += x[2] * x[2];
+  }
+  a22 /= n; a33 /= n;
+  // each minor component has mean 5e-7 and sd ~7e-7 -> se ~1.1e-9
+  REQUIRE(std::abs(a22 - 5e-7) < 2e-8);
+  REQUIRE(std::abs(a33 - 5e-7) < 2e-8);
+  // Fully aligned (eigenvalue exactly 1) still works, at the new bound.
+  const auto exact = rvegen::fit_watson_a2(a2_3d{1, 0, 0, 0, 0, 0});
+  REQUIRE(exact.kappa == rvegen::bingham_distribution<double>::max_kappa);
+  REQUIRE(exact.residual < 1e-8);
+  rvegen::bingham_a2_distribution<double> aligned{a2_3d{1, 0, 0, 0, 0, 0}, engine};
+  REQUIRE(std::abs(aligned()[0]) > 0.9999);
 }
 
 void test_json_registry() {
@@ -227,7 +316,8 @@ void test_json_registry() {
       rvegen::direction_distribution_registry_t<>::instance(),
       nlohmann::json::parse(R"({"type": "bingham_a2",
                                 "a11": 0.7, "a22": 0.2, "a33": 0.1,
-                                "a12": 0.05, "a13": 0.0, "a23": 0.0})"),
+                                "a12": 0.05, "a13": 0.0, "a23": 0.0,
+                                "allow_projection": true})"),
       engine);
   REQUIRE(bg != nullptr);
   const auto v = (*bg)();
@@ -270,6 +360,8 @@ int main() {
   test_3d_non_axisymmetric_projection();
   test_round_trips();
   test_validation();
+  test_non_axisymmetric_is_rejected_unless_allowed();
+  test_near_aligned_is_reproduced();
   test_json_registry();
 
   if (failures > 0) {

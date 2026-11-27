@@ -25,11 +25,15 @@
 // Both κ inversions are monotone 1-D root finds by bisection. κ is
 // clamped to what the samplers support: von Mises S2 → 1 maps to the
 // point-mass regime (κ > 1e12), Watson to bingham_distribution's
-// [min_kappa, max_kappa]; a clamp shows up in `residual`.
+// [min_kappa, max_kappa] = [−1e10, 1e10]. A clamp only happens for a
+// tensor that is aligned (or planar) to within ~1e-10, and shows up in
+// `residual` at that order; an almost aligned tensor (e.g. a11 = 0.999999)
+// is inverted, not clamped.
 //
-// Input validation: finite components, trace within 1e-2 of 1 (the
-// tensor is then renormalised to unit trace), positive semidefinite
-// within 1e-9. Violations throw std::invalid_argument.
+// Input validation: finite components, trace equal to 1 within 1e-6 (the
+// tensor is then renormalised to unit trace to remove rounding noise),
+// positive semidefinite within 1e-9. Violations throw
+// std::invalid_argument.
 
 #include <algorithm>
 #include <array>
@@ -67,7 +71,7 @@ struct orientation_tensor_3d {
 
 namespace detail {
 
-inline constexpr double a2_trace_tolerance = 1e-2;
+inline constexpr double a2_trace_tolerance = 1e-6;
 inline constexpr double a2_psd_tolerance = 1e-9;
 // Above this κ oriented_uniform_distribution returns the mean exactly.
 inline constexpr double von_mises_point_mass_kappa = 1e12;
@@ -122,7 +126,8 @@ template <typename T> T check_trace(T tr) {
   if (!std::isfinite(tr) ||
       std::abs(tr - T{1}) > T(a2_trace_tolerance)) {
     throw std::invalid_argument{
-        "orientation tensor A2: trace must be 1 (within 1e-2), got " +
+        "orientation tensor A2: trace must be 1 within 1e-6 (the tensor is "
+        "not renormalised beyond that), got " +
         std::to_string(static_cast<double>(tr))};
   }
   return tr;
@@ -213,7 +218,8 @@ template <typename T> T watson_second_moment(T kappa) {
 }
 
 // Inverse of watson_second_moment on (0, 1), clamped to the range
-// bingham_distribution accepts.
+// bingham_distribution accepts ([−1e10, 1e10]); only m within ~1e-10 of 1
+// (or of 0) is clamped.
 template <typename T> T watson_kappa_from_second_moment(T m) {
   if (!(m >= T{0} && m <= T{1})) {
     throw std::invalid_argument{
