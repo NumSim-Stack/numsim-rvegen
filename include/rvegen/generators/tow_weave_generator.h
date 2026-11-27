@@ -7,9 +7,7 @@
 // within the yarn's circular cross-section. The fibre-bundle
 // representation matches the real-textile-composite "tow" concept
 // where each yarn is a bundle of monofilaments rather than a single
-// solid cylinder — which matters for FFT homogenization of fibre
-// composites where the intra-tow stiffness is the dominant
-// micromechanical parameter.
+// solid cylinder.
 //
 // Geometry:
 //   * Each fibre is a `polyline_tube` with radius

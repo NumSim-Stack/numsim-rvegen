@@ -16,7 +16,7 @@ namespace rvegen {
 
 // Place shapes with periodic boundary conditions: a shape near the +x face
 // has a periodic image on the −x face, etc. This is the canonical generator
-// for FFT homogenization, which assumes a periodic unit cell.
+// for periodic unit cells (periodic meshes, FFT voxel grids).
 //
 // Implementation strategy:
 //   1. Sample a candidate anywhere in the box (no inside-only constraint).

@@ -52,7 +52,7 @@ unnecessary if generation is via tessellation directly. Implement as
 a collision_details overload that returns false when the cells share
 a face (which they always do in tessellation output).
 
-**2. Periodic boundary handling** — for FFT homogenization, the
+**2. Periodic boundary handling** — for periodic RVEs, the
 tessellation must be periodic. Both CGAL and Voro++ have periodic
 modes; Neper uses a custom routine.
 
@@ -60,8 +60,7 @@ modes; Neper uses a custom routine.
 
 - gmsh emits `Volume(...)` per cell with `Physical Volume("grain_N")`
   per-grain tags.
-- DAMASK material.config integration: per-grain orientation +
-  material — natural fit for crystal plasticity FFT homogenization.
+- Grain-id voxel grid; per-grain orientations are tracked in #114.
 
 ### Acceptance
 
@@ -72,7 +71,7 @@ modes; Neper uses a custom routine.
 - [ ] Test: generate 100 grains in a unit cube with target grain
       size distribution; assert empirical histogram matches the
       input within tolerance.
-- [ ] DAMASK material.config emission for crystal plasticity.
+- [ ] Grain-id voxel grid output.
 
 ### Out of scope for this PR
 
@@ -93,7 +92,6 @@ Implementation work requires:
 - ~200 LOC for the half-space-based `is_inside` and convex-cell
   collision dispatch.
 - ~150 LOC for gmsh emission with per-grain Physical Volume tags.
-- ~250 LOC for the DAMASK material.config post-process.
 - Vendor or find_package(CGAL) — CGAL is the heaviest dep we'd take
   on; gated behind `RVEGEN_WITH_VORONOI=ON`.
 - ~300 LOC of tests.

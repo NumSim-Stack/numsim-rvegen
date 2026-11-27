@@ -19,7 +19,7 @@
 
 namespace rvegen {
 
-// Voxel-grid writer for the FFT homogenization pipeline.
+// Voxel-grid writer (regular phase-id grid, e.g. for FFT solvers).
 //
 // Subdivides the RVE box into nx × ny × nz voxels, samples each voxel's
 // centre point with shape_base::is_inside, and writes a phase-id grid:

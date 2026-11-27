@@ -35,7 +35,7 @@ A new ports directory under `vcpkg/ports/rvegen/`:
 {
   "name": "rvegen",
   "version-string": "0.1.0",
-  "description": "RVE generator for FFT/FEM homogenization",
+  "description": "RVE geometry generator",
   "homepage": "https://github.com/NumSim-Stack/rvegen",
   "license": "GPL-3.0-or-later",
   "dependencies": [
@@ -102,7 +102,7 @@ requirements:
 about:
   home: https://github.com/NumSim-Stack/rvegen
   license: GPL-3.0-or-later
-  summary: RVE generator for FFT/FEM homogenization
+  summary: RVE geometry generator
 ```
 
 ### Acceptance

@@ -1,7 +1,8 @@
 # rvegen
 
-JSON-driven Representative Volume Element (RVE) generator for FFT- and FEM-based
-computational homogenization.
+JSON-driven Representative Volume Element (RVE) geometry generator. rvegen
+generates microstructure geometry and geometry-related statistics; meshing,
+material assignment and simulation happen in downstream FE/FFT tools.
 
 The library produces synthetic microstructures — random packings of circles,
 spheres, rectangles, boxes, and other shapes — fully described by a JSON config

@@ -84,8 +84,8 @@ public:
   // (Re)compute the bounding box from the shape's current geometry.
   virtual void make_bounding_box() = 0;
 
-  // Point-in-shape predicate. Used by voxelization (regular-grid sampling for
-  // FFT homogenization) and any other tool that needs to ask "is this voxel
+  // Point-in-shape predicate. Used by voxelization (regular-grid sampling)
+  // and any other tool that needs to ask "is this voxel
   // inside this inclusion?". 2D shapes ignore the z component.
   [[nodiscard]] virtual bool is_inside(std::array<value_type, 3> const& point) const = 0;
 

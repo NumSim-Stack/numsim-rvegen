@@ -1,5 +1,5 @@
 {
-  "_comment": "Periodic 2D RVE with rotated ellipses. Note how shapes near the boundary get visible wrap-copies on the opposite face — this is what FFT homogenization actually sees as the periodic unit cell.",
+  "_comment": "Periodic 2D RVE with rotated ellipses. Note how shapes near the boundary get visible wrap-copies on the opposite face — this is the periodic unit cell.",
 
   "domain_box": [1.0, 1.0, 0.0],
   "seed": 3,

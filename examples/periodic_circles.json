@@ -1,5 +1,5 @@
 {
-  "_comment": "Periodic 2D RVE: circles wrapping across box faces, written as a ParaView-readable VTK file. Canonical config for FFT-based homogenization.",
+  "_comment": "Periodic 2D RVE: circles wrapping across box faces, written as a ParaView-readable VTK file. Canonical periodic config, e.g. for FFT voxel grids.",
 
   "domain_box": [1.0, 1.0, 0.0],
   "seed": 7,

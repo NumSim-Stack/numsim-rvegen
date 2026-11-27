@@ -1,4 +1,4 @@
-"""rvegen — RVE generator for FFT/FEM homogenization.
+"""rvegen — RVE geometry generator.
 
 Phase-2 Python surface: shape primitives (Circle, Sphere, Rectangle, Box,
 Ellipse, PolylineTube, MeshInclusion, VoronoiCell). Distributions,
