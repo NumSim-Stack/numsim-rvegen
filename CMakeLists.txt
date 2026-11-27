@@ -135,6 +135,10 @@ add_executable(rvegen_end_to_end_smoke tests/end_to_end_smoke.cpp)
 target_link_libraries(rvegen_end_to_end_smoke PRIVATE rvegen_lib)
 add_test(NAME end_to_end_smoke COMMAND rvegen_end_to_end_smoke)
 
+add_executable(rvegen_weave_geometry_test tests/weave_geometry_test.cpp)
+target_link_libraries(rvegen_weave_geometry_test PRIVATE rvegen_lib)
+add_test(NAME weave_geometry_test COMMAND rvegen_weave_geometry_test)
+
 add_executable(rvegen_json_visitor_smoke tests/json_visitor_smoke.cpp)
 target_link_libraries(rvegen_json_visitor_smoke PRIVATE
     rvegen_lib
