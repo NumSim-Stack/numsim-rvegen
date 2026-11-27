@@ -35,6 +35,7 @@
 #include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
+#include "portable_random.h"
 
 namespace rvegen {
 
@@ -138,7 +139,7 @@ private:
   value_type _mean;
   value_type _kappa;
   std::reference_wrapper<engine_type> _engine;
-  std::uniform_real_distribution<value_type> _uniform;
+  portable_uniform_real<value_type> _uniform;
 };
 
 } // namespace rvegen

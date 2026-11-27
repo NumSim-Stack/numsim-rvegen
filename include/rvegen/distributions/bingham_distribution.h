@@ -84,6 +84,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "direction_distribution_base.h"
+#include "portable_random.h"
 #include "../schema/field_list.h"
 #include "../types.h"
 
@@ -104,7 +105,7 @@ public:
           "bingham_distribution: kappa must be finite"};
     }
     if (_kappa <= T{-1}) {
-      _normal = std::normal_distribution<T>{
+      _normal = portable_normal<T>{
           T{0}, std::sqrt(T{1} / (T{2} * -_kappa))};
     }
     if (_kappa > max_kappa) {
@@ -325,8 +326,8 @@ private:
   T _kappa;
   std::size_t _max_iterations{0};
   std::reference_wrapper<engine_type> _engine;
-  std::uniform_real_distribution<T> _uniform;
-  std::normal_distribution<T> _normal;
+  portable_uniform_real<T> _uniform;
+  portable_normal<T> _normal;
 };
 
 } // namespace rvegen
