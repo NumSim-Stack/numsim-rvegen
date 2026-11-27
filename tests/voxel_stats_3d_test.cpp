@@ -461,7 +461,13 @@ void test_voxel_matches_brute_force() {
   for (int i = 0; i < 40; ++i) {
     shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(
         u(gen), u(gen), u(gen), ur(gen)));
+    // Odd shapes keep a null box (full-scan fallback), the rest are pruned.
+    if (i % 5 != 0) shapes.back()->make_bounding_box();
   }
+  // A stale box (shape moved afterwards) must not hide voxels.
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.2, 0.2, 0.2, 0.1));
+  shapes.back()->make_bounding_box();
+  shapes.back()->set_middle_point({0.8, 0.8, 0.8});
   const std::array<double, 3> box{1.0, 1.0, 1.0};
   const std::size_t n = 24;
   auto grid = rvegen::sample_voxel_grid(shapes, box, n, n, n);
