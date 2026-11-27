@@ -336,9 +336,10 @@ builds with Clang.
 
 ## License
 
-The licence has not been chosen yet, and the repository contains no licence
-file. The SPDX identifier in the package metadata under `packaging/` and
-`python/` is not backed by one and should be treated as unsettled.
+rvegen is distributed under the BSD 3-Clause License, see [`LICENSE`](LICENSE).
+The licences of the bundled and build-time components (GTE, nlohmann/json,
+pybind11, Eigen, Boost) are listed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ---
 
