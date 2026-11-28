@@ -502,6 +502,19 @@ tests/                      smoke tests, CLI example checks; all under ctest
 | `BUILD_TESTING`              | `ON`    | Register the CTest suite                  |
 | `RVEGEN_BUILD_DOCS`          | `OFF`   | Doxygen API reference (`docs` target)     |
 | `RVEGEN_BUILD_PYTHON`        | `OFF`   | pybind11 bindings under `python/`         |
+| `RVEGEN_WITH_VORO_PP`        | `AUTO`  | Voro++ backend of `voronoi_3d`: `AUTO` uses an installed Voro++ if there is one, `ON` also downloads the pinned sources, `OFF` never |
+| `RVEGEN_VORO_PP_PROVIDER`    | `AUTO`  | `SYSTEM` (installed only), `BUNDLED` (pinned sources only) or `AUTO` (installed, else pinned) |
+
+`voronoi_3d` has two backends. The built-in one needs no dependency and is
+meant for small tessellations: it refuses more than 300 seeds (3000 in a
+periodic box) unless the generator is given `"allow_slow_backend": true`.
+Voro++ is roughly linear in the number of seeds (8000 periodic grains in
+0.2 s) and is what `"backend": "auto"` uses when the build has it; the run
+prints which backend tessellated. Configure with `-DRVEGEN_WITH_VORO_PP=ON`
+for polycrystals of more than a few hundred grains; the Python module is
+built that way, always from the pinned sources. With an installed Voro++
+instead of the pinned sources, a Voro++ fatal error ends the process instead
+of raising an exception.
 
 The default build needs Boost headers, Eigen, nlohmann_json and numsim-core
 (>= 1.3), all installed. CMake does fall back to downloading Eigen or

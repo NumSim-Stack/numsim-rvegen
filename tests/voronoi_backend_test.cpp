@@ -9,6 +9,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "rvegen/rvegen.h"
@@ -170,14 +171,46 @@ void test_voro_pp_slack_seed_not_dropped() {
 }
 
 // Voro++'s exit() path must surface as an exception, not kill the process.
+// Only with the pinned sources: an installed library was compiled without
+// the shim and exits (RVEGEN_VORO_PP_SYSTEM, see voronoi_backend_voropp.h).
+#ifndef RVEGEN_VORO_PP_SYSTEM
 void test_voro_pp_fatal_error_throws() {
   bool threw = false;
   try { voro::voro_fatal_error("test", 3); }
   catch (std::runtime_error const&) { threw = true; }
   REQUIRE(threw);
 }
+#endif
 
 #endif
+
+// The in-house seed limit (#123): the message names both ways out, and
+// allow_slow_backend lifts it (constructing is enough; building 301 bounded
+// seeds takes over a minute).
+void test_in_house_limit_can_be_lifted() {
+  const auto bounded = make_seeds(301, 1.0, 3);
+  std::string message;
+  try {
+    rvegen::voronoi_generator_3d<double> g{
+        1.0, 1.0, 1.0, bounded, rvegen::voronoi_backend::in_house};
+  } catch (std::invalid_argument const& e) {
+    message = e.what();
+  }
+  REQUIRE(message.find("limit of 300 (bounded)") != std::string::npos);
+  REQUIRE(message.find("allow_slow_backend") != std::string::npos);
+  REQUIRE(message.find(rvegen::voro_pp_available()
+                           ? "this build has it"
+                           : "-DRVEGEN_WITH_VORO_PP=ON") != std::string::npos);
+  const rvegen::voronoi_generator_3d<double> lifted{
+      1.0, 1.0, 1.0, bounded, rvegen::voronoi_backend::in_house, false, {},
+      true};
+  REQUIRE(lifted.seed_count() == 301);
+  // At the limit nothing is refused, with or without the flag.
+  const rvegen::voronoi_generator_3d<double> at_limit{
+      1.0, 1.0, 1.0, make_seeds(300, 1.0, 3),
+      rvegen::voronoi_backend::in_house};
+  REQUIRE(at_limit.seed_count() == 300);
+}
 
 void test_default_backend_is_in_house() {
   const auto s = make_seeds(12, 1.0, 1);
@@ -201,8 +234,11 @@ int main() {
   test_voro_pp_200_plus_seeds_fast();
   test_voro_pp_face_seed_fuzz();
   test_voro_pp_slack_seed_not_dropped();
+#ifndef RVEGEN_VORO_PP_SYSTEM
   test_voro_pp_fatal_error_throws();
 #endif
+#endif
+  test_in_house_limit_can_be_lifted();
   if (failures) {
     std::cerr << failures << " failure(s)\n";
     return 1;

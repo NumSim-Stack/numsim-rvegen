@@ -1,0 +1,16 @@
+{
+  "_comment": "allow_slow_backend does not go with the grain-size fit, which repeats the tessellation (#123).",
+  "domain_box": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "generator": {
+    "type": "voronoi_3d",
+    "seed": 4,
+    "periodic": true,
+    "grain_diameter_mean": 0.3,
+    "allow_slow_backend": true
+  },
+  "postprocess": []
+}

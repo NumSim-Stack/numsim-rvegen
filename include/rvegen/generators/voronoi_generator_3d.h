@@ -27,8 +27,9 @@
 // Complexity: O(N · (N + 5)³) vertex-triplets, each O(N) feasibility
 // test ≈ O(N⁵) in the worst case (measured ~N⁴ for random seeds). For
 // N ≤ 50 seeds this is well under a second; the constructor rejects more
-// than voronoi_in_house_max_seeds(periodic) seeds (see there for timings):
-// switch to Voro++ for larger N.
+// than voronoi_in_house_max_seeds(periodic) seeds (see there for timings)
+// unless it is told to allow the slow backend: switch to Voro++ for larger
+// N.
 //
 // Backends (#70):
 //   * `voronoi_backend::in_house` (default) — the enumeration above.
@@ -114,7 +115,8 @@ enum class voronoi_backend { in_house, voro_pp };
 //             pruning keeps it roughly N^1.5).
 // The caps sit near one minute per build; the grain-size iteration repeats
 // the tessellation up to 1000 times, so use the Voro++ backend for more
-// seeds.
+// seeds. The constructor argument `allow_slow_backend` lifts the cap for a
+// caller who has no Voro++ and accepts the wait.
 [[nodiscard]] constexpr std::size_t
 voronoi_in_house_max_seeds(bool periodic) noexcept {
   return periodic ? 3000 : 300;
@@ -165,7 +167,8 @@ public:
 
   voronoi_generator_3d(T Lx, T Ly, T Lz, std::vector<seed_type> seeds,
                        voronoi_backend backend = voronoi_backend::in_house,
-                       bool periodic = false, std::vector<T> weights = {})
+                       bool periodic = false, std::vector<T> weights = {},
+                       bool allow_slow_backend = false)
       : _Lx{Lx}, _Ly{Ly}, _Lz{Lz}, _seeds{std::move(seeds)},
         _backend{backend}, _periodic{periodic}, _weights{std::move(weights)} {
     if (!_weights.empty() && _weights.size() != _seeds.size()) {
@@ -205,15 +208,20 @@ public:
                                     std::to_string(i) + "] is not finite"};
       }
     }
-    if (backend == voronoi_backend::in_house &&
+    if (backend == voronoi_backend::in_house && !allow_slow_backend &&
         _seeds.size() > voronoi_in_house_max_seeds(periodic)) {
       throw std::invalid_argument{
           "voronoi_generator_3d: " + std::to_string(_seeds.size()) +
           " seeds exceed the limit of " +
           std::to_string(voronoi_in_house_max_seeds(periodic)) +
           (periodic ? " (periodic)" : " (bounded)") +
-          " for the in-house backend (its cost grows steeply); use the Voro++ "
-          "backend (voronoi_backend::voro_pp, RVEGEN_WITH_VORO_PP=ON)"};
+          " for the in-house backend (its cost grows steeply). Use the Voro++ "
+          "backend (" +
+          (voro_pp_available()
+               ? std::string{"this build has it: backend voro_pp or auto"}
+               : std::string{"this build has none: configure rvegen with "
+                             "-DRVEGEN_WITH_VORO_PP=ON"}) +
+          "), or set allow_slow_backend to wait for the in-house one"};
     }
     detail::validate_voronoi_seeds<T, 3>({Lx, Ly, Lz}, _seeds,
                                          "voronoi_generator_3d", periodic);

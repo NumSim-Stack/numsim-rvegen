@@ -229,7 +229,8 @@ jobs:
           cmake -G Ninja -B build-voropp \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps" \
-            -DRVEGEN_WITH_VORO_PP=ON
+            -DRVEGEN_WITH_VORO_PP=ON \
+            -DRVEGEN_VORO_PP_PROVIDER=BUNDLED
 
       - name: Build rvegen with Voro++ backend
         if: matrix.full
@@ -272,6 +273,30 @@ jobs:
             numsim-rvegen/rvegen/bench-results/results.md
             numsim-rvegen/rvegen/bench-results/results.json
           if-no-files-found: ignore
+
+      # The same backend from an installed Voro++ (#123): the distribution
+      # package, found by the default RVEGEN_WITH_VORO_PP=AUTO. Installed
+      # only now, so the default build above stays the one without Voro++.
+      # The Voronoi tests are enough; an installed library has no exit shim,
+      # which the backend test accounts for.
+      - name: Configure, build and test with the installed Voro++
+        if: matrix.full
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          set -o pipefail
+          sudo apt-get install -y --no-install-recommends voro++-dev
+          cmake -G Ninja -B build-voropp-system \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps" \
+            -DRVEGEN_VORO_PP_PROVIDER=SYSTEM | tee "$RUNNER_TEMP/configure-voropp.log"
+          grep -q "Voro++ backend ON, installed library" "$RUNNER_TEMP/configure-voropp.log"
+          cmake --build build-voropp-system --target rvegen \
+            rvegen_voronoi_backend_test rvegen_voronoi_polycrystal_test
+          ctest --test-dir build-voropp-system --output-on-failure \
+            --no-tests=error -R '^(voronoi_backend_test|voronoi_polycrystal_test|cli_voronoi_3d)'
 
       # Install + smoke-consume: verifies the CMake export works
       # end-to-end. A separate consumer project does

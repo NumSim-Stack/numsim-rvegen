@@ -582,8 +582,9 @@ PYBIND11_MODULE(_core, m) {
   // tessellation costs ~N^4 (N=100 about 1 s, N=300 about 85 s), a
   // periodic one ~N^1.5 (N=3200 about 67 s); it refuses more than 300
   // (bounded) / 3000 (periodic) seeds with an error pointing to Voro++.
-  // python/CMakeLists.txt does not enable Voro++, so a default Python
-  // build resolves "auto" to the in-house backend.
+  // The Python build enables Voro++ unless it is configured with
+  // -DRVEGEN_WITH_VORO_PP=OFF (python/CMakeLists.txt), so "auto" is Voro++
+  // in a wheel. allow_slow_backend=True lifts the in-house limit.
   auto parse_backend = [](std::string const& name) {
     if (name == "auto") {
       return rvegen::voro_pp_available() ? rvegen::voronoi_backend::voro_pp
@@ -597,14 +598,16 @@ PYBIND11_MODULE(_core, m) {
       .def(py::init([parse_backend](double Lx, double Ly, double Lz,
                                     std::vector<std::array<double, 3>> seeds,
                                     bool periodic, std::string const& backend,
-                                    std::vector<double> weights) {
+                                    std::vector<double> weights,
+                                    bool allow_slow_backend) {
              return rvegen::voronoi_generator_3d<double>{
                  Lx, Ly, Lz, std::move(seeds), parse_backend(backend),
-                 periodic, std::move(weights)};
+                 periodic, std::move(weights), allow_slow_backend};
            }),
            py::arg("Lx"), py::arg("Ly"), py::arg("Lz"), py::arg("seeds"),
            py::arg("periodic") = false, py::arg("backend") = "auto",
-           py::arg("weights") = std::vector<double>{})
+           py::arg("weights") = std::vector<double>{},
+           py::arg("allow_slow_backend") = false)
       .def_property_readonly(
           "seed_count",
           [](rvegen::voronoi_generator_3d<double> const& g) {

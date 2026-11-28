@@ -1,9 +1,9 @@
 #pragma once
 
 // Voro++ backend for voronoi_generator_3d (#70). Only compiled when the
-// build defines RVEGEN_WITH_VORO_PP (CMake option RVEGEN_WITH_VORO_PP=ON,
-// which fetches Voro++ v0.4.6, BSD-3, and links it). Without the macro this
-// header is empty, keeping rvegen header-only with no extra dependency.
+// build defines RVEGEN_WITH_VORO_PP (CMake option RVEGEN_WITH_VORO_PP: an
+// installed Voro++ or the pinned v0.4.6 sources, BSD-3). Without the macro
+// this header is empty, keeping rvegen header-only with no extra dependency.
 //
 // Voro++ computes each cell by incremental plane cutting inside a block
 // grid, so it scales roughly linearly in the seed count (vs ~N^4 for the
@@ -39,9 +39,18 @@
 #include <stdexcept>
 #include <vector>
 
+// With the pinned sources (built by rvegen's CMake with the shim), a Voro++
+// fatal error throws. An installed library (RVEGEN_VORO_PP_SYSTEM) was
+// compiled without the shim; applying it here only would give Voro++'s
+// inline voro_fatal_error two definitions, so it is left out and a fatal
+// error ends the process, as Voro++ does on its own.
+#ifndef RVEGEN_VORO_PP_SYSTEM
 #include "voronoi_voropp_exit_shim.h"   // defines the `exit` redirect
 #include <voro++.hh>
 #undef exit   // restore `exit` for the rest of the TU (shim macro)
+#else
+#include <voro++.hh>
+#endif
 
 #include "../shapes/shape_base.h"
 #include "../shapes/voronoi_cell.h"
