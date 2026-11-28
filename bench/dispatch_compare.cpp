@@ -24,6 +24,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <random>
 #include <type_traits>
@@ -221,7 +222,7 @@ static void BM_monomorphic_circles(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_monomorphic_circles)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -235,7 +236,7 @@ static void BM_aabb_only(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_aabb_only)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -251,7 +252,7 @@ static void BM_dispatcher_table(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_dispatcher_table)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -267,7 +268,7 @@ static void BM_two_stage(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -288,7 +289,7 @@ static void BM_dispatcher_table_bound(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_dispatcher_table_bound)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -310,7 +311,7 @@ static void BM_two_stage_bound(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_bound)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -331,7 +332,7 @@ static void BM_two_stage_visit(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_visit)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -350,7 +351,7 @@ static void BM_two_stage_dynamic_cast(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_dynamic_cast)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -362,7 +363,7 @@ static void BM_two_stage_shape_pool(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_shape_pool)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -381,7 +382,7 @@ static void BM_std_visit(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_std_visit)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -395,7 +396,7 @@ static void BM_dynamic_cast_chain(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_dynamic_cast_chain)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -448,7 +449,7 @@ static void BM_homo_aabb_only(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_aabb_only)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -464,7 +465,7 @@ static void BM_homo_dispatcher_table(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_dispatcher_table)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -479,7 +480,7 @@ static void BM_homo_two_stage(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_two_stage)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -493,7 +494,7 @@ static void BM_homo_std_visit(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_std_visit)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -507,7 +508,7 @@ static void BM_homo_dynamic_cast(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_dynamic_cast)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -526,7 +527,7 @@ static void BM_shape_pool(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_shape_pool)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -553,7 +554,7 @@ static void BM_homo_shape_pool(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * std::size_t{s.range(0)} * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_shape_pool)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 

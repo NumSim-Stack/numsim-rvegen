@@ -2,6 +2,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -43,6 +44,7 @@ public:
   // copy ctor, producing a fully-copied shape with a freshly-cloned bb.
   shape_base(shape_base const& other)
       : _info{other._info},
+        _inclusion_id{other._inclusion_id},
         _bounding_box{other._bounding_box ? other._bounding_box->clone()
                                           : nullptr} {}
 
@@ -58,6 +60,7 @@ protected:
   shape_base& operator=(shape_base const& other) {
     if (this != &other) {
       _info = other._info;
+      _inclusion_id = other._inclusion_id;
       _bounding_box = other._bounding_box ? other._bounding_box->clone()
                                           : nullptr;
     }
@@ -84,8 +87,8 @@ public:
   // (Re)compute the bounding box from the shape's current geometry.
   virtual void make_bounding_box() = 0;
 
-  // Point-in-shape predicate. Used by voxelization (regular-grid sampling for
-  // FFT homogenization) and any other tool that needs to ask "is this voxel
+  // Point-in-shape predicate. Used by voxelization (regular-grid sampling)
+  // and any other tool that needs to ask "is this voxel
   // inside this inclusion?". 2D shapes ignore the z component.
   [[nodiscard]] virtual bool is_inside(std::array<value_type, 3> const& point) const = 0;
 
@@ -127,8 +130,18 @@ public:
     _info.set_phase_name(std::move(name));
   }
 
+  // Periodic-equivalence tag: a primary and its periodic wraps share one
+  // id (stamped by periodic_generator only when wraps exist). Kept out of
+  // `info()` so it cannot collide with user metadata keys or show up in
+  // every shape's exported metadata. Copied by clone().
+  [[nodiscard]] std::optional<std::size_t> inclusion_id() const noexcept {
+    return _inclusion_id;
+  }
+  void set_inclusion_id(std::size_t id) noexcept { _inclusion_id = id; }
+
 protected:
   rvegen::info _info;
+  std::optional<std::size_t> _inclusion_id{};
   std::unique_ptr<bounding_box_base<value_type>> _bounding_box{};
 };
 

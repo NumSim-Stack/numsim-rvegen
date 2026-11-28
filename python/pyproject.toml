@@ -1,17 +1,28 @@
 [build-system]
-requires = ["scikit-build-core>=0.8", "pybind11>=2.13"]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.13"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "rvegen"
 version = "0.1.0"
-description = "RVE (Representative Volume Element) generator for FFT/FEM homogenization — Python bindings"
+description = "RVE (Representative Volume Element) geometry generator — Python bindings"
 readme = "README.md"
-license = "GPL-3.0-or-later"
+# LICENSE and THIRD_PARTY_NOTICES.md are copies of the files at the repository
+# root (the wheel is built from python/ alone); the license_files_in_sync_*
+# ctests fail when they differ.
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 authors = [
     { name = "Peter Lenz", email = "peterlenz89.pl@gmail.com" },
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.21"]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 
 [project.urls]
 Homepage = "https://github.com/NumSim-Stack/numsim-rvegen"
@@ -23,3 +34,25 @@ cmake.source-dir = "."
 cmake.version = ">=3.20"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["rvegen"]
+# A FetchContent'd Eigen (not found on the build image) installs its headers
+# and CMake files; the wheel must carry only the extension module.
+wheel.exclude = ["include/**", "share/**", "lib/**", "lib64/**", "bin/**"]
+
+[tool.cibuildwheel]
+# CPython 3.10-3.13, manylinux x86_64 (musllinux and PyPy skipped).
+# Driven by .github/workflows/wheels.yml, which checks numsim-core out into
+# <repo>/_deps/numsim-core so the container sees it (cibuildwheel mounts the
+# repo root as /project).
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_* pp*"
+archs = ["x86_64"]
+manylinux-x86_64-image = "manylinux_2_28"
+test-requires = ["pytest", "numpy"]
+test-command = "pytest {package}/tests"
+
+[tool.cibuildwheel.linux]
+# rvegen needs C++23 <print>: the manylinux_2_28 image's default
+# gcc-toolset is >= 14. Boost headers come from the distro; Eigen and
+# nlohmann_json fall back to CMake FetchContent.
+before-all = "yum install -y boost-devel && g++ -dumpversion | awk -F. '$1 < 14 { print \"rvegen needs g++ >= 14 (C++23 <print>), found \" $0; exit 1 }'"
+environment = { CMAKE_ARGS = "-DCMAKE_CXX_FLAGS=-I/project/_deps/numsim-core/include -DBUILD_TESTING=OFF" }

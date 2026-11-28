@@ -5,6 +5,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../intersection/aabb_grid.h"
 #include "../intersection/aabb_overlap.h"
 #include "../intersection/collision_dispatcher.h"
 #include "../shapes/periodic_wraps.h"
@@ -15,7 +16,7 @@ namespace rvegen {
 
 // Place shapes with periodic boundary conditions: a shape near the +x face
 // has a periodic image on the −x face, etc. This is the canonical generator
-// for FFT homogenization, which assumes a periodic unit cell.
+// for periodic unit cells (periodic meshes, FFT voxel grids).
 //
 // Implementation strategy:
 //   1. Sample a candidate anywhere in the box (no inside-only constraint).
@@ -65,7 +66,13 @@ public:
     std::size_t input_idx = 0;
     std::size_t last_emit = 0;
 
-    while (!termination(accepted) && attempts < _max_attempts) {
+    // Broad phase: bucket grid over the accepted AABBs (#83). The
+    // termination predicate only depends on `accepted`, so it is
+    // re-evaluated after each accept rather than on every attempt.
+    aabb_grid<value_type> grid;
+    bool done = termination(accepted);
+
+    while (!done && attempts < _max_attempts) {
       if (opts.cancel()) return accepted;
       ++attempts;
       auto& input = *inputs[input_idx];
@@ -80,22 +87,27 @@ public:
       // has its own periodic image overlapping itself.
       if (self_periodic_collides(*prim_bb, domain_box)) continue;
 
-      // Build the periodic equivalence class — primary + wraps.
+      // Build the periodic equivalence class — primary + wraps. Only a
+      // multi-piece class gets an inclusion id (shared by all members);
+      // a primary without wraps is an ordinary single shape.
       auto wraps = generate_periodic_wraps(*primary, domain_box);
+      if (!wraps.empty()) {
+        const auto id = next_inclusion_id();
+        primary->set_inclusion_id(id);
+        for (auto& w : wraps) w->set_inclusion_id(id);
+      }
 
       // Check every class member vs every accepted shape. The accepted
-      // vector already contains all previously-inserted primaries AND
-      // their wraps, so plain (non-periodic) two-stage dispatch suffices.
+      // vector (and the grid mirroring it) already contains all
+      // previously-inserted primaries AND their wraps, so plain
+      // (non-periodic) two-stage dispatch suffices.
       bool collides = false;
       auto check_member = [&](shape_base<value_type> const& m) {
         auto const bound =
             collision_dispatcher<value_type>::instance().bind_lhs(m);
-        auto const* mbb = m.bounding_box();
-        for (auto const& other : accepted) {
-          if (!aabb_overlap(*mbb, *other->bounding_box())) continue;
-          if (bound(m, *other)) return true;
-        }
-        return false;
+        return grid.any_overlap(*m.bounding_box(), [&](std::size_t i) {
+          return bound(m, *accepted[i]);
+        });
       };
 
       if (check_member(*primary)) continue;
@@ -107,8 +119,12 @@ public:
       // Accept: push primary first, then wraps. Centre-in-domain
       // accounting (volume_fraction termination) distinguishes them
       // by their middle_point, not by insertion role.
+      grid.insert(*primary->bounding_box());
       accepted.push_back(std::move(primary));
-      for (auto& w : wraps) accepted.push_back(std::move(w));
+      for (auto& w : wraps) {
+        grid.insert(*w->bounding_box());
+        accepted.push_back(std::move(w));
+      }
 
       if (accepted.size() - last_emit >= opts.emit_every) {
         opts.on_progress({accepted.size(),
@@ -116,6 +132,7 @@ public:
                           current_volume_fraction(accepted, domain_box)});
         last_emit = accepted.size();
       }
+      done = termination(accepted);
     }
 
     return accepted;

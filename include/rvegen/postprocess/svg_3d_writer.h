@@ -9,7 +9,10 @@
 //
 // Self-contained SVG, viewable in any browser, image viewer, or chat.
 //
-// 2D shapes (circle, rectangle, ellipse) are skipped — use svg_writer.
+// Shapes other than sphere/box (tubes, polygons, Voronoi cells, 2D shapes at
+// z=0, ...) are rendered through mesh_dispatcher as depth-sorted triangles.
+// Shapes with no mesh are skipped with ONE warning per type on std::cerr
+// (see visualization/mesh_fallback.h).
 
 #include <algorithm>
 #include <array>
@@ -25,7 +28,10 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include <Mathematics/Vector3.h>
+
 #include "post_process_base.h"
+#include "../visualization/mesh_fallback.h"
 #include "../shapes/box.h"
 #include "../shapes/sphere.h"
 #include "../types.h"
@@ -149,6 +155,9 @@ public:
       return std::string{buf};
     };
 
+    // ~14 KB per tube: warn above ~50 MB (3500 shapes).
+    warn_large_output("svg_3d_writer", shapes.size(), 3500, 14000);
+
     std::size_t idx = 0;
     for (auto const& shape : shapes) {
       auto const* raw = shape.get();
@@ -208,12 +217,43 @@ public:
                           fmt(stroke_w) + "\"/>";
           add_item(cd, std::move(x));
         }
+      } else {
+        // Generic path: dispatcher mesh -> projected triangles, painter-sorted
+        // per triangle, Lambert-shaded by the (outward) face normal.
+        auto const mesh = mesh_or_warn(*raw, "svg_3d_writer");
+        using vec3 = gte::Vector3<value_type>;
+        vec3 light{value_type{1}, value_type{2}, value_type{1.5}};
+        gte::Normalize(light);
+        for (auto const& t : mesh.tris) {
+          std::array<vec3, 3> p;
+          for (int k = 0; k < 3; ++k) {
+            auto const& v = mesh.verts[t[k]];
+            p[k] = vec3{v[0], v[1], v[2]};
+          }
+          vec3 n = gte::Cross(p[1] - p[0], p[2] - p[0]);
+          if (gte::Normalize(n) == value_type{0}) continue;  // degenerate
+          const auto lam = std::abs(gte::Dot(n, light));
+          const auto shade = value_type{0.55} + value_type{0.45} * lam;
+          const auto cen = (p[0] + p[1] + p[2]) / value_type{3};
+          std::string pts;
+          for (int k = 0; k < 3; ++k) {
+            auto [px, py] = project(p[k][0], p[k][1], p[k][2]);
+            pts += fmt(px) + "," + fmt(py) + " ";
+          }
+          std::string x = "<polygon points=\"" + pts +
+                          "\" fill=\"" + color +
+                          "\" fill-opacity=\"" + fmt(shade) +
+                          "\" stroke=\"" + color + "\" stroke-width=\"" +
+                          fmt(stroke_w * value_type{0.3}) + "\"/>";
+          add_item(depth(cen[0], cen[1], cen[2]), std::move(x));
+        }
       }
       ++idx;
     }
 
-    // Sort back-to-front (smallest depth first).
-    std::sort(items.begin(), items.end(),
+    // Sort back-to-front (smallest depth first). Stable: ties keep draw-list
+    // order, so output is identical across standard libraries.
+    std::stable_sort(items.begin(), items.end(),
               [](auto const& a, auto const& b) { return a.depth < b.depth; });
 
     // Domain wireframe — draw last so it sits on top of everything for

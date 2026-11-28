@@ -1,27 +1,24 @@
 #pragma once
 
-// Phase — a named region of the RVE that carries an opaque material
-// configuration. rvegen does not interpret material parameters; the
-// `material_config` JSON blob is forwarded verbatim to downstream
-// FFT / FEM solvers (notably numsim-materials, which provides
-// linear_elasticity, plasticity, damage, etc., keyed off the same
-// JSON shape that goes through its `material_factory`).
+// Phase — a named geometric region of the RVE (e.g. "matrix", "fibre").
+// A phase is a label only: rvegen generates geometry and does not carry
+// material properties. Downstream solvers assign materials by phase name
+// or id.
 //
-// Why a separate type and not just a JSON blob:
-//   * Output writers (voxel, gmsh, DAMASK) need a stable integer id
-//     per phase to label cells / Physical groups / sections. Doing the
-//     name → id mapping centrally in `phase_collection` avoids every
-//     writer reinventing it (and disagreeing about ids).
-//   * Shapes carry a phase NAME, not the full material_config. This
-//     keeps shape_input small and lets multiple shapes share a phase
-//     by name without copying material parameters.
+// Why a separate type:
+//   * Output writers (voxel, gmsh, vtk) need a stable integer id per
+//     phase to label cells / Physical groups. Doing the name → id mapping
+//     centrally in `phase_collection` avoids every writer reinventing it
+//     (and disagreeing about ids).
+//   * Shapes carry a phase NAME, so multiple shapes share a phase by name.
 //
 // Convention on phase ids:
-//   User-defined phases get monotonic ids starting at 1. Id 0 is held
-//   in reserve for "void" / matrix gaps so a future voxel writer can
-//   use it as the default-fill marker without colliding with a real
-//   phase. Today no writer consumes this convention; it is a
-//   forward-looking reservation.
+//   User-defined phases get monotonic ids starting at 1 (gmsh physical
+//   tags must be positive, so a phase can never be id 0). Id 0 means
+//   "untagged". If the config declares which phase is the matrix
+//   (`phase_assignment.matrix`, recorded via `set_matrix`), the voxel and
+//   VTK writers give cells that no shape covers THAT phase's id; without
+//   a declared matrix phase, uncovered cells stay 0 (matrix / untagged).
 
 #include <cstddef>
 #include <stdexcept>
@@ -40,10 +37,6 @@ struct phase {
 
   std::string name;
   std::size_t id{0};
-  // Forwarded verbatim to downstream solvers — typically the JSON shape
-  // expected by numsim-materials' material_factory (e.g. linear_elasticity
-  // with K and G fields). rvegen treats this as opaque metadata.
-  nlohmann::json material_config;
 };
 
 // Name → phase map with monotonic id allocation. `ordered()` exposes
@@ -56,19 +49,24 @@ public:
   using phase_type = phase<value_type>;
 
   phase_collection() = default;
+  // `_ordered` holds pointers into `_by_name`; a copy would point into the
+  // source. Moving keeps the (node-based) map nodes, so moves stay valid.
+  phase_collection(phase_collection const&) = delete;
+  phase_collection& operator=(phase_collection const&) = delete;
+  phase_collection(phase_collection&&) noexcept = default;
+  phase_collection& operator=(phase_collection&&) noexcept = default;
 
   // Adds a new phase. The id is auto-assigned and monotonic in
   // insertion order, starting at 1. Throws if the name is already
   // present (an early signal that the user double-defined a phase
   // in JSON).
-  phase_type& add(std::string name, nlohmann::json material_config = {}) {
+  phase_type& add(std::string name) {
     if (_by_name.contains(name)) {
       throw std::runtime_error{"phase_collection: duplicate phase name '" +
                                name + "'"};
     }
     auto& slot = _by_name
-                     .try_emplace(name, phase_type{name, _next_id++,
-                                                   std::move(material_config)})
+                     .try_emplace(name, phase_type{name, _next_id++})
                      .first->second;
     _ordered.push_back(&slot);
     return slot;
@@ -91,6 +89,22 @@ public:
     return at(name).id;
   }
 
+  // Declare which phase is the matrix (the region no shape covers).
+  // Throws if the phase is unknown.
+  void set_matrix(std::string const& name) {
+    (void)at(name);
+    _matrix = name;
+  }
+  [[nodiscard]] bool has_matrix() const noexcept { return !_matrix.empty(); }
+  [[nodiscard]] std::string const& matrix_name() const noexcept {
+    return _matrix;
+  }
+  // Id carried by uncovered cells: the matrix phase's id, or 0 when no
+  // matrix phase is declared.
+  [[nodiscard]] std::size_t matrix_id() const {
+    return _matrix.empty() ? std::size_t{0} : id_of(_matrix);
+  }
+
   [[nodiscard]] std::size_t size() const noexcept { return _ordered.size(); }
   [[nodiscard]] bool empty() const noexcept { return _ordered.empty(); }
 
@@ -107,25 +121,20 @@ private:
   std::unordered_map<std::string, phase_type> _by_name;
   std::vector<phase_type const*> _ordered;
   std::size_t _next_id{1};
+  std::string _matrix;
 };
 
 // Parses a JSON `"phases"` array into a phase_collection.
 //
 // Expected shape:
-//   "phases": [
-//     {"name": "matrix", "material": {"type": "linear_elasticity",
-//                                       "K": 1.6e9, "G": 0.8e9, ...}},
-//     {"name": "fibre",  "material": {"type": "linear_elasticity",
-//                                       "K": 5.0e10, "G": 3.0e10, ...}}
-//   ]
+//   "phases": [ {"name": "matrix"}, {"name": "fibre"} ]
 //
 // Validation:
 //   * `phases_array` must be an array.
-//   * Each entry must be an object with a string `"name"`.
-//   * `"material"` is required to be an object if present (rvegen does
-//     not interpret its contents, but accepting non-objects would let
-//     downstream solver mismatches surface as obscure errors far from
-//     the typo).
+//   * Each entry must be an object with a non-empty string `"name"` and no other
+//     keys. A `"material"` key is rejected explicitly: material
+//     properties are out of scope for rvegen and belong to the
+//     downstream solver, keyed by phase name or id.
 template <typename T = double>
 inline phase_collection<T> load_phases_from_json(nlohmann::json const& phases_array) {
   phase_collection<T> phases;
@@ -143,16 +152,24 @@ inline phase_collection<T> load_phases_from_json(nlohmann::json const& phases_ar
           "load_phases_from_json: each phase must have a string 'name'"};
     }
     auto name = entry["name"].get<std::string>();
-    nlohmann::json material = nlohmann::json::object();
-    if (entry.contains("material")) {
-      if (!entry["material"].is_object()) {
-        throw std::runtime_error{
-            "load_phases_from_json: 'material' for phase '" + name +
-            "' must be an object"};
-      }
-      material = entry["material"];
+    if (name.empty()) {
+      throw std::runtime_error{
+          "load_phases_from_json: phase 'name' must not be empty"};
     }
-    phases.add(std::move(name), std::move(material));
+    for (auto const& [key, value] : entry.items()) {
+      if (key == "name") continue;
+      if (key == "material") {
+        throw std::runtime_error{
+            "load_phases_from_json: phase '" + name +
+            "' has a 'material' entry; rvegen generates geometry only, so "
+            "phases carry just a name. Assign materials in the downstream "
+            "solver by phase name or id."};
+      }
+      throw std::runtime_error{"load_phases_from_json: phase '" + name +
+                               "' has unknown key '" + key +
+                               "' (only 'name' is allowed)"};
+    }
+    phases.add(std::move(name));
   }
   return phases;
 }

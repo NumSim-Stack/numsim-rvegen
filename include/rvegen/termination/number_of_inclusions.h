@@ -17,8 +17,10 @@ namespace rvegen {
 // stores wrap copies alongside primaries so subsequent collision checks
 // can use the standard non-periodic dispatch; the wraps share storage but
 // represent the same physical inclusion as their primary, so we don't
-// count them. For non-periodic generators (only_inside, random) every
-// accepted shape's centre is in the domain, so the filter is a no-op.
+// count them. only_inside_generator only accepts shapes inside the box, so
+// the filter is a no-op there. random_generator accepts shapes anywhere
+// (centres may lie outside the box) and has no wraps, so it calls
+// is_met(accepted, /*count_all=*/true) to count every accepted shape.
 template <typename T = double>
 class number_of_inclusions final : public termination_base<T> {
 public:
@@ -43,10 +45,16 @@ public:
   }
 
   [[nodiscard]] bool operator()(shape_vector const& accepted) const override {
+    return is_met(accepted, false);
+  }
+
+  [[nodiscard]] bool is_met(shape_vector const& accepted,
+                            bool count_all) const override {
     bool const have_box =
         _domain_box[0] > T{0} && _domain_box[1] > T{0};
-    if (!have_box) {
-      // Direct ctor path or empty box: count everything (legacy behaviour).
+    if (count_all || !have_box) {
+      // No primary filter (direct ctor path, empty box, or a generator
+      // without a domain constraint): count everything.
       return accepted.size() >= _target;
     }
     std::size_t primary_count = 0;

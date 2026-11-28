@@ -12,24 +12,37 @@
 //     0.5 / 4 when unconstrained);
 //   * bool keys are set to true;
 //   * string keys ending in "_dist" name a constant distribution "d" in the
-//     distribution map handed to the inputs; "output_path" points into the
-//     temp directory; other string keys are only set when required.
+//     distribution map handed to the inputs ("direction_dist" names the
+//     direction distribution "dir"); "output_path" points into the temp
+//     directory; other string keys are only set when required;
+//   * optional list keys (voronoi "seeds") are left out.
+//
+// A few types need values a range hint cannot express; `adjust` sets them
+// per type (orientation tensors with trace 1, weave yarn geometry that
+// fits the box, a voronoi seed count).
 //
 // Covered: every type in the distribution, direction_distribution, generator,
 // termination, input and post_process registries, plus the shapes circle,
 // rectangle, ellipse, sphere and box (not registered; constructed directly
 // from a handler built from Shape::parameters()).
 //
+// The deterministic generators (weave, tow_weave, voronoi_2d, voronoi_3d)
+// keep the handler and read their keys in build(), so for them the test
+// also runs compute() once.
+//
 // mesh_inclusion_input needs a real mesh file, so it is handled separately:
 // the test writes a closed tetrahedron as an ASCII STL into the working
-// directory, points mesh_path at it and constructs the input from that
-// config. No registered type is skipped.
+// directory, points mesh_path at it and constructs the input once per
+// orientation mode ("uniform" with orientation_dist, "euler_zyz" with the
+// three euler_*_dist keys; each mode rejects the other's keys). No
+// registered type is skipped.
 //
 // Not exercised:
 //   * Optional string keys that are not distribution references
 //     (phase_name, metadata, stl_path) are not exercised.
 
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -40,6 +53,7 @@
 #include <string>
 #include <system_error>
 #include <typeindex>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -120,7 +134,9 @@ bool fill(json& cfg, std::string const& key, base_t const& base) {
   }
   if (auto const* p = dynamic_cast<typed_t<std::string> const*>(&base)) {
     if (has_default(*p)) return true;
-    if (key.size() > 5 && key.ends_with("_dist")) {
+    if (key == "direction_dist") {
+      cfg[key] = "dir";
+    } else if (key.size() > 5 && key.ends_with("_dist")) {
       cfg[key] = "d";
     } else if (key == "output_path") {
       cfg[key] = (std::filesystem::temp_directory_path() /
@@ -130,7 +146,31 @@ bool fill(json& cfg, std::string const& key, base_t const& base) {
     }
     return true;
   }
+  if (auto const* p = dynamic_cast<typed_t<std::uint64_t> const*>(&base)) {
+    if (!has_default(*p)) cfg[key] = pick_number<std::uint64_t>(*p, 4);
+    return true;
+  }
+  if (auto const* p = dynamic_cast<typed_t<std::vector<double>> const*>(&base)) {
+    // Optional lists (explicit voronoi seeds) are left out.
+    return !is_req(*p);
+  }
   return false;
+}
+
+// Values a range hint cannot express.
+void adjust(json& cfg, std::string const& type) {
+  if (type == "bingham_a2") {   // axisymmetric, trace 1
+    cfg["a11"] = 0.5; cfg["a22"] = 0.25; cfg["a33"] = 0.25;
+    cfg["a12"] = 0.0; cfg["a13"] = 0.0; cfg["a23"] = 0.0;
+  } else if (type == "von_mises_a2") {   // trace 1, a12^2 <= a11 a22
+    cfg["a11"] = 0.7; cfg["a22"] = 0.3; cfg["a12"] = 0.2;
+  } else if (type == "weave" || type == "tow_weave") {
+    cfg["n_warp_yarns"] = 2; cfg["n_weft_yarns"] = 2;
+    cfg["yarn_radius"] = 0.04; cfg["amplitude"] = 0.06;
+    if (type == "tow_weave") cfg["n_fibres_per_tow"] = 3;
+  } else if (type == "voronoi_2d" || type == "voronoi_3d") {
+    cfg["n_seeds"] = 6;   // defaults to 0 = "use the explicit seeds list"
+  }
 }
 
 json make_config(rvegen::parameter_controller_t const& schema,
@@ -144,6 +184,7 @@ json make_config(rvegen::parameter_controller_t const& schema,
       ++failures;
     }
   }
+  adjust(cfg, type_name);
   return cfg;
 }
 
@@ -217,6 +258,23 @@ int main() {
   run_registry(rvegen::direction_distribution_registry_t<>::instance(),
                "direction_distribution", "", engine);
   run_registry(rvegen::generator_registry_t<>::instance(), "generator", "");
+  // Deterministic generators read their keys in build(): run them once.
+  {
+    auto& reg = rvegen::generator_registry_t<>::instance();
+    for (auto const& type : reg.registered_types()) {
+      attempt("generator(compute)", type, [&] {
+        auto gen = rvegen::build_from_json(reg, make_config(reg.schema(type), type));
+        if (!dynamic_cast<rvegen::deterministic_generator<double>*>(gen.get()))
+          return;
+        rvegen::rve_generator_base<double>::input_vector none;
+        rvegen::number_of_inclusions<double> one{1};
+        std::array<double, 3> const dom{1.0, 1.0,
+                                        type == "voronoi_2d" ? 0.0 : 0.4};
+        if (gen->compute(none, one, dom).empty())
+          throw std::runtime_error("no shapes built");
+      });
+    }
+  }
   std::array<double, 3> const box{1.0, 1.0, 1.0};
   run_registry(rvegen::termination_registry_t<>::instance(), "termination",
                "", box);
@@ -227,6 +285,10 @@ int main() {
   rvegen::distribution_map_t<double> dists;
   dists["d"] = std::make_shared<
       rvegen::constant_distribution<double, std::mt19937>>(0.5, engine);
+  dists["dir"] = std::make_shared<rvegen::direction_distribution_holder<double>>(
+      std::shared_ptr<rvegen::direction_distribution_base<double>>{
+          std::make_shared<rvegen::bingham_distribution<double, std::mt19937>>(
+              std::array<double, 3>{0.0, 0.0, 1.0}, 2.0, engine)});
   run_registry(rvegen::input_registry_t<>::instance(), "input",
                "mesh_inclusion_input", dists);
 
@@ -234,15 +296,25 @@ int main() {
   {
     auto const stl = std::filesystem::current_path() /
                      "rvegen_schema_construct_test_tetra.stl";
-    attempt("input", "mesh_inclusion_input", [&] {
-      write_tetrahedron_stl(stl);
-      auto& reg = rvegen::input_registry_t<>::instance();
-      auto cfg = make_config(reg.schema("mesh_inclusion_input"),
-                             "mesh_inclusion_input");
-      cfg["mesh_path"] = stl.string();
-      auto obj = rvegen::build_from_json(reg, cfg, dists);
-      if (!obj) throw std::runtime_error("null object");
-    });
+    for (std::string const mode : {"uniform", "euler_zyz"}) {
+      attempt("input", "mesh_inclusion_input[" + mode + "]", [&] {
+        write_tetrahedron_stl(stl);
+        auto& reg = rvegen::input_registry_t<>::instance();
+        auto cfg = make_config(reg.schema("mesh_inclusion_input"),
+                               "mesh_inclusion_input");
+        cfg["mesh_path"] = stl.string();
+        cfg["orientation"] = mode;
+        if (mode == "uniform") {
+          for (auto const* k : {"euler_alpha_dist", "euler_beta_dist",
+                                "euler_gamma_dist"})
+            cfg.erase(k);
+        } else {
+          cfg.erase("orientation_dist");
+        }
+        auto obj = rvegen::build_from_json(reg, cfg, dists);
+        if (!obj) throw std::runtime_error("null object");
+      });
+    }
     std::error_code ec;
     std::filesystem::remove(stl, ec);
   }

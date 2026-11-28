@@ -1,0 +1,60 @@
+{
+  "_comment": "Straight cylindrical fibres (polyline tubes) running roughly along z through a unit cube, voxelised to 64^3 and shown as three orthogonal mid-plane slices. Tubes have no precise collision pair yet, so placement uses conservative bounding-box checks.",
+  "domain_box": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "seed": 2,
+  "distributions": {
+    "lateral": {
+      "type": "uniform_real",
+      "a": 0.12,
+      "b": 0.88
+    },
+    "bottom": {
+      "type": "uniform_real",
+      "a": 0.04,
+      "b": 0.08
+    },
+    "top": {
+      "type": "uniform_real",
+      "a": 0.92,
+      "b": 0.96
+    },
+    "radius": {
+      "type": "uniform_real",
+      "a": 0.035,
+      "b": 0.05
+    }
+  },
+  "shapes": [
+    {
+      "type": "polyline_tube_input",
+      "start_x_dist": "lateral",
+      "start_y_dist": "lateral",
+      "start_z_dist": "bottom",
+      "end_x_dist": "lateral",
+      "end_y_dist": "lateral",
+      "end_z_dist": "top",
+      "radius_dist": "radius"
+    }
+  ],
+  "generator": {
+    "type": "only_inside",
+    "max_attempts": 200000
+  },
+  "termination": {
+    "type": "number_of_inclusions",
+    "target": 10
+  },
+  "postprocess": [
+    {
+      "type": "vtk_legacy",
+      "nx": 64,
+      "ny": 64,
+      "nz": 64,
+      "output_path": "fibres_3d.vtk"
+    }
+  ]
+}

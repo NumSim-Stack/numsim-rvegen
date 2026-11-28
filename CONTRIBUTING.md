@@ -3,7 +3,11 @@
 ## Quick start
 
 ```bash
-# Sibling-tree layout — rvegen expects numsim-core at ../../numsim-core/include.
+# Sibling-tree layout: rvegen falls back to ../../numsim-core/include when no
+# installed numsim-core CMake package is found. To use an installed one
+# instead, add -DCMAKE_PREFIX_PATH=<numsim-core prefix> to the configure line.
+# Needs g++-14 (or newer) for <print>: add -DCMAKE_CXX_COMPILER=g++-14 if
+# your default compiler is older.
 mkdir -p numsim-stack && cd numsim-stack
 git clone https://github.com/NumSim-Stack/numsim-core.git
 git clone https://github.com/NumSim-Stack/numsim-rvegen.git
@@ -13,6 +17,23 @@ cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+CI also builds Debug with `-fsanitize=address,undefined` and with Clang.
+To reproduce the sanitizer job locally add
+`-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined"`.
+`cli_check_*` tests (Python 3) run the CLI on every `examples/*.json` and
+inspect the files written, so a new example config is tested automatically.
+They report *Skipped* (not Passed) when a config writes a `.geo` and gmsh is
+missing; CI configures with `-DRVEGEN_REQUIRE_GMSH=ON` so that cannot happen
+there.
+
+The Clang job needs a numsim-core whose `static_indexing` draws ids lazily.
+With the older eager version clang gives every shape type id 0; the
+collision and mesh dispatchers then throw at registration ("share
+static_indexing id 0") and `shape_id_unique_test` fails, instead of
+dispatching circles as box x sphere.
+After adding a registered type, refresh the README list with
+`tests/readme_types_check.py --rvegen build/rvegen --readme README.md --update`.
 
 ## Branch layout
 
@@ -28,10 +49,13 @@ breaking changes there don't cascade into every rvegen PR. To bump:
    ```bash
    gh api repos/NumSim-Stack/numsim-core/commits/main --jq '.sha'
    ```
-2. Update the `ref:` line in the **Checkout numsim-core (sibling, pinned)**
-   step of `.github/workflows/ci.yml`.
+2. Update the `ref:` line in the **Checkout numsim-core (pinned)** step of
+   `.github/workflows/ci.yml`. The pin must stay at or after numsim-core
+   `ef6d2ac` ("make the installed package consumable"): CI builds and
+   installs numsim-core, and rvegen finds it with
+   `find_package(numsim-core CONFIG)`.
 3. Push the change on a feature branch and confirm the workflow stays
-   green (build + ctest + install-smoke + Python pytest).
+   green (gcc Release, gcc Debug with ASan/UBSan, clang, install-smoke, Python pytest).
 4. Merge.
 
 Bump deliberately — typically when rvegen needs a new numsim-core
@@ -44,7 +68,8 @@ See `docs/extending.md` for the full walkthrough. Short version:
 1. Add the shape header under `include/rvegen/shapes/`. Inherit
    `numsim_core::static_indexing<your_shape<T>, shape_base<T>>` and
    implement the `shape_base<T>` virtuals.
-2. Add a unit test in `tests/extra_types_smoke.cpp`.
+2. Add a unit test in `tests/extra_types_smoke.cpp`, and the type to the
+   id set in `tests/shape_id_unique_test.cpp`.
 3. If you want it driven from JSON config, add an input under
    `include/rvegen/inputs/` and register it in
    `include/rvegen/registry/register_inputs.h`.

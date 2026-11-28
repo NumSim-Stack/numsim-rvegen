@@ -5,6 +5,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../intersection/aabb_grid.h"
 #include "../intersection/aabb_overlap.h"
 #include "../intersection/collision_dispatcher.h"
 #include "../types.h"
@@ -60,7 +61,15 @@ public:
     std::size_t input_idx = 0;
     std::size_t last_emit = 0;
 
-    while (!termination(accepted) && attempts < _max_attempts) {
+    // Broad phase: bucket grid over the accepted AABBs (#83). The
+    // termination predicate only depends on `accepted`, so it is
+    // re-evaluated after each accept rather than on every attempt.
+    // Every accepted shape is inside the box (hence a primary), so the
+    // primaries filter is skipped (count_all): O(1) for number_of_inclusions.
+    aabb_grid<value_type> grid;
+    bool done = termination.is_met(accepted, true);
+
+    while (!done && attempts < _max_attempts) {
       if (opts.cancel()) return accepted;
       ++attempts;
       auto& input = *inputs[input_idx];
@@ -78,7 +87,7 @@ public:
       }
 
       // (b) Two-stage collision check against accepted shapes:
-      //     Stage 1: AABB overlap (cheap reject — most pairs don't overlap).
+      //     Stage 1: grid broad phase -> AABB-overlapping neighbours only.
       //     Stage 2: collision_dispatcher (precise typed collision_details
       //              for registered pairs; AABB fallback otherwise).
       // The candidate's typeid is invariant across this inner loop, so
@@ -86,19 +95,15 @@ public:
       // If the user hasn't called rvegen::register_all_collision_pairs(),
       // the bound dispatcher returns AABB results — same conservative
       // behaviour as before.
-      bool collides = false;
       auto const bound_dispatcher =
           collision_dispatcher<value_type>::instance().bind_lhs(*candidate);
-      for (auto const& other : accepted) {
-        auto const* other_bb = other->bounding_box();
-        if (!aabb_overlap(*cand_bb, *other_bb)) continue;       // stage 1
-        if (bound_dispatcher(*candidate, *other)) {             // stage 2
-          collides = true;
-          break;
-        }
-      }
+      const bool collides =
+          grid.any_overlap(*cand_bb, [&](std::size_t i) {
+            return bound_dispatcher(*candidate, *accepted[i]);
+          });
       if (collides) continue;
 
+      grid.insert(*cand_bb);
       accepted.push_back(std::move(candidate));
 
       if (accepted.size() - last_emit >= opts.emit_every) {
@@ -107,6 +112,7 @@ public:
                           current_volume_fraction(accepted, domain_box)});
         last_emit = accepted.size();
       }
+      done = termination.is_met(accepted, true);
     }
 
     return accepted;

@@ -17,6 +17,10 @@
 // id exceeds the table — which only happens if the caller skips
 // register_pair for that pair).
 //
+// register_pair throws std::logic_error if two different shape types
+// report the same static_indexing id (see shape_id_claims.h): the table
+// would otherwise route one type's collisions to the other's narrow phase.
+//
 // See bench/dispatch_compare.cpp for the head-to-head measurements that
 // motivate the design.
 
@@ -29,6 +33,7 @@
 #include <numsim-core/static_indexing.h>
 
 #include "../shapes/shape_base.h"
+#include "../shapes/shape_id_claims.h"
 #include "aabb_overlap.h"
 #include "collision_details.h"
 
@@ -50,8 +55,12 @@ public:
   }
 
   // Register both A→B and B→A so call sites don't need to canonicalise.
+  // Throws std::logic_error if A or B shares its id with another
+  // registered type; the table is left unchanged in that case.
   template <typename A, typename B>
   void register_pair() {
+    _ids.template claim<A>("collision_dispatcher");
+    _ids.template claim<B>("collision_dispatcher");
     grow_to_fit(std::max(A::m_id, B::m_id));
     _table[A::m_id][B::m_id] = &dispatch<A, B>;
     if constexpr (!std::is_same_v<A, B>) {
@@ -107,7 +116,10 @@ public:
     return n;
   }
 
-  void clear() noexcept { _table.clear(); }
+  void clear() noexcept {
+    _table.clear();
+    _ids.clear();
+  }
 
 private:
   collision_dispatcher() = default;
@@ -146,6 +158,7 @@ private:
   }
 
   table_t _table;
+  shape_id_claims _ids;
 };
 
 // Convenience: full two-stage check on a pair of shape_base const&.
@@ -154,7 +167,10 @@ private:
 template <typename T>
 [[nodiscard]] inline bool
 collide_two_stage(shape_base<T> const& a, shape_base<T> const& b) noexcept {
-  if (!aabb_overlap(*a.bounding_box(), *b.bounding_box())) return false;
+  auto const* abb = a.bounding_box();
+  auto const* bbb = b.bounding_box();
+  if (!abb || !bbb) return false;
+  if (!aabb_overlap(*abb, *bbb)) return false;
   return collision_dispatcher<T>::instance()(a, b);
 }
 

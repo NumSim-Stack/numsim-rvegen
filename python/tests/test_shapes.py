@@ -87,18 +87,17 @@ def test_voronoi_cell_unit_cube():
 
 
 def test_mesh_inclusion_from_stl_file():
-    # Smallest STL that the ASCII reader will accept (1 facet).
-    stl = (
-        "solid one\n"
-        "  facet normal 0 0 -1\n"
-        "    outer loop\n"
-        "      vertex -0.5 -0.5 -0.5\n"
-        "      vertex  0.5  0.5 -0.5\n"
-        "      vertex  0.5 -0.5 -0.5\n"
-        "    endloop\n"
-        "  endfacet\n"
-        "endsolid one\n"
-    )
+    # Smallest closed mesh MeshInclusion accepts: a unit tetrahedron
+    # (open meshes are rejected at construction).
+    tet = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    faces = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
+    stl = "solid tet\n"
+    for face in faces:
+        stl += "  facet normal 0 0 0\n    outer loop\n"
+        for i in face:
+            stl += "      vertex {} {} {}\n".format(*tet[i])
+        stl += "    endloop\n  endfacet\n"
+    stl += "endsolid tet\n"
     with tempfile.NamedTemporaryFile(
         suffix=".stl", mode="w", delete=False
     ) as f:
@@ -106,7 +105,8 @@ def test_mesh_inclusion_from_stl_file():
         path = f.name
     try:
         m = rvegen.MeshInclusion.from_stl_file(path)
-        assert m.triangle_count == 1
+        assert m.triangle_count == 4
+        assert m.volume() == pytest.approx(1.0 / 6.0)
         # Translate via the bound mutator — confirms the binding accepts
         # three doubles and forwards to the C++ method.
         m.set_middle_point(10.0, 10.0, 10.0)
@@ -128,6 +128,7 @@ def test_module_exports():
         "VoronoiCell",
         "VoronoiGenerator2d",
         "WeaveGenerator",
+        "WeavePattern",
     ]:
         assert hasattr(rvegen, name), f"rvegen.{name} missing from public API"
 
@@ -207,15 +208,15 @@ def test_voronoi_generator_2d_partition_invariant():
 
 
 def test_weave_generator_builds_expected_tube_count():
-    """4 warp + 3 weft yarns → 7 PolylineTubes in the output list."""
+    """4 warp + 2 weft yarns → 6 PolylineTubes in the output list."""
     gen = rvegen.WeaveGenerator(
         domain_box=(1.0, 1.0, 0.2),
         n_warp_yarns=4,
-        n_weft_yarns=3,
+        n_weft_yarns=2,
         yarn_radius=0.04,
-        amplitude=0.03)
+        amplitude=0.05)
     tubes = gen.build()
-    assert len(tubes) == 7
+    assert len(tubes) == 6
     for t in tubes:
         assert isinstance(t, rvegen.PolylineTube)
         assert t.radius == pytest.approx(0.04)
@@ -226,7 +227,7 @@ def test_weave_generator_phase_tagging_propagates():
     gen = rvegen.WeaveGenerator(
         domain_box=(1.0, 1.0, 0.2),
         n_warp_yarns=2, n_weft_yarns=2,
-        yarn_radius=0.04, amplitude=0.03)
+        yarn_radius=0.04, amplitude=0.05)
     gen.set_warp_phase_name("warp")
     gen.set_weft_phase_name("weft")
     assert gen.warp_phase_name == "warp"
@@ -234,6 +235,45 @@ def test_weave_generator_phase_tagging_propagates():
     # The bound PolylineTube doesn't expose phase_name on the Python
     # side yet (binding limitation, not generator limitation), so the
     # property assertions above are the binding-level test.
+
+
+def test_weave_generator_default_pattern_is_plain():
+    gen = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.2), n_warp_yarns=2, n_weft_yarns=2,
+        yarn_radius=0.04, amplitude=0.05)
+    assert gen.pattern == rvegen.WeavePattern.plain
+
+
+def test_weave_generator_twill_and_satin_patterns():
+    twill = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.3), n_warp_yarns=4, n_weft_yarns=4,
+        yarn_radius=0.04, amplitude=0.05,
+        pattern=rvegen.WeavePattern.twill_2_2)
+    assert twill.pattern == rvegen.WeavePattern.twill_2_2
+    assert len(twill.build()) == 8
+    # Strings are accepted too.
+    satin = rvegen.WeaveGenerator(
+        domain_box=(1.0, 1.0, 0.3), n_warp_yarns=5, n_weft_yarns=5,
+        yarn_radius=0.03, amplitude=0.04, pattern="satin_5")
+    assert satin.pattern == rvegen.WeavePattern.satin_5
+    assert len(satin.build()) == 10
+    with pytest.raises(ValueError, match="unknown pattern"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.3), n_warp_yarns=4, n_weft_yarns=4,
+            yarn_radius=0.04, amplitude=0.05, pattern="basket")
+
+
+def test_weave_generator_pattern_count_validation():
+    """Counts must be multiples of the pattern repeat (4 twill, 5 satin)."""
+    with pytest.raises(RuntimeError, match="multiples of the pattern repeat"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.3), n_warp_yarns=2, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.05, pattern="twill_2_2")
+    with pytest.raises(RuntimeError, match="multiples of the pattern repeat"):
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.3), n_warp_yarns=4, n_weft_yarns=4,
+            yarn_radius=0.03, amplitude=0.04,
+            pattern=rvegen.WeavePattern.satin_5)
 
 
 def test_weave_generator_validates_inputs():
@@ -248,6 +288,18 @@ def test_weave_generator_validates_inputs():
             domain_box=(1.0, 1.0, 0.2),
             n_warp_yarns=2, n_weft_yarns=2,
             yarn_radius=-0.01, amplitude=0.03)
+    with pytest.raises(RuntimeError, match="multiples of the pattern repeat"):
+        # Odd counts cannot tile a periodic plain weave.
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.2),
+            n_warp_yarns=3, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.05)
+    with pytest.raises(RuntimeError, match="amplitude must be"):
+        # amplitude < yarn_radius → yarns interpenetrate at crossings.
+        rvegen.WeaveGenerator(
+            domain_box=(1.0, 1.0, 0.2),
+            n_warp_yarns=2, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.03)
     with pytest.raises(RuntimeError, match="2D domain"):
         # 2D (Lz=0) + non-zero amplitude is geometrically nonsensical.
         rvegen.WeaveGenerator(

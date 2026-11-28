@@ -9,8 +9,8 @@ The single biggest adoption-barrier reduction. Researchers script in
 Python; right now they have to shell out to the CLI or write a JSON
 config and read the result file back. Native pybind11 module would
 make rvegen useful in Jupyter notebooks, pipelines that mix it with
-scikit-learn / scipy, and as a backend behind FFT solvers driven from
-Python (DAMASK has Python bindings, AMITEX is moving that way).
+scikit-learn / scipy, and as a geometry source for solvers that are
+driven from Python.
 
 ### Proposed module
 
