@@ -348,6 +348,12 @@ add_executable(rvegen_shape_id_unique_test tests/shape_id_unique_test.cpp)
 target_link_libraries(rvegen_shape_id_unique_test PRIVATE rvegen_lib)
 add_test(NAME shape_id_unique_test COMMAND rvegen_shape_id_unique_test)
 
+# Periodic copies linked to their primary (#121): lattice shift, shared id,
+# and every count going by is_primary() instead of a centre test.
+add_executable(rvegen_periodic_images_test tests/periodic_images_test.cpp)
+target_link_libraries(rvegen_periodic_images_test PRIVATE rvegen_lib)
+add_test(NAME periodic_images_test COMMAND rvegen_periodic_images_test)
+
 # Shared helpers (#135): wrap_to_box, format_number, extent_of.
 add_executable(rvegen_shared_helpers_test tests/shared_helpers_test.cpp)
 target_link_libraries(rvegen_shared_helpers_test PRIVATE rvegen_lib)

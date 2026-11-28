@@ -171,6 +171,14 @@ object whose entries are copied onto each shape the input produces:
 `"metadata": {"batch": "A7", "angle_deg": 42.5}`. (The same object as a
 JSON-encoded string, the form older configs use, is still accepted.)
 
+**Periodic copies.** A periodic generator (`periodic`, and `voronoi_2d` /
+`voronoi_3d` with `"periodic": true`) returns each inclusion that crosses a
+face together with its translated copies, so writers see the complete box. A
+copy is linked to its primary: it carries the lattice shift from it and both
+share an inclusion id. Inclusion counts, volume fractions, statistics, phase
+assignment by index and shape-index voxel output all count such an inclusion
+once, including one centred exactly on a face or a corner.
+
 ### Worked examples
 
 `examples/` holds one config per feature area (2D/3D, periodic, polydisperse,

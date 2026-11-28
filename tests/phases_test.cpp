@@ -143,17 +143,35 @@ void test_by_index_unique_inclusions() {
   auto phases = make_phases();
   // primary, wrap (centre outside), primary, primary
   shapes_t s;
+  const std::array<double, 3> box{1.0, 1.0, 0.0};
   s.push_back(std::make_unique<rvegen::circle<double>>(0.95, 0.5, 0.1));
-  s.push_back(std::make_unique<rvegen::circle<double>>(1.05, 0.5, 0.1));   // wrap of #0
+  auto wraps = rvegen::generate_periodic_wraps(*s[0], box);   // copy at x = -0.05
+  REQUIRE(wraps.size() == 1);
+  s.push_back(std::move(wraps[0]));
   s.push_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.1));
   s.push_back(std::make_unique<rvegen::circle<double>>(0.2, 0.2, 0.05));
+  // A corner inclusion whose copies come AFTER other primaries (as the
+  // Voronoi generators append them): they still get their primary's index.
+  s.push_back(std::make_unique<rvegen::circle<double>>(0.02, 0.98, 0.05));
+  auto corner = rvegen::generate_periodic_wraps(*s[4], box);
+  REQUIRE(corner.size() == 3);
+  s.push_back(std::make_unique<rvegen::circle<double>>(0.7, 0.2, 0.05));
+  for (auto& w : corner) s.push_back(std::move(w));
   rvegen::phase_assignment<double>::from_json(
-      json::parse(R"({"by_index": {"0": "fibre", "1": "filler", "2": "matrix"}})"),
-      phases).apply(s, std::array<double, 3>{1.0, 1.0, 0.0});
+      json::parse(R"({"by_index": {"0": "fibre", "1": "filler", "2": "matrix",
+                                   "3": "fibre", "4": "filler"}})"),
+      phases).apply(s);
   REQUIRE(s[0]->phase_name() == "fibre");
-  REQUIRE(s[1]->phase_name() == "fibre");    // wrap follows its primary
+  REQUIRE(s[1]->phase_name() == "fibre");    // copy follows its primary
+  REQUIRE(!s[1]->is_primary());
   REQUIRE(s[2]->phase_name() == "filler");
   REQUIRE(s[3]->phase_name() == "matrix");
+  REQUIRE(s[4]->phase_name() == "fibre");    // inclusion 3
+  REQUIRE(s[5]->phase_name() == "filler");   // inclusion 4
+  for (std::size_t i = 6; i < 9; ++i) {
+    REQUIRE(!s[i]->is_primary());
+    REQUIRE(s[i]->phase_name() == "fibre");  // copies of inclusion 3
+  }
 }
 
 void test_by_index_overlap_and_order() {

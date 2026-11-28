@@ -45,6 +45,7 @@ public:
   shape_base(shape_base const& other)
       : _info{other._info},
         _inclusion_id{other._inclusion_id},
+        _image_shift{other._image_shift},
         _bounding_box{other._bounding_box ? other._bounding_box->clone()
                                           : nullptr} {}
 
@@ -61,6 +62,7 @@ protected:
     if (this != &other) {
       _info = other._info;
       _inclusion_id = other._inclusion_id;
+      _image_shift = other._image_shift;
       _bounding_box = other._bounding_box ? other._bounding_box->clone()
                                           : nullptr;
     }
@@ -131,7 +133,7 @@ public:
   }
 
   // Periodic-equivalence tag: a primary and its periodic wraps share one
-  // id (stamped by periodic_generator only when wraps exist). Kept out of
+  // id (stamped by generate_periodic_wraps only when wraps exist). Kept out of
   // `info()` so it cannot collide with user metadata keys or show up in
   // every shape's exported metadata. Copied by clone().
   [[nodiscard]] std::optional<std::size_t> inclusion_id() const noexcept {
@@ -139,9 +141,28 @@ public:
   }
   void set_inclusion_id(std::size_t id) noexcept { _inclusion_id = id; }
 
+  // Periodic image information (#121). A shape is either a primary (the
+  // inclusion as it was placed; shift {0, 0, 0}) or a periodic copy of one:
+  // the same inclusion translated by image_shift()[k] * domain_box[k] along
+  // each axis. A copy shares its primary's inclusion_id(), so the primary
+  // can be found again; generate_periodic_wraps() sets both. Consumers that
+  // must count an inclusion once (terminations, statistics, shape-index
+  // output, phase assignment) test is_primary() instead of guessing from
+  // where the centre lies. Copied by clone().
+  [[nodiscard]] std::array<int, 3> const& image_shift() const noexcept {
+    return _image_shift;
+  }
+  void set_image_shift(std::array<int, 3> shift) noexcept {
+    _image_shift = shift;
+  }
+  [[nodiscard]] bool is_primary() const noexcept {
+    return _image_shift[0] == 0 && _image_shift[1] == 0 && _image_shift[2] == 0;
+  }
+
 protected:
   rvegen::info _info;
   std::optional<std::size_t> _inclusion_id{};
+  std::array<int, 3> _image_shift{0, 0, 0};
   std::unique_ptr<bounding_box_base<value_type>> _bounding_box{};
 };
 

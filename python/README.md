@@ -109,6 +109,11 @@ print(len(res), res.summary)          # seed, n_shapes, domain_box, volume_fract
 for s in res:
     print(s.kind, s.center, s.area())
 
+# A periodic generator also returns the copies that cross a face. A copy is
+# linked to its primary: s.is_primary is False, s.image_shift is the lattice
+# translation (i, j, k) from the primary, and both share s.inclusion_id.
+inclusions = [s for s in res if s.is_primary]
+
 # Validate without generating: raises on the first problem, writes nothing.
 rvegen.check(config)
 

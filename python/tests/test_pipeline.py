@@ -358,6 +358,34 @@ def test_voronoi_follows_run_seed():
     assert c1 != areas(rvegen.run(cfg, postprocess=False))
 
 
+def test_periodic_copies_are_linked_to_their_primary():
+    cfg = {
+        "domain_box": [1.0, 1.0, 0.0], "seed": 3,
+        "distributions": {"x": {"type": "uniform_real", "a": 0.0, "b": 1.0},
+                          "r": {"type": "uniform_real", "a": 0.05, "b": 0.09}},
+        "shapes": [{"type": "circle_input", "pos_x_dist": "x",
+                    "pos_y_dist": "x", "radius_dist": "r"}],
+        "generator": {"type": "periodic", "max_attempts": 100000},
+        "termination": {"type": "number_of_inclusions", "target": 20},
+    }
+    res = rvegen.run(cfg, postprocess=False)
+    primaries = [s for s in res if s.is_primary]
+    copies = [s for s in res if not s.is_primary]
+    assert len(primaries) == 20 and copies          # some cross a face
+    by_id = {p.inclusion_id: p for p in primaries if p.inclusion_id is not None}
+    for c in copies:
+        p = by_id[c.inclusion_id]
+        assert c.image_shift != (0, 0, 0) and p.image_shift == (0, 0, 0)
+        for k in range(2):                              # copy = primary + shift * L
+            assert abs(c.center[k] - (p.center[k] + c.image_shift[k] * 1.0)) < 1e-12
+        assert c.area() == p.area()
+    # A shape without copies has no id; the summary counts each inclusion once.
+    assert any(p.inclusion_id is None for p in primaries)
+    import math
+    assert math.isclose(res.summary["volume_fraction"],
+                        sum(p.area() for p in primaries), rel_tol=1e-12)
+
+
 # ---- #129: paths relative to the config file, output_dir, log callback ----
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
