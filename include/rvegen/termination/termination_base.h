@@ -15,6 +15,20 @@ namespace rvegen {
 //   * number_of_inclusions: stop after N accepted shapes
 //   * volume_fraction:      stop after sum-of-volumes >= target ratio of box
 //   * max_iterations:       stop after N attempts (success or failure)
+// What a criterion has added up over the first `seen` accepted shapes. A
+// generator keeps one per run and passes it to is_met() after every
+// acceptance, so a criterion that adds something up per shape looks at the
+// new shapes only instead of at all of them: with a pass over all accepted
+// shapes per acceptance a run costs the square of the number of inclusions
+// (#153). Between two calls with the same tally the accepted list may only
+// grow at its end.
+template <typename T>
+struct termination_tally {
+  std::size_t seen{0};    // shapes of `accepted` already included
+  T sum{};                // for criteria that add a measure
+  std::size_t count{0};   // for criteria that count
+};
+
 template <typename T>
 class termination_base {
 public:
@@ -46,6 +60,16 @@ public:
   // override whichever applies; the defaults of 0 mean "unknown" and
   // surface in Tessera's progress bar as a count-only display rather
   // than a percentage.
+  // is_met() with a running tally. The answer is the one is_met(accepted,
+  // count_all) gives, bit for bit: an overrider adds the new shapes in the
+  // order of the list, which is the order of the full pass. The default is
+  // the full pass, so a criterion that keeps no tally needs no override.
+  [[nodiscard]] virtual bool is_met(shape_vector const& accepted,
+                                    bool count_all,
+                                    termination_tally<T>& /*tally*/) const {
+    return is_met(accepted, count_all);
+  }
+
   [[nodiscard]] virtual std::size_t target_count() const noexcept { return 0; }
   [[nodiscard]] virtual double target_volume_fraction() const noexcept { return 0.0; }
 

@@ -78,7 +78,10 @@ public:
     // Every accepted shape is inside the box (hence a primary), so the
     // primaries filter is skipped (count_all): O(1) for number_of_inclusions.
     gap_neighbourhood<value_type> placed{_gap};
-    bool done = termination.is_met(accepted, true);
+    // The tally lets the criterion look at the new shapes only (#153).
+    termination_tally<value_type> tally;
+    running_volume_fraction<value_type> filled{domain_box};
+    bool done = termination.is_met(accepted, true, tally);
 
     while (!done && attempts < _max_attempts) {
       if (opts.cancel()) {
@@ -124,10 +127,10 @@ public:
       if (accepted.size() - last_emit >= opts.emit_every) {
         opts.on_progress({accepted.size(),
                           termination.target_count(),
-                          current_volume_fraction(accepted, domain_box)});
+                          filled(accepted)});
         last_emit = accepted.size();
       }
-      done = termination.is_met(accepted, true);
+      done = termination.is_met(accepted, true, tally);
     }
 
     this->record_report(termination, accepted, true, attempts,

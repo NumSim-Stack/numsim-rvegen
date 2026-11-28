@@ -370,6 +370,11 @@ add_executable(rvegen_voxel_stats_3d_test tests/voxel_stats_3d_test.cpp)
 target_link_libraries(rvegen_voxel_stats_3d_test PRIVATE rvegen_lib)
 add_test(NAME voxel_stats_3d_test COMMAND rvegen_voxel_stats_3d_test)
 
+# Running tally of the termination criteria (#153).
+add_executable(rvegen_termination_tally_test tests/termination_tally_test.cpp)
+target_link_libraries(rvegen_termination_tally_test PRIVATE rvegen_lib)
+add_test(NAME termination_tally_test COMMAND rvegen_termination_tally_test)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)

@@ -50,6 +50,16 @@ public:
     return count(accepted, count_all) >= _target;
   }
 
+  [[nodiscard]] bool is_met(shape_vector const& accepted, bool count_all,
+                            termination_tally<T>& tally) const override {
+    if (count_all) return accepted.size() >= _target;
+    if (accepted.size() < tally.seen) tally = {};   // not the list it knew
+    for (; tally.seen < accepted.size(); ++tally.seen) {
+      if (accepted[tally.seen]->is_primary()) ++tally.count;
+    }
+    return tally.count >= _target;
+  }
+
   [[nodiscard]] std::string kind() const override {
     return "number_of_inclusions";
   }
