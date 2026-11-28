@@ -206,6 +206,9 @@ private:
   write_counted(std::ostream& out, shape_vector const& shapes,
                 domain<value_type> const& domain_box) const {
     const bool partial = _subsamples != 1;
+    // Too many phases for the fraction array: refuse before anything is
+    // sampled or written (run() has checked already, write() has not).
+    const std::size_t components = partial ? fraction_components() : 0;
     voxel_fractions fractions;
     if (partial) {
       fractions = _phases
@@ -289,7 +292,6 @@ private:
 
     // One line of shares per cell. A share is samples / samples per cell;
     // its text is looked up, the line of a cell with a single id cached.
-    const std::size_t components = fraction_components();
     const bool by_phase = _phases != nullptr;
     auto component_of = [&](phase_id id) -> std::size_t {
       return by_phase ? std::size_t{id} : (id == 0 ? 0 : 1);

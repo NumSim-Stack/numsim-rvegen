@@ -47,6 +47,12 @@ namespace rvegen {
 // per voxel is far beyond what a volume fraction needs, and the cost of
 // sampling grows with the number of points.
 inline constexpr std::size_t max_voxel_subsamples = 16;
+// Sample points the sampler holds at a time (4 bytes each): it works
+// through a layer of voxels in bands of rows that fit this, one row of
+// voxels at the least, and refuses a grid whose single row is beyond
+// max_voxel_row_samples.
+inline constexpr std::size_t voxel_sample_buffer_entries = std::size_t{1} << 24;
+inline constexpr std::uint64_t max_voxel_row_samples = std::uint64_t{1} << 28;
 
 // The part of one voxel that belongs to one id: `samples` of the voxel's
 // sample points.
@@ -100,13 +106,31 @@ id_table_size(std::vector<phase_id> const& shape_to_id, phase_id fill) {
 // sample points) exactly as sample_voxel_grid_with_ids rasterises the
 // whole grid, then reduced to shares, so the memory beyond the result is
 // one fine layer.
+// Sample points of one row of voxels (along x): what the sampler holds at
+// the least. Throws when that alone is beyond `max_voxel_row_samples`.
+[[nodiscard]] inline std::size_t
+checked_voxel_row_samples(std::size_t nx, std::size_t subsamples,
+                          std::size_t subsamples_z) {
+  const std::uint64_t per_voxel =
+      std::uint64_t{subsamples} * subsamples * subsamples_z;   // <= 16^3
+  if (std::uint64_t{nx} > max_voxel_row_samples / per_voxel) {
+    throw std::invalid_argument{
+        "voxel grid: nx * subsamples^" +
+        std::string{subsamples_z > 1 ? "3" : "2"} +
+        " sample points in a row of voxels exceed the 2^28 limit (nx=" +
+        std::to_string(nx) + ", subsamples=" + std::to_string(subsamples) + ")"};
+  }
+  return static_cast<std::size_t>(nx * per_voxel);
+}
+
 template <typename T>
 [[nodiscard]] voxel_fractions sample_voxel_fractions_with_ids(
     std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
     std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz, std::size_t subsamples,
     std::vector<phase_id> const& shape_to_id, phase_id fill,
-    cancel_fn const* cancel) {
+    cancel_fn const* cancel,
+    std::size_t buffer_entries = voxel_sample_buffer_entries) {
   if (subsamples == 0 || subsamples > max_voxel_subsamples) {
     throw std::invalid_argument{
         "voxel grid: subsamples must be between 1 and " +
@@ -177,8 +201,14 @@ template <typename T>
       in_layer[layer].push_back(si);
   }
 
+  // The sample points are held for a band of voxel rows of one layer at a
+  // time: as many rows as fit `buffer_entries`, at least one.
   const std::size_t layer_voxels = nx * ny;
-  std::vector<phase_id> fine(checked_voxel_count(fx, fy, kz));
+  const std::size_t row_entries = checked_voxel_row_samples(nx, k, kz);
+  const std::size_t band_rows =
+      std::min(ny, std::max<std::size_t>(1, buffer_entries / row_entries));
+  const std::size_t by = band_rows * k;   // rows of sample points in a band
+  std::vector<phase_id> fine(band_rows * row_entries);
   std::vector<phase_id> cell(out.samples_per_voxel);
   for (std::size_t layer = 0; layer < nz_eff; ++layer) {
     if (in_layer[layer].empty()) {   // nothing but `fill`, as initialised
@@ -187,19 +217,30 @@ template <typename T>
           std::uint64_t{layer_voxels} * out.samples_per_voxel;
       continue;
     }
-    std::fill(fine.begin(), fine.end(), fill);
     const std::size_t z_begin = layer * kz, z_end = z_begin + kz;
+    for (std::size_t j_begin = 0; j_begin < ny; j_begin += band_rows) {
+    const std::size_t j_end = std::min(ny, j_begin + band_rows);
+    const std::size_t y_begin = j_begin * k, y_end = j_end * k;
+    bool painted = false;
     for (const std::size_t si : in_layer[layer]) {
       auto const& shape = shapes[si];
       auto const& s = spans[si];
+      const std::size_t j0 = std::max(s.j0, y_begin);
+      const std::size_t j1 = std::min(s.j1, y_end);
+      if (j0 >= j1) continue;
+      if (!painted) {
+        std::fill(fine.begin(), fine.end(), fill);
+        painted = true;
+      }
       const phase_id id = shape_to_id[si];
       for (std::size_t kk = std::max(s.k0, z_begin);
            kk < std::min(s.k1, z_end); ++kk) {
         const auto z = is_3d ? (static_cast<T>(kk) + T{0.5}) * dz : T{0};
-        for (std::size_t jj = s.j0; jj < s.j1; ++jj) {
+        for (std::size_t jj = j0; jj < j1; ++jj) {
           poll_cancel(cancel);   // once per row of sample points
           const auto y = (static_cast<T>(jj) + T{0.5}) * dy;
-          phase_id* const row = fine.data() + ((kk - z_begin) * fy + jj) * fx;
+          phase_id* const row =
+              fine.data() + ((kk - z_begin) * by + (jj - y_begin)) * fx;
           for (std::size_t ii = s.i0; ii < s.i1; ++ii) {
             const auto x = (static_cast<T>(ii) + T{0.5}) * dx;
             if (shape->is_inside(std::array<T, 3>{x, y, z})) row[ii] = id;
@@ -207,8 +248,14 @@ template <typename T>
         }
       }
     }
-    // Reduce the fine layer to one entry per voxel.
-    for (std::size_t j = 0; j < ny; ++j) {
+    if (!painted) {   // no shape reaches this band
+      poll_cancel(cancel);
+      out.samples_of_id[fill] +=
+          std::uint64_t{(j_end - j_begin) * nx} * out.samples_per_voxel;
+      continue;
+    }
+    // Reduce the band to one entry per voxel.
+    for (std::size_t j = j_begin; j < j_end; ++j) {
       poll_cancel(cancel);
       for (std::size_t i = 0; i < nx; ++i) {
         std::size_t n = 0;
@@ -216,7 +263,7 @@ template <typename T>
         for (std::size_t c = 0; c < kz; ++c) {
           for (std::size_t b = 0; b < k; ++b) {
             phase_id const* const row =
-                fine.data() + (c * fy + j * k + b) * fx + i * k;
+                fine.data() + (c * by + (j - j_begin) * k + b) * fx + i * k;
             for (std::size_t a = 0; a < k; ++a) {
               cell[n] = row[a];
               pure = pure && cell[n] == cell[0];
@@ -248,6 +295,7 @@ template <typename T>
         }
       }
     }
+    }   // band
   }
   out.first.push_back(out.shares.size());
   return out;
@@ -312,7 +360,8 @@ count_voxel_ids(std::vector<phase_id> const& grid) {
 // that counts as material of the RVE (is_counted_in_rve: a periodic
 // inclusion once) goes to the shape's id, the rest of the domain to `fill`.
 // Where shapes overlap or leave the box the sum is not the covered part,
-// and the two numbers differ for that reason too.
+// and the two numbers differ for that reason too; the fractions add up to
+// more than 1 when the sizes exceed the box.
 template <typename T>
 [[nodiscard]] std::vector<double> shape_size_fractions(
     std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
@@ -327,7 +376,9 @@ template <typename T>
     fraction[shape_to_id[s]] += part;
     covered += part;
   }
-  fraction[fill] += 1.0 - covered;
+  // Shapes that overlap or leave the box add up to more than the box:
+  // nothing is left for `fill` then, and the fractions sum to more than 1.
+  fraction[fill] += std::max(0.0, 1.0 - covered);
   return fraction;
 }
 
@@ -341,6 +392,8 @@ struct voxel_resolution {
   // The counts that give the thinnest shape `wanted` voxels (never below
   // the given ones; an axis that is not sampled keeps its count).
   std::array<std::size_t, 3> suggested{0, 0, 0};
+  // false: the suggested grid has more than the 2^32 voxels a grid may have.
+  bool suggestion_fits{true};
   bool sampled_z{false};
 
   [[nodiscard]] double voxels_across() const noexcept {
@@ -355,7 +408,10 @@ struct voxel_resolution {
     std::string text =
         std::to_string(under) + " of " + std::to_string(shapes) +
         (shapes == 1 ? " shape is" : " shapes are") + " less than " +
-        detail::short_number(wanted) + " voxels across: the thinnest is " +
+        detail::short_number(wanted) + " voxels across: ";
+    if (!(smallest_width > 0.0))   // a degenerate shape: no grid resolves it
+      return text + "the thinnest has no width";
+    text += "the thinnest is " +
         detail::short_number(smallest_width) + " wide, " +
         detail::short_number(voxels_across(), 3) + " voxels of " +
         detail::short_number(voxel) + ". nx >= " +
@@ -363,6 +419,8 @@ struct voxel_resolution {
         std::to_string(suggested[1]);
     if (sampled_z) text += ", nz >= " + std::to_string(suggested[2]);
     text += " gives it " + detail::short_number(wanted) + " voxels";
+    if (!suggestion_fits)
+      text += ", which is more than the 2^32 voxels a grid may have";
     return text;
   }
 };
@@ -395,7 +453,7 @@ template <typename T>
   for (auto const& shape : shapes) {
     if (!shape->is_primary()) continue;
     const double width = static_cast<double>(shape->min_width());
-    if (!(width > 0.0) || !std::isfinite(width)) continue;
+    if (!(width >= 0.0) || !std::isfinite(width)) continue;   // unknown
     ++r.shapes;
     smallest = std::min(smallest, width);
     // A hair under the threshold from rounding is not under-resolved.
@@ -403,13 +461,16 @@ template <typename T>
   }
   if (r.shapes == 0) return r;
   r.smallest_width = smallest;
-  if (r.under == 0) return r;
+  if (r.under == 0 || !(smallest > 0.0)) return r;
+  const double cap = static_cast<double>(max_voxel_count);
+  double product = 1.0;
   for (int a = 0; a < axes; ++a) {
     const double n = std::ceil(wanted * length[a] / smallest * (1.0 - 1e-9));
-    const double cap = static_cast<double>(max_voxel_count);
     r.suggested[a] = std::max(
         count[a], static_cast<std::size_t>(std::min(n, cap)));
   }
+  for (const auto n : r.suggested) product *= static_cast<double>(n);
+  r.suggestion_fits = product <= cap;
   return r;
 }
 
@@ -426,8 +487,8 @@ void add_voxel_sampling_parameters(parameter_controller_t& s) {
 }
 
 // Reject a grid or a subsample count that cannot be sampled, before any
-// file is created: the voxel count, and the sample points of one layer of
-// voxels, which are held in memory at a time.
+// file is created: the voxel count, and the sample points of one row of
+// voxels, which is the least the sampler holds in memory.
 template <typename T>
 void validate_voxel_sampling(domain<T> const& domain_box, std::size_t nx,
                              std::size_t ny, std::size_t nz,
@@ -439,19 +500,8 @@ void validate_voxel_sampling(domain<T> const& domain_box, std::size_t nx,
         std::to_string(max_voxel_subsamples) + ", got " +
         std::to_string(subsamples)};
   }
-  if (subsamples > 1) {
-    try {
-      (void)checked_voxel_count(nx * subsamples, ny * subsamples,
-                                domain_box.is_3d() ? subsamples : 1);
-    } catch (std::invalid_argument const&) {
-      throw std::invalid_argument{
-          "voxel grid: nx * ny * subsamples^" +
-          std::string{domain_box.is_3d() ? "3" : "2"} +
-          " sample points per layer exceed the 2^32 limit (nx=" +
-          std::to_string(nx) + ", ny=" + std::to_string(ny) +
-          ", subsamples=" + std::to_string(subsamples) + ")"};
-    }
-  }
+  (void)detail::checked_voxel_row_samples(
+      nx, subsamples, domain_box.is_3d() ? subsamples : 1);
 }
 
 // What a voxel writer says about the grid it wrote (#115):
@@ -495,25 +545,30 @@ void report_voxel_sampling(
       grid += ", " + k + " x " + k + (is_3d ? " x " + k : std::string{}) +
               " sample points each";
     }
+    double sum_of_shapes = 0.0;
+    for (const double f : of_shapes) sum_of_shapes += f;
+    // More than the box: the sizes count overlaps (or parts outside) twice.
+    const std::string excess =
+        sum_of_shapes > 1.0 + 1e-9
+            ? "; the shapes overlap or leave the box, their sizes add up "
+              "to more than the box"
+            : "";
     std::string line;
     if (phases == nullptr) {
       line = "volume fraction of the inclusions " +
              detail::short_number(1.0 - on_grid(0)) + " on the grid, " +
-             detail::short_number(1.0 - of_shapes[0]) +
-             " from the shape sizes (" + grid + ")";
+             detail::short_number(sum_of_shapes - of_shapes[0]) +
+             " from the shape sizes (" + grid + ")" + excess;
     } else {
       line = "volume fractions on the grid (from the shape sizes): ";
       std::vector<std::pair<std::size_t, std::string>> names;
-      bool zero_named = false;
-      for (auto const* p : phases->ordered()) {
+      for (auto const* p : phases->ordered())
         names.emplace_back(static_cast<std::size_t>(p->id), p->name);
-        zero_named = zero_named || p->id == 0;
-      }
-      // Id 0 without a phase of its own: shapes without a phase name and,
-      // when no matrix phase is declared, everything no shape covers.
+      // Id 0 is no phase's id (they start at 1): shapes without a phase
+      // name and, when no matrix phase is declared, what no shape covers.
       const double zero_grid = on_grid(0);
       const double zero_shapes = of_shapes.empty() ? 0.0 : of_shapes[0];
-      if (!zero_named && (zero_grid > 0.0 || std::abs(zero_shapes) > 1e-12))
+      if (zero_grid > 0.0 || std::abs(zero_shapes) > 1e-12)
         names.emplace_back(0, phases->has_matrix() ? "untagged (id 0)"
                                                     : "unassigned (id 0)");
       constexpr std::size_t listed = 12;
@@ -528,7 +583,7 @@ void report_voxel_sampling(
       }
       if (names.size() > listed)
         line += ", and " + std::to_string(names.size() - listed) + " more";
-      line += " (" + grid + ")";
+      line += " (" + grid + ")" + excess;
     }
     info(line);
   }

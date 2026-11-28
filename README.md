@@ -235,15 +235,19 @@ help with both:
   phases are declared):
   `post-process 'voxel': volume fraction of the inclusions 0.3018 on the grid, 0.3004 from the shape sizes (64 x 64 voxels)`.
   The second number adds up the shapes, so it is not the covered part where
-  shapes overlap or are cut by the box.
+  shapes overlap or are cut by the box; when the sizes add up to more than
+  the box, the line says so.
 - **Resolution check.** A warning names the thinnest shape when it is fewer
   than `min_voxels_per_feature` voxels across (default 8, 0 switches the
   check off) and the grid that would give it that many:
   `15 of 15 shapes are less than 8 voxels across: the thinnest is 0.04 wide, 1.28 voxels of 0.03125. nx >= 200, ny >= 200, nz >= 200 gives it 8 voxels`.
   The width of a shape is its smallest distance across (diameter of a
   circle, sphere or tube, minor axis of an ellipse, short side of a box,
-  width of a polygon or grain); for a mesh inclusion it is the smallest side
-  of its bounding box, which is too large for a thin part at an angle. Most
+  width of a polygon). Two widths are upper bounds, so a thin shape of
+  these kinds can pass unnoticed: a 3D grain takes the smallest extent along
+  its face normals (a sliver between two edges is thinner), a mesh inclusion
+  the smallest side of its bounding box (a thin part at an angle is
+  thinner). Most
   of the 3D examples keep a coarse grid so that they run in a moment, and
   say so when run.
 - **Partial volumes.** `"subsamples": k` (1 to 16) samples every voxel at
@@ -257,7 +261,9 @@ help with both:
     number of such lines. Voxels that are not listed belong to one id.
   - `vtk_legacy` (format v4): a second cell array `volume_fraction` with one
     component per phase id (component 0: no phase), or without phases two
-    components (no shape, any shape). At most 255 components.
+    components (no shape, any shape). At most 255 components. Without
+    phases the array therefore does not say which inclusions or grains
+    share a voxel; the `voxel` file does.
 
   With `"subsamples": 1`, the default, both files are what they were (v3).
   With 4 x 4 points the volume fraction of a 64 x 64 grid of circles is

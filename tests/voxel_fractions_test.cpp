@@ -296,16 +296,169 @@ void test_bad_arguments() {
   REQUIRE(f.dominant == std::vector<phase_id>(12, 0));
   REQUIRE(f.mixed.empty() && f.fraction_of(0) == 1.0);
   REQUIRE(f.fraction_of(7) == 0.0);
-  // The sample points of one layer are bounded like a grid.
+  // The sample points of one row of voxels are bounded: that row is the
+  // least the sampler holds, whatever the rest of the grid is.
   bool threw = false;
   try {
-    rvegen::validate_voxel_sampling(box, std::size_t{1} << 15,
-                                    std::size_t{1} << 15, 1, 8);
+    rvegen::validate_voxel_sampling(box, std::size_t{1} << 24, 1, 1, 16);
   } catch (std::invalid_argument const& e) {
-    threw = std::string{e.what()}.find("sample points") != std::string::npos;
+    threw = std::string{e.what()}.find("sample points in a row") !=
+            std::string::npos;
   }
   REQUIRE(threw);
   rvegen::validate_voxel_sampling(box, 64, 64, 1, 16);   // fine
+  // A grid whose layer is far more than the buffer is fine too: the layer
+  // is worked through in bands of rows.
+  rvegen::validate_voxel_sampling(box, std::size_t{1} << 15,
+                                  std::size_t{1} << 15, 1, 16);
+}
+
+// The sampler holds a band of voxel rows at a time. Whatever the band
+// (one row, a few, the whole layer), the result is the same.
+void test_bands_of_rows() {
+  auto same = [](rvegen::voxel_fractions const& a,
+                 rvegen::voxel_fractions const& b) {
+    return a.dominant == b.dominant && a.mixed == b.mixed &&
+           a.first == b.first && a.shares == b.shares &&
+           a.samples_of_id == b.samples_of_id;
+  };
+  {
+    const rvegen::domain<double> box{{1.3, 0.7, 0.0}};
+    auto shapes = shapes_2d(11, 25, 1.3, 0.7);
+    // One shape confined to a few rows, so that some bands hold nothing.
+    shape_vector few;
+    few.push_back(make<rvegen::circle<double>>(0.4, 0.2, 0.05));
+    for (auto const* set : {&shapes, &few}) {
+      const auto ids = rvegen::detail::inclusion_index_of_shapes(*set);
+      const auto whole = rvegen::detail::sample_voxel_fractions_with_ids(
+          *set, box, 19, 23, 1, 3, ids, 0, nullptr);
+      compare(whole, brute_force(*set, box, 19, 23, 1, 3, ids, 0), 3, false);
+      // A row of voxels is 19 * 9 sample points.
+      for (std::size_t buffer : {std::size_t{1}, std::size_t{19 * 9},
+                                 std::size_t{19 * 9 * 2 + 5},
+                                 std::size_t{19 * 9 * 22}}) {
+        REQUIRE(same(whole, rvegen::detail::sample_voxel_fractions_with_ids(
+                                *set, box, 19, 23, 1, 3, ids, 0, nullptr,
+                                buffer)));
+      }
+    }
+  }
+  {
+    const std::array<double, 3> l{1.0, 0.8, 1.6};
+    const rvegen::domain<double> box{l};
+    const auto shapes = shapes_3d(12, 14, l);
+    const auto ids = rvegen::detail::inclusion_index_of_shapes(shapes);
+    const auto whole = rvegen::detail::sample_voxel_fractions_with_ids(
+        shapes, box, 9, 7, 5, 2, ids, 0, nullptr);
+    for (std::size_t buffer : {std::size_t{1}, std::size_t{9 * 8 * 3}}) {
+      REQUIRE(same(whole, rvegen::detail::sample_voxel_fractions_with_ids(
+                              shapes, box, 9, 7, 5, 2, ids, 0, nullptr,
+                              buffer)));
+    }
+  }
+}
+
+// Shapes the sampler cannot cull: without a bounding box they are tested
+// at every sample point. Periodic copies, which share their inclusion's id.
+// And single precision, where the sample points are float values.
+template <typename T>
+void reference_more_shapes() {
+  using ptr = std::unique_ptr<rvegen::shape_base<T>>;
+  using vec = std::vector<ptr>;
+  auto check = [](vec const& shapes, rvegen::domain<T> const& box,
+                  std::size_t nx, std::size_t ny, std::size_t nz,
+                  std::size_t k) {
+    const auto ids = rvegen::detail::inclusion_index_of_shapes(shapes);
+    const bool is_3d = box.is_3d();
+    const std::size_t nz_eff = is_3d ? nz : 1, kz = is_3d ? k : 1;
+    reference r;
+    r.voxels.resize(nx * ny * nz_eff);
+    const T dx = box[0] / static_cast<T>(nx * k);
+    const T dy = box[1] / static_cast<T>(ny * k);
+    const T dz = is_3d ? box[2] / static_cast<T>(nz_eff * kz) : T{0};
+    for (std::size_t c = 0; c < nz_eff * kz; ++c)
+      for (std::size_t b = 0; b < ny * k; ++b)
+        for (std::size_t a = 0; a < nx * k; ++a) {
+          const std::array<T, 3> p{
+              (static_cast<T>(a) + T{0.5}) * dx,
+              (static_cast<T>(b) + T{0.5}) * dy,
+              is_3d ? (static_cast<T>(c) + T{0.5}) * dz : T{0}};
+          phase_id id = 0;
+          for (std::size_t s = 0; s < shapes.size(); ++s)
+            if (shapes[s]->is_inside(p)) {
+              id = ids[s];
+              break;
+            }
+          ++r.voxels[((c / kz) * ny + b / k) * nx + a / k][id];
+          ++r.totals[id];
+        }
+    compare(rvegen::sample_voxel_fractions(shapes, box, nx, ny, nz, k), r, k,
+            is_3d);
+    if (k == 1) {
+      REQUIRE(rvegen::sample_voxel_fractions(shapes, box, nx, ny, nz, 1)
+                  .dominant ==
+              rvegen::sample_voxel_grid(shapes, box, nx, ny, nz));
+    }
+  };
+  std::mt19937 engine{21};
+  std::uniform_real_distribution<double> u{0.0, 1.0};
+  auto next = [&] { return static_cast<T>(u(engine)); };
+  {   // 2D: every other shape without a bounding box, one covering all
+    const rvegen::domain<T> box{{T(1.3), T(0.7), T(0)}};
+    vec shapes;
+    for (int s = 0; s < 14; ++s) {
+      auto c = std::make_unique<rvegen::circle<T>>(
+          next() * T(1.3), next() * T(0.7), T(0.03) + T(0.12) * next());
+      if (s % 2 == 0) c->make_bounding_box();
+      shapes.push_back(std::move(c));
+    }
+    shapes.push_back(std::make_unique<rvegen::circle<T>>(T(0.6), T(0.3), T(5)));
+    for (std::size_t k : {1u, 2u, 3u, 5u})
+      for (auto const& n : {std::array<std::size_t, 2>{23, 11},
+                            std::array<std::size_t, 2>{1, 9}})
+        check(shapes, box, n[0], n[1], 1, k);
+  }
+  {   // 3D, spheres and boxes, some without a bounding box
+    const rvegen::domain<T> box{{T(1), T(0.8), T(1.6)}};
+    vec shapes;
+    for (int s = 0; s < 10; ++s) {
+      ptr shape;
+      if (s % 2 == 0) {
+        shape = std::make_unique<rvegen::sphere<T>>(
+            next(), next() * T(0.8), next() * T(1.6), T(0.05) + T(0.2) * next());
+      } else {
+        shape = std::make_unique<rvegen::box<T>>(
+            next(), next() * T(0.8), next() * T(1.6), T(0.05) + T(0.3) * next(),
+            T(0.05) + T(0.3) * next(), T(0.05) + T(0.3) * next());
+      }
+      if (s % 3 != 0) shape->make_bounding_box();
+      shapes.push_back(std::move(shape));
+    }
+    for (std::size_t k : {1u, 2u, 3u})
+      for (auto const& n : {std::array<std::size_t, 3>{9, 7, 5},
+                            std::array<std::size_t, 3>{5, 3, 1}})
+        check(shapes, box, n[0], n[1], n[2], k);
+  }
+  {   // periodic copies
+    const rvegen::domain<T> box{{T(1), T(1), T(0)}};
+    vec shapes;
+    for (std::size_t s = 0; s < 12; ++s) {
+      auto c = std::make_unique<rvegen::circle<T>>(next(), next(),
+                                                   T(0.05) + T(0.1) * next());
+      c->make_bounding_box();
+      c->set_inclusion_id(s);
+      auto wraps = rvegen::generate_periodic_wraps(*c, box);
+      shapes.push_back(std::move(c));
+      for (auto& w : wraps) shapes.push_back(std::move(w));
+    }
+    REQUIRE(shapes.size() > 12);
+    for (std::size_t k : {1u, 2u, 4u}) check(shapes, box, 17, 13, 1, k);
+  }
+}
+
+void test_reference_more_shapes() {
+  reference_more_shapes<double>();
+  reference_more_shapes<float>();
 }
 
 // One circle at many positions: the error of the grid's area shrinks with
@@ -497,6 +650,63 @@ void test_resolution_check() {
     const auto ids = rvegen::detail::inclusion_index_of_shapes(periodic);
     const auto sizes = rvegen::shape_size_fractions(periodic, pbox, ids, 0);
     REQUIRE(std::abs((1.0 - sizes[0]) - std::numbers::pi * 0.0025) < 1e-12);
+  }
+  // A shape without any width is the thinnest there can be: under the
+  // threshold, and no grid to suggest.
+  {
+    shape_vector flat;
+    flat.push_back(make<rvegen::circle<double>>(0.5, 0.5, 0.2));
+    flat.push_back(make<rvegen::circle<double>>(0.2, 0.2, 0.0));
+    const auto r = rvegen::check_voxel_resolution(flat, box, 64, 64, 1, 8.0);
+    REQUIRE(r.shapes == 2 && r.under == 1 && r.smallest_width == 0.0);
+    REQUIRE((r.suggested == std::array<std::size_t, 3>{64, 64, 1}));
+    REQUIRE(r.message().find("the thinnest has no width") != std::string::npos);
+    REQUIRE(r.message().find("nx >=") == std::string::npos);
+  }
+  // A grid nobody can have is named as such.
+  {
+    const rvegen::domain<double> cube{{1.0, 1.0, 1.0}};
+    shape_vector thin;
+    thin.push_back(make<rvegen::sphere<double>>(0.5, 0.5, 0.5, 1e-4));
+    const auto r = rvegen::check_voxel_resolution(thin, cube, 32, 32, 32, 8.0);
+    REQUIRE(r.under == 1 && !r.suggestion_fits);
+    REQUIRE((r.suggested == std::array<std::size_t, 3>{40000, 40000, 40000}));
+    REQUIRE(r.message().find("more than the 2^32 voxels") != std::string::npos);
+    shape_vector fine;
+    fine.push_back(make<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.02));
+    const auto ok = rvegen::check_voxel_resolution(fine, cube, 32, 32, 32, 8.0);
+    REQUIRE(ok.under == 1 && ok.suggestion_fits);
+    REQUIRE(ok.message().find("2^32") == std::string::npos);
+  }
+  // Shapes that overlap add up to more than the box: nothing negative is
+  // left for the rest, and the line of the writers says what happened.
+  {
+    shape_vector big;
+    big.push_back(make<rvegen::circle<double>>(0.5, 0.5, 0.45));
+    big.push_back(make<rvegen::circle<double>>(0.5, 0.5, 0.45));
+    const auto ids = rvegen::detail::inclusion_index_of_shapes(big);
+    const auto sizes = rvegen::shape_size_fractions(big, box, ids, 0);
+    REQUIRE(sizes[0] == 0.0);
+    REQUIRE(sizes[1] + sizes[2] > 1.2);
+    std::vector<std::string> lines;
+    const auto counts = rvegen::count_voxel_ids(
+        rvegen::sample_voxel_grid(big, box, 32, 32, 1));
+    rvegen::report_voxel_sampling<double>(
+        big, box, 32, 32, 1, 1, 0.0, nullptr, false, counts,
+        [&](std::string const& l) { lines.push_back(l); }, {});
+    REQUIRE(lines.size() == 1);
+    REQUIRE(lines[0].find("their sizes add up to more than the box") !=
+            std::string::npos);
+    REQUIRE(lines[0].find("-") == std::string::npos);   // no negative number
+    // Shapes that fit say nothing of the kind.
+    lines.clear();
+    shape_vector one;
+    one.push_back(make<rvegen::circle<double>>(0.5, 0.5, 0.2));
+    rvegen::report_voxel_sampling<double>(
+        one, box, 32, 32, 1, 1, 0.0, nullptr, false,
+        rvegen::count_voxel_ids(rvegen::sample_voxel_grid(one, box, 32, 32, 1)),
+        [&](std::string const& l) { lines.push_back(l); }, {});
+    REQUIRE(lines.size() == 1 && lines[0].find("add up") == std::string::npos);
   }
   // 3D: z counts when it is sampled, not for a single slice.
   {
@@ -731,6 +941,12 @@ void test_vtk_writer_formats() {
       threw = std::string{e.what()}.find("voxel writer") != std::string::npos;
     }
     REQUIRE(threw);
+    // ... by write() too, and before it has written anything.
+    std::ostringstream untouched;
+    threw = false;
+    try { w.write(untouched, shapes, box); }
+    catch (std::runtime_error const&) { threw = true; }
+    REQUIRE(threw && untouched.str().empty());
   }
 }
 
@@ -824,6 +1040,8 @@ int main() {
   test_against_reference_2d();
   test_against_reference_3d();
   test_against_reference_with_phases();
+  test_bands_of_rows();
+  test_reference_more_shapes();
   test_one_sample_is_the_plain_grid();
   test_bad_arguments();
   test_fraction_converges();
