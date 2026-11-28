@@ -65,6 +65,7 @@
 #include <utility>
 #include <vector>
 
+#include "cancel_poll.h"
 #include "voronoi_seed_validation.h"
 
 namespace rvegen {
@@ -129,7 +130,8 @@ public:
   // Build all cells. Cell `i` corresponds to seed `i`. CCW vertex
   // order in each cell. For one seed, the cell is the full bounding
   // rectangle.
-  [[nodiscard]] std::vector<polygon_type> build() const {
+  [[nodiscard]] std::vector<polygon_type> build(
+      cancel_fn const* cancel = nullptr) const {
     std::vector<polygon_type> out;
     out.reserve(_seeds.size());
     polygon_type bbox = make_bounding_rectangle();
@@ -138,6 +140,7 @@ public:
         std::numeric_limits<T>::epsilon() * T{16} * std::min(_Lx, _Ly);
 
     for (std::size_t i = 0; i < _seeds.size(); ++i) {
+      poll_cancel(cancel);
       polygon_type cell = bbox;
       auto const& p_i = _seeds[i];
       if (_periodic) {   // rectangle of one period centred on the seed
@@ -284,8 +287,9 @@ namespace rvegen {
 
 template <typename T = double>
 [[nodiscard]] inline std::vector<std::unique_ptr<shape_base<T>>>
-voronoi_to_shapes(voronoi_generator_2d<T> const& gen) {
-  auto cells = gen.build();
+voronoi_to_shapes(voronoi_generator_2d<T> const& gen,
+                  cancel_fn const* cancel = nullptr) {
+  auto cells = gen.build(cancel);
   std::vector<std::unique_ptr<shape_base<T>>> out;
   out.reserve(cells.size());
   for (std::size_t i = 0; i < cells.size(); ++i) {

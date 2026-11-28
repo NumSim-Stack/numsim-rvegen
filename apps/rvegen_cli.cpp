@@ -17,11 +17,7 @@
 #include <cstdlib>
 #include <exception>
 #include <fstream>
-#include <algorithm>
-#include <array>
-#include <cstdint>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -32,7 +28,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "rvegen/rvegen.h"
+#include "rvegen/pipeline.h"
 
 namespace {
 
@@ -72,181 +68,22 @@ int run(int argc, char** argv) {
     return exit_config;
   }
 
-  // ---- 2. Register every known type in every registry --------------------
-  rvegen::register_all_distributions<>();
-  rvegen::register_all_direction_distributions<>();
-  rvegen::register_all_terminations<>();
-  rvegen::register_all_generators<>();
-  rvegen::register_all_inputs<>();
-  rvegen::register_all_collision_pairs<>();   // precise dispatch in generators
-  rvegen::register_all_post_processes<>();
+  // ---- 2. Run the shared pipeline (include/rvegen/pipeline.h) ------------
+  // Registration, distributions, inputs, generator + termination, phase
+  // assignment and post-processing all live in the library so the Python
+  // bindings run exactly the same code.
+  rvegen::pipeline_options opts;
+  opts.info = [](std::string const& line) { std::cout << line << '\n'; };
+  opts.warn = [](std::string const& line) { std::cerr << line << '\n'; };
 
-  // ---- 3. Domain box + RNG seed (top-level config keys) ------------------
-  std::array<double, 3> domain_box{1.0, 1.0, 0.0};
-  if (config.contains("domain_box")) {
-    auto const& db = config.at("domain_box");
-    if (!db.is_array() || (db.size() != 2 && db.size() != 3)) {
-      throw std::invalid_argument(
-          "domain_box must be an array of 2 or 3 numbers, got " + db.dump());
-    }
-    for (std::size_t i = 0; i < db.size(); ++i) {
-      if (!db[i].is_number()) {
-        throw std::invalid_argument(
-            "domain_box entries must be numbers, got " + db.dump());
-      }
-      domain_box[i] = db[i].get<double>();
-      if (!std::isfinite(domain_box[i])) {
-        throw std::invalid_argument(
-            "domain_box entries must be finite, got " + db.dump());
-      }
-    }
-    if (!(domain_box[0] > 0.0) || !(domain_box[1] > 0.0)) {
-      throw std::invalid_argument(
-          "domain_box x and y extents must be > 0, got " + db.dump());
-    }
-    if (domain_box[2] < 0.0) {
-      throw std::invalid_argument(
-          "domain_box z extent must be >= 0 (0 means 2D), got " + db.dump());
-    }
-  }
-  // Warn about unknown top-level keys (typos would otherwise be ignored).
-  for (auto const& [key, value] : config.items()) {
-    static constexpr std::array<char const*, 10> known{
-        "domain_box", "seed", "distributions", "direction_distributions",
-        "shapes", "generator", "termination", "postprocess", "phases",
-        "phase_assignment"};
-    if (key.starts_with('_')) continue;   // "_comment" style annotations
-    if (std::find_if(known.begin(), known.end(), [&](char const* k) {
-          return key == k;
-        }) == known.end()) {
-      std::cerr << "rvegen: warning - unknown top-level key '" << key
-                << "' is ignored\n";
-    }
-  }
-  // The seed goes through the same strict integer reader as the schema
-  // keys (rejects negative, fractional and non-numeric values by key).
-  std::uint64_t seed = 42;
-  if (config.contains("seed")) {
-    rvegen::parameter_visitor_nlohmann seed_reader{config};
-    seed = std::any_cast<std::uint64_t>(
-        seed_reader.read("seed", typeid(std::uint64_t)));
-  }
-  // The engine is the 32-bit std::mt19937; a wider seed would be truncated
-  // silently, so reject it instead.
-  if (!std::in_range<std::uint32_t>(seed)) {
-    throw std::invalid_argument(
-        "seed must be <= 4294967295 (the engine is 32-bit), got " +
-        std::to_string(seed));
-  }
-  std::mt19937 engine(static_cast<std::uint32_t>(seed));
-
-  // ---- 4. Build distributions -------------------------------------------
-  rvegen::distribution_map_t<double> dists;
-  if (config.contains("distributions")) {
-    for (auto const& [name, spec] : config.at("distributions").items()) {
-      auto dist = rvegen::build_from_json(
-          rvegen::distribution_registry_t<>::instance(), spec, engine);
-      dists.emplace(name,
-                    std::shared_ptr<rvegen::distribution_base<double>>{
-                        std::move(dist)});
-    }
-  }
-
-  // Direction distributions (e.g. bingham) share the name space of the
-  // scalar map: each is stored as a direction_distribution_holder that
-  // direction-aware inputs (polyline_tube_oriented_input) unwrap.
-  if (config.contains("direction_distributions")) {
-    for (auto const& [name, spec] : config.at("direction_distributions").items()) {
-      if (dists.contains(name)) {
-        throw std::runtime_error{"duplicate distribution name '" + name +
-                                 "' (direction_distributions share the "
-                                 "distributions name space)"};
-      }
-      auto dir = rvegen::build_from_json(
-          rvegen::direction_distribution_registry_t<>::instance(), spec, engine);
-      dists.emplace(name,
-                    std::make_shared<rvegen::direction_distribution_holder<double>>(
-                        std::shared_ptr<rvegen::direction_distribution_base<double>>{
-                            std::move(dir)}));
-    }
-  }
-
-  // ---- 5. Build inputs (cross-reference distributions by name) ----------
-  rvegen::rve_generator_base<double>::input_vector inputs;
-  // "shapes" is optional: deterministic generators (weave, tow_weave,
-  // voronoi_*) build their shapes from the generator params alone.
-  for (auto const& spec : config.value("shapes", nlohmann::json::array())) {
-    // A direction distribution in a scalar slot would otherwise only fail
-    // at the first new_shape(); catch it here and name the key.
-    if (spec.is_object()) {
-      for (auto const& [key, value] : spec.items()) {
-        if (key == "direction_dist" || !value.is_string() ||
-            !key.ends_with("_dist"))
-          continue;
-        auto const it = dists.find(value.get<std::string>());
-        if (it != dists.end() &&
-            dynamic_cast<rvegen::direction_distribution_holder<double>*>(
-                it->second.get()) != nullptr) {
-          throw std::runtime_error{
-              "shape input '" + spec.value("type", std::string{"?"}) +
-              "': key '" + key + "' refers to direction distribution '" +
-              value.get<std::string>() +
-              "', but a scalar distribution is required"};
-        }
-      }
-    }
-    auto input = rvegen::build_from_json(
-        rvegen::input_registry_t<>::instance(), spec, dists);
-    inputs.push_back(std::move(input));
-  }
-
-  // ---- 6. Generator + termination ---------------------------------------
-  auto generator = rvegen::build_from_json_checked(
-      rvegen::generator_registry_t<>::instance(), config.at("generator"),
-      [](std::string const& type, std::string const& key) {
-        std::cerr << "rvegen: warning - unknown key '" << key
-                  << "' for generator '" << type << "' is ignored\n";
-      });
-  // Deterministic generators ignore the termination predicate (#73), so
-  // the "termination" section is optional for them; a placeholder keeps
-  // the compute() signature uniform. Sampling generators still need it.
-  auto* const det_gen =
-      dynamic_cast<rvegen::deterministic_generator<double>*>(generator.get());
-  const bool deterministic = det_gen != nullptr;
-  if (det_gen) det_gen->set_pipeline_seed(seed);
-  std::unique_ptr<rvegen::termination_base<double>> termination;
-  if (deterministic) {
-    if (config.contains("shapes") && !config.at("shapes").empty())
-      std::cerr << "rvegen: warning - generator '"
-                << config.at("generator").value("type", std::string{"?"})
-                << "' is deterministic: \"shapes\" is ignored\n";
-    if (config.contains("termination"))
-      std::cerr << "rvegen: warning - generator '"
-                << config.at("generator").value("type", std::string{"?"})
-                << "' is deterministic: \"termination\" is ignored\n";
-  }
-  if (deterministic) {
-    termination = std::make_unique<rvegen::number_of_inclusions<double>>(
-        std::size_t{1});
-  } else {
-    termination = rvegen::build_from_json(
-        rvegen::termination_registry_t<>::instance(),
-        config.at("termination"), domain_box);
-  }
-
-  // ---- 7. Run the pipeline ----------------------------------------------
-  // Install a progress hook that prints "[N/T] φ = X.XX" lines to stderr
-  // every emit_every accepted shapes. The hook is opt-in via the
-  // `--progress` flag (disabled by default to keep CLI output stable for
-  // scripting). Quiet runs go through the legacy single "generated N
-  // shapes" line at the end.
-  rvegen::progress_options progress_opts;
+  // Optional `--progress` hook: "[progress] placed=X / N | φ=…" lines on
+  // stderr, off by default to keep CLI output stable for scripting.
   bool show_progress = false;
   for (int i = 2; i < argc; ++i) {
     if (std::string{argv[i]} == "--progress") show_progress = true;
   }
   if (show_progress) {
-    progress_opts.on_progress = [](rvegen::progress_info info) {
+    opts.progress.on_progress = [](rvegen::progress_info info) {
       std::cerr << "[progress] placed=" << info.shapes_placed;
       if (info.shapes_target > 0) {
         std::cerr << " / " << info.shapes_target;
@@ -258,61 +95,11 @@ int run(int argc, char** argv) {
     };
     // 25 is a compromise: fires often enough to show progress on the
     // small example RVEs (~10–50 shapes) while not spamming the
-    // terminal on a 1000-shape run. The user can re-tune via library
-    // API if they're embedding rvegen.
-    progress_opts.emit_every = 25;
-  }
-  auto shapes = generator->compute(inputs, *termination, domain_box,
-                                   progress_opts);
-  std::cout << "rvegen: generated " << shapes.size() << " shape"
-            << (shapes.size() == 1 ? "" : "s") << '\n';
-  // A generator also returns when it exhausts max_attempts. Detect that
-  // by evaluating the termination predicate on the result (random_generator
-  // evaluates it with count_all = true, the others with the primaries-only
-  // default).
-  const bool counts_all =
-      config.at("generator").value("type", std::string{}) == "random";
-  if (!termination->is_met(shapes, counts_all)) {
-    std::cerr << "rvegen: warning — stopped at max_attempts before reaching "
-                 "the termination target (" << shapes.size()
-              << " shapes placed).\n";
+    // terminal on a 1000-shape run.
+    opts.progress.emit_every = 25;
   }
 
-  // ---- 7b. Phases: named regions + shape -> phase assignment ------------
-  // "phases" is an array of {name}; "phase_assignment" stamps
-  // phase names onto shapes the inputs left untagged. The collection is
-  // handed to every post-process through post_process_base::set_phases.
-  std::optional<rvegen::phase_collection<double>> phases;
-  if (config.contains("phases")) {
-    phases.emplace(rvegen::load_phases_from_json<double>(config.at("phases")));
-  }
-  if (config.contains("phase_assignment")) {
-    if (!phases) {
-      throw std::runtime_error{
-          "\"phase_assignment\" given without a \"phases\" array"};
-    }
-    const auto assignment = rvegen::phase_assignment<double>::from_json(
-        config.at("phase_assignment"), *phases);
-    if (assignment.matrix()) phases->set_matrix(*assignment.matrix());
-    const auto assigned = assignment.apply(shapes, domain_box);
-    std::cout << "rvegen: phase_assignment tagged " << assigned << " shape"
-              << (assigned == 1 ? "" : "s") << '\n';
-  }
-
-  // ---- 8. Post-processing steps (each owns its sink) --------------------
-  if (!config.contains("postprocess")) {
-    std::cerr << "rvegen: warning — no \"postprocess\" entries in config; "
-                 "nothing was written.\n";
-  } else {
-    for (auto const& spec : config.at("postprocess")) {
-      auto pp = rvegen::build_from_json(
-          rvegen::post_process_registry_t<>::instance(), spec);
-      if (phases) pp->set_phases(&*phases);
-      pp->run(shapes, domain_box);
-      std::cout << "rvegen: post-process '"
-                << spec.at("type").get<std::string>() << "' done\n";
-    }
-  }
+  (void)rvegen::run_pipeline(config, opts);
 
   return EXIT_SUCCESS;
 }

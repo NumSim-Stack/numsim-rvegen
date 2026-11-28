@@ -139,9 +139,10 @@ protected:
     std::vector<std::array<T, 2>> seeds;
     for (std::size_t i = 0; i + 1 < flat.size(); i += 2)
       seeds.push_back({flat[i], flat[i + 1]});
-    auto shapes = voronoi_to_shapes<T>(voronoi_generator_2d<T>{
-        box[0], box[1], std::move(seeds),
-        _handler.template get<bool>("periodic")});
+    auto shapes = voronoi_to_shapes<T>(
+        voronoi_generator_2d<T>{box[0], box[1], std::move(seeds),
+                                _handler.template get<bool>("periodic")},
+        this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;
   }
@@ -181,11 +182,13 @@ protected:
     std::vector<std::array<T, 3>> seeds;
     for (std::size_t i = 0; i + 2 < flat.size(); i += 3)
       seeds.push_back({flat[i], flat[i + 1], flat[i + 2]});
-    auto shapes = voronoi_to_shapes<T>(voronoi_generator_3d<T>{
-        box[0], box[1], box[2], std::move(seeds),
-        detail::voronoi_backend_from_name(
-            _handler.template get<std::string>("backend")),
-        _handler.template get<bool>("periodic")});
+    auto shapes = voronoi_to_shapes<T>(
+        voronoi_generator_3d<T>{
+            box[0], box[1], box[2], std::move(seeds),
+            detail::voronoi_backend_from_name(
+                _handler.template get<std::string>("backend")),
+            _handler.template get<bool>("periodic")},
+        this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;
   }

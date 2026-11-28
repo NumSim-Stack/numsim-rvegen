@@ -25,12 +25,24 @@
 //   * Wheels via cibuildwheel — separate from the conda/vcpkg
 //     packaging in the packaging PR.
 
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <functional>
+#include <fstream>
+#include <limits>
+#include <optional>
 #include <random>
 
 #include "rvegen/generators/grain_size_control.h"
+#include "rvegen/phase/phase_assignment.h"
+#include "rvegen/pipeline.h"
+#include "rvegen/postprocess/voxel_grid.h"
+#include "rvegen/schema/schema_to_json.h"
 #include "rvegen/generators/voronoi_generator_2d.h"
 #include "rvegen/generators/voronoi_generator_3d.h"
 #include "rvegen/generators/weave_generator.h"
@@ -47,31 +59,177 @@
 
 namespace py = pybind11;
 
-// Add the shape_base phase_name accessors to a bound shape. Used at
-// the tail of every shape's binding chain so Python users can tag
-// shapes for the per-phase output story (gmsh Physical groups,
-// voxel phase IDs). Templated on the concrete shape type so the
-// lambda captures pick the right `phase_name()` / `set_phase_name`
-// overload through normal name lookup.
-//
-// Takes the bound class by value so the entire `py::class_<X>(...).def(...)
-// ....def(...)` chain can be passed inline at the call site —
-// pybind11's `py::class_` wraps a Python type handle, so the copy is
-// cheap and registers methods on the same underlying Python type.
-template <typename Shape>
-void add_phase_name(py::class_<Shape> cls) {
-  cls.def_property("phase_name",
-      [](Shape const& s) { return s.phase_name(); },
-      [](Shape& s, std::string const& n) { s.set_phase_name(n); });
+namespace {
+
+using shape_ptr = std::unique_ptr<rvegen::shape_base<double>>;
+
+// ---- JSON <-> Python helpers (via the stdlib json module; no extra dep) ----
+nlohmann::json py_to_json(py::handle obj) {
+  // numpy scalars / arrays are converted via .tolist(); NaN / inf are
+  // rejected up front (they are not JSON and would otherwise surface as an
+  // opaque parse error).
+  auto fallback = py::cpp_function([](py::handle o) -> py::object {
+    if (py::hasattr(o, "tolist")) return o.attr("tolist")();
+    throw py::type_error("rvegen config: value of type '" +
+                         py::str(py::type::handle_of(o).attr("__name__"))
+                             .cast<std::string>() +
+                         "' is not JSON-serialisable");
+  });
+  std::string text;
+  try {
+    text = py::module_::import("json")
+               .attr("dumps")(obj, py::arg("default") = fallback,
+                              py::arg("allow_nan") = false)
+               .cast<std::string>();
+  } catch (py::error_already_set& e) {
+    if (e.matches(PyExc_ValueError))
+      throw py::value_error(
+          "rvegen config contains NaN or infinity, which is not valid JSON");
+    throw;
+  }
+  return nlohmann::json::parse(text);
 }
+
+py::object json_to_py(nlohmann::json const& j) {
+  return py::module_::import("json").attr("loads")(j.dump());
+}
+
+// A config is a dict (JSON-style) or a path (str / os.PathLike) to a JSON file.
+nlohmann::json load_config(py::object const& cfg) {
+  if (py::isinstance<py::dict>(cfg)) return py_to_json(cfg);
+  if (py::isinstance<py::str>(cfg) || py::hasattr(cfg, "__fspath__")) {
+    auto const path =
+        py::module_::import("os").attr("fspath")(cfg).cast<std::string>();
+    std::ifstream in{path};
+    if (!in)
+      throw std::runtime_error{"rvegen.run: cannot open config file: " + path};
+    try {
+      nlohmann::json j;
+      in >> j;
+      return j;
+    } catch (std::exception const& e) {
+      throw std::runtime_error{"rvegen.run: parse error in " + path + ": " +
+                               e.what()};
+    }
+  }
+  throw std::invalid_argument{
+      "rvegen.run: config must be a dict or a path to a JSON file"};
+}
+
+// Ctrl-C support for long C++ calls running with the GIL released. The
+// cancel hook is polled by the generators / voxel sampler; at most every
+// ~50 ms of wall time it re-acquires the GIL and runs PyErr_CheckSignals().
+// If that reports an exception (KeyboardInterrupt), the exception is parked
+// here, the hook keeps returning true so the C++ side unwinds, and the
+// binding rethrows it with rethrow_if_interrupted().
+class interrupt_watch {
+public:
+  [[nodiscard]] std::function<bool()> hook() {
+    return [this]() -> bool {
+      if (_error) return true;
+      if ((++_calls & 0xF) != 0) return false;   // keep the clock off the hot path
+      auto const now = std::chrono::steady_clock::now();
+      if (now - _last < std::chrono::milliseconds{50}) return false;
+      _last = now;
+      py::gil_scoped_acquire acquire;
+      if (PyErr_CheckSignals() != 0) {
+        _error.emplace();   // fetches + clears the Python error indicator
+        return true;
+      }
+      return false;
+    };
+  }
+  // Call with the GIL held.
+  void rethrow_if_interrupted() {
+    if (_error) {
+      auto e = std::move(*_error);
+      _error.reset();
+      throw e;
+    }
+  }
+
+private:
+  std::optional<py::error_already_set> _error;
+  std::uint32_t _calls{0};
+  std::chrono::steady_clock::time_point _last{std::chrono::steady_clock::now()};
+};
+
+// Runs f(cancel_fn const*) with Ctrl-C support, for bound builders that
+// keep the GIL (so Ctrl-C raises KeyboardInterrupt instead of waiting).
+template <typename F>
+auto interruptible(F&& f) {
+  interrupt_watch watch;
+  rvegen::cancel_fn const cancel = watch.hook();
+  try {
+    return f(&cancel);
+  } catch (rvegen::generation_cancelled const&) {
+    watch.rethrow_if_interrupted();
+    throw;
+  }
+}
+
+// Result of rvegen.run(): a sequence of shapes plus a summary dict.
+struct run_result {
+  py::list shapes;
+  py::dict summary;
+};
+
+// Registry introspection submodule: keys() and schema(name).
+template <typename Registry>
+void bind_registry(py::module_& parent, char const* name) {
+  auto sub = parent.def_submodule(name, "Registered types in this category.");
+  sub.def("keys", []() {
+    rvegen::register_all_types();
+    auto keys = Registry::instance().registered_types();
+    std::vector<std::string> out(keys.begin(), keys.end());
+    std::sort(out.begin(), out.end());
+    return out;
+  }, "Sorted names of every registered type.");
+  sub.def("schema", [](std::string const& type) {
+    rvegen::register_all_types();
+    auto& reg = Registry::instance();
+    if (!reg.contains(type))
+      throw py::key_error{"unknown type '" + type + "'"};
+    return json_to_py(rvegen::schema_to_json(reg.schema(type)));
+  }, py::arg("name"),
+     "Parameter schema of a type: {field: {type, required, description, ...}}.");
+}
+
+} // namespace
 
 PYBIND11_MODULE(_core, m) {
   m.doc() =
-      "rvegen — Representative Volume Element generator (Python bindings, "
-      "phase-2 shape surface: Circle, Sphere, Rectangle, Box, Ellipse, "
-      "PolylineTube, MeshInclusion, VoronoiCell).";
+      "rvegen — Representative Volume Element generator (Python bindings: "
+      "shape primitives, registry introspection, JSON-driven run(), "
+      "voxelize()).";
+  rvegen::register_all_types();   // populate every registry once
 
-  add_phase_name(py::class_<rvegen::circle<double>>(m, "Circle")
+  // Polymorphic base: lets rvegen.run() hand back shapes that pybind11
+  // downcasts to their concrete bound type (Circle, Sphere, ...).
+  py::class_<rvegen::shape_base<double>>(m, "Shape")
+      .def_property_readonly("kind", [](rvegen::shape_base<double> const& s) {
+        return rvegen::shape_type_name(s);
+      })
+      .def_property_readonly("center", [](rvegen::shape_base<double> const& s) {
+        return s.get_middle_point();
+      })
+      .def("area", &rvegen::shape_base<double>::area)
+      .def("volume", &rvegen::shape_base<double>::volume)
+      .def("is_inside",
+           [](rvegen::shape_base<double> const& s, double x, double y, double z) {
+             return s.is_inside({x, y, z});
+           },
+           py::arg("x"), py::arg("y"), py::arg("z") = 0.0)
+      .def_property("phase_name",
+          [](rvegen::shape_base<double> const& s) { return s.phase_name(); },
+          [](rvegen::shape_base<double>& s, std::string const& n) {
+            s.set_phase_name(n);
+          })
+      .def_property_readonly("info", [](rvegen::shape_base<double> const& s) {
+        return json_to_py(s.info().json());
+      });
+
+  py::class_<rvegen::circle<double>, rvegen::shape_base<double>>(m, "Circle")
       .def(py::init<double, double, double>(), py::arg("x"), py::arg("y"),
            py::arg("radius"))
       .def_property_readonly("x",
@@ -82,9 +240,9 @@ PYBIND11_MODULE(_core, m) {
           "radius", [](rvegen::circle<double> const& c) { return c.radius; })
       .def("is_inside", [](rvegen::circle<double> const& c, double x,
                            double y) { return c.is_inside({x, y, 0.0}); })
-      .def("area", &rvegen::circle<double>::area));
+      .def("area", &rvegen::circle<double>::area);
 
-  add_phase_name(py::class_<rvegen::sphere<double>>(m, "Sphere")
+  py::class_<rvegen::sphere<double>, rvegen::shape_base<double>>(m, "Sphere")
       .def(py::init<double, double, double, double>(), py::arg("x"),
            py::arg("y"), py::arg("z"), py::arg("radius"))
       .def_property_readonly("x",
@@ -99,9 +257,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::sphere<double> const& s, double x, double y, double z) {
              return s.is_inside({x, y, z});
            })
-      .def("volume", &rvegen::sphere<double>::volume));
+      .def("volume", &rvegen::sphere<double>::volume);
 
-  add_phase_name(py::class_<rvegen::rectangle<double>>(m, "Rectangle")
+  py::class_<rvegen::rectangle<double>, rvegen::shape_base<double>>(m, "Rectangle")
       .def(py::init<double, double, double, double>(), py::arg("x"),
            py::arg("y"), py::arg("width"), py::arg("height"))
       .def_property_readonly(
@@ -117,9 +275,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::rectangle<double> const& r, double x, double y) {
              return r.is_inside({x, y, 0.0});
            })
-      .def("area", &rvegen::rectangle<double>::area));
+      .def("area", &rvegen::rectangle<double>::area);
 
-  add_phase_name(py::class_<rvegen::box<double>>(m, "Box")
+  py::class_<rvegen::box<double>, rvegen::shape_base<double>>(m, "Box")
       .def(py::init<double, double, double, double, double, double>(),
            py::arg("x"), py::arg("y"), py::arg("z"), py::arg("width"),
            py::arg("height"), py::arg("depth"))
@@ -139,9 +297,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::box<double> const& b, double x, double y, double z) {
              return b.is_inside({x, y, z});
            })
-      .def("volume", &rvegen::box<double>::volume));
+      .def("volume", &rvegen::box<double>::volume);
 
-  add_phase_name(py::class_<rvegen::ellipse<double>>(m, "Ellipse")
+  py::class_<rvegen::ellipse<double>, rvegen::shape_base<double>>(m, "Ellipse")
       .def(py::init<double, double, double, double, double>(),
            py::arg("x"), py::arg("y"), py::arg("radius_a"),
            py::arg("radius_b"), py::arg("rotation_rad"))
@@ -159,9 +317,9 @@ PYBIND11_MODULE(_core, m) {
            [](rvegen::ellipse<double> const& e, double x, double y) {
              return e.is_inside({x, y, 0.0});
            })
-      .def("area", &rvegen::ellipse<double>::area));
+      .def("area", &rvegen::ellipse<double>::area);
 
-  add_phase_name(py::class_<rvegen::polyline_tube<double>>(m, "PolylineTube")
+  py::class_<rvegen::polyline_tube<double>, rvegen::shape_base<double>>(m, "PolylineTube")
       // Centerline as a Python list of (x, y, z) tuples — converted to
       // std::vector<std::array<double, 3>> via pybind11/stl.h.
       .def(py::init<std::vector<std::array<double, 3>> const&, double>(),
@@ -182,9 +340,9 @@ PYBIND11_MODULE(_core, m) {
       .def("is_inside",
            [](rvegen::polyline_tube<double> const& t, double x, double y,
               double z) { return t.is_inside({x, y, z}); })
-      .def("volume", &rvegen::polyline_tube<double>::volume));
+      .def("volume", &rvegen::polyline_tube<double>::volume);
 
-  add_phase_name(py::class_<rvegen::mesh_inclusion<double>>(m, "MeshInclusion")
+  py::class_<rvegen::mesh_inclusion<double>, rvegen::shape_base<double>>(m, "MeshInclusion")
       // `from_stl_file(path)` factory — the natural Python entry point.
       // Direct ctor from a Python triangle list is more painful (would
       // need to bind gte::Triangle3) and offers no win over loading via
@@ -206,9 +364,9 @@ PYBIND11_MODULE(_core, m) {
       .def("volume", &rvegen::mesh_inclusion<double>::volume)
       .def("set_middle_point",
            [](rvegen::mesh_inclusion<double>& m, double x, double y,
-              double z) { m.set_middle_point({x, y, z}); }));
+              double z) { m.set_middle_point({x, y, z}); });
 
-  add_phase_name(py::class_<rvegen::voronoi_cell<double>>(m, "VoronoiCell")
+  py::class_<rvegen::voronoi_cell<double>, rvegen::shape_base<double>>(m, "VoronoiCell")
       // Vertices: list of (x, y, z) tuples.
       // Faces: list of vertex-index lists per face.
       .def(py::init([](std::vector<std::array<double, 3>> const& verts,
@@ -239,11 +397,11 @@ PYBIND11_MODULE(_core, m) {
       .def("is_inside",
            [](rvegen::voronoi_cell<double> const& c, double x, double y,
               double z) { return c.is_inside({x, y, z}); })
-      .def("volume", &rvegen::voronoi_cell<double>::volume));
+      .def("volume", &rvegen::voronoi_cell<double>::volume);
 
   // 2D convex polygon — Voronoi-cell-ready, full shape_base contract
   // on the C++ side.
-  add_phase_name(py::class_<rvegen::convex_polygon<double>>(m, "ConvexPolygon")
+  py::class_<rvegen::convex_polygon<double>, rvegen::shape_base<double>>(m, "ConvexPolygon")
       .def(py::init<std::vector<std::array<double, 2>>>(),
            py::arg("vertices"),
            "Construct from a CCW-ordered list of (x, y) tuples; ≥ 3 "
@@ -268,7 +426,7 @@ PYBIND11_MODULE(_core, m) {
       .def("set_middle_point",
            [](rvegen::convex_polygon<double>& p, double x, double y) {
              p.set_middle_point({x, y, 0.0});
-           }));
+           });
 
   // Bounded 2D Voronoi tessellation by seed points (#114 phase 1).
   // build_polygons() returns the raw vertex lists; build_cells()
@@ -286,7 +444,8 @@ PYBIND11_MODULE(_core, m) {
           })
       .def("build_polygons",
            [](rvegen::voronoi_generator_2d<double> const& g) {
-             return g.build();
+             return interruptible(
+                 [&](rvegen::cancel_fn const* c) { return g.build(c); });
            },
            "Returns a list-of-list-of-(x,y) — one CCW polygon per seed.")
       .def("build_cells",
@@ -295,7 +454,8 @@ PYBIND11_MODULE(_core, m) {
              // ConvexPolygon. Degenerate (<3 vertex) cells become empty
              // placeholders so cell i always matches seed i (same
              // convention as voronoi_to_shapes on the C++ side).
-             auto polys = g.build();
+             auto polys = interruptible(
+                 [&](rvegen::cancel_fn const* c) { return g.build(c); });
              std::vector<rvegen::convex_polygon<double>> out;
              out.reserve(polys.size());
              for (auto& v : polys) {
@@ -496,7 +656,8 @@ PYBIND11_MODULE(_core, m) {
           })
       .def("build",
            [](rvegen::weave_generator<double> const& g) {
-             auto raw = g.build();
+             auto raw = interruptible(
+                 [&](rvegen::cancel_fn const* c) { return g.build(c); });
              std::vector<rvegen::polyline_tube<double>> out;
              out.reserve(raw.size());
              for (auto& s : raw) {
@@ -513,4 +674,132 @@ PYBIND11_MODULE(_core, m) {
              }
              return out;
            });
+
+  // ---- Registry introspection: rvegen.<category>.keys() / .schema(name) ----
+  bind_registry<rvegen::distribution_registry_t<>>(m, "distributions");
+  bind_registry<rvegen::direction_distribution_registry_t<>>(
+      m, "direction_distributions");
+  bind_registry<rvegen::input_registry_t<>>(m, "inputs");
+  bind_registry<rvegen::generator_registry_t<>>(m, "generators");
+  bind_registry<rvegen::termination_registry_t<>>(m, "terminations");
+  bind_registry<rvegen::post_process_registry_t<>>(m, "post_processes");
+  m.attr("shapes") = m.attr("inputs");   // "shapes" config section == shape inputs
+
+  // ---- Pipeline ----------------------------------------------------------
+  py::class_<run_result>(m, "RunResult",
+      "Shapes produced by rvegen.run(): a sequence of Shape objects plus a "
+      "`summary` dict (seed, n_shapes, domain_box, volume_fraction, phases, "
+      "postprocess).")
+      .def_readonly("shapes", &run_result::shapes)
+      .def_readonly("summary", &run_result::summary)
+      .def("__len__", [](run_result const& r) { return r.shapes.size(); })
+      .def("__iter__", [](run_result const& r) { return py::iter(r.shapes); })
+      .def("__getitem__", [](run_result const& r, py::object idx) {
+        return r.shapes.attr("__getitem__")(idx);
+      });
+
+  m.def("run",
+      [](py::object const& config, std::optional<std::uint64_t> seed,
+         bool postprocess) {
+        auto const cfg = load_config(config);
+        rvegen::pipeline_options opts;
+        opts.seed = seed;
+        opts.run_postprocess = postprocess;
+        std::vector<std::string> warnings_out;   // surfaced as UserWarning below
+        opts.warn = [&warnings_out](std::string const& w) {
+          warnings_out.push_back(w);
+        };
+        interrupt_watch watch;
+        opts.progress.cancel = watch.hook();
+        rvegen::pipeline_result res;
+        try {
+          py::gil_scoped_release release;   // pure C++ until the result is built
+          res = rvegen::run_pipeline(cfg, opts);
+        } catch (rvegen::pipeline_cancelled const&) {
+          watch.rethrow_if_interrupted();   // KeyboardInterrupt from Ctrl-C
+          throw;
+        }
+        for (auto const& w : warnings_out) {
+          // -W error turns the warning into an exception: propagate it.
+          if (PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1) < 0)
+            throw py::error_already_set();
+        }
+        run_result out;
+        py::dict sm;
+        sm["seed"] = res.seed;
+        sm["n_shapes"] = res.shapes.size();
+        sm["domain_box"] = res.domain_box;
+        sm["volume_fraction"] =
+            rvegen::current_volume_fraction<double>(res.shapes, res.domain_box);
+        std::vector<std::string> phase_names;
+        if (res.phases)
+          for (auto const* p : res.phases->ordered())
+            phase_names.push_back(p->name);
+        sm["phases"] = phase_names;
+        sm["postprocess"] = res.post_processes_run;
+        for (auto& sh : res.shapes) out.shapes.append(py::cast(std::move(sh)));
+        out.summary = sm;
+        return out;
+      },
+      py::arg("config"), py::arg("seed") = py::none(),
+      py::arg("postprocess") = true,
+      "Run a full rvegen pipeline. `config` is a dict (same schema as the "
+      "CLI JSON) or a path to a JSON file; `seed` overrides the config "
+      "seed. Writers under \"postprocess\" run unless postprocess=False. "
+      "Returns a RunResult (sequence of shapes + summary).");
+
+  // ---- Voxelisation ---------------------------------------------------------
+  m.def("voxelize",
+      [](std::vector<rvegen::shape_base<double> const*> const& shapes,
+         std::array<double, 3> domain, std::size_t nx, std::size_t ny,
+         std::size_t nz) {
+        if (nx == 0 || ny == 0 || nz == 0)
+          throw py::value_error("rvegen.voxelize: nx, ny and nz must be >= 1");
+        for (double d : domain)
+          if (!std::isfinite(d))
+            throw py::value_error("rvegen.voxelize: domain must be finite");
+        if (!(domain[0] > 0.0) || !(domain[1] > 0.0) || domain[2] < 0.0)
+          throw py::value_error(
+              "rvegen.voxelize: domain needs x > 0, y > 0 and z >= 0");
+        constexpr auto lim = std::numeric_limits<std::size_t>::max() / 4;
+        if (nx > lim / ny || nx * ny > lim / nz)
+          throw py::value_error("rvegen.voxelize: grid size overflows");
+        // sample_voxel_grid wants unique_ptrs; clone() leaves the caller's
+        // shapes untouched.
+        std::vector<shape_ptr> owned;
+        owned.reserve(shapes.size());
+        for (auto const* s : shapes) owned.push_back(s->clone());
+        std::vector<std::uint32_t> flat;
+        interrupt_watch watch;
+        rvegen::cancel_fn const cancel = watch.hook();
+        try {
+          py::gil_scoped_release release;
+          flat = rvegen::sample_voxel_grid<double>(owned, domain, nx, ny, nz,
+                                                   &cancel);
+        } catch (rvegen::generation_cancelled const&) {
+          watch.rethrow_if_interrupted();
+          throw;
+        }
+        const std::size_t nz_eff = rvegen::effective_nz(domain, nz);
+        // Core order is (k, j, i) with i fastest; expose it as an array
+        // indexed [i, j, k] (shape (nx, ny, nz_eff)) without reshuffling.
+        auto* heap = new std::vector<std::uint32_t>(std::move(flat));
+        py::capsule owner{heap, [](void* p) {
+          delete static_cast<std::vector<std::uint32_t>*>(p);
+        }};
+        constexpr auto sz = static_cast<py::ssize_t>(sizeof(std::uint32_t));
+        return py::array_t<std::uint32_t>(
+            {static_cast<py::ssize_t>(nx), static_cast<py::ssize_t>(ny),
+             static_cast<py::ssize_t>(nz_eff)},
+            {sz, sz * static_cast<py::ssize_t>(nx),
+             sz * static_cast<py::ssize_t>(nx * ny)},
+            heap->data(), owner);
+      },
+      py::arg("shapes"), py::arg("domain"), py::arg("nx"), py::arg("ny"),
+      py::arg("nz") = 1,
+      "Sample shapes onto an nx*ny*nz grid; returns a uint32 array indexed "
+      "[i, j, k] with shape (nx, ny, nz_eff). The array is Fortran-ordered "
+      "(F-contiguous, x fastest; zero-copy view of the sampled buffer): "
+      "use numpy.ascontiguousarray() if you need C order. Voxel value = 1-based index of the first containing shape "
+      "(0 = outside). 2D domains (z == 0) collapse to nz = 1.");
 }

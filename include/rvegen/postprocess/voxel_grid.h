@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "../generators/cancel_poll.h"
 #include "../phase/phase.h"
 #include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
@@ -64,7 +65,7 @@ sample_voxel_grid_with_ids(
     std::array<T, 3> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz,
     std::vector<phase_id> const& shape_to_id,
-    phase_id fill = 0) {
+    phase_id fill = 0, cancel_fn const* cancel = nullptr) {
   // Key z on "is the domain 3D", not on nz > 1: a 3D domain sampled with
   // nz = 1 must hit the mid-plane z = Lz/2, not the bottom face z = 0.
   const bool is_3d = domain_box[2] > T{0};
@@ -113,6 +114,7 @@ sample_voxel_grid_with_ids(
     for (std::size_t k = k0; k < k1; ++k) {
       const auto z = is_3d ? (static_cast<T>(k) + T{0.5}) * dz : T{0};
       for (std::size_t j = j0; j < j1; ++j) {
+        poll_cancel(cancel);   // once per row of voxels
         const auto y = (static_cast<T>(j) + T{0.5}) * dy;
         for (std::size_t i = i0; i < i1; ++i) {
           const auto x = (static_cast<T>(i) + T{0.5}) * dx;
@@ -153,7 +155,8 @@ template <typename T>
 [[nodiscard]] std::vector<phase_id>
 sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::array<T, 3> const& domain_box,
-                  std::size_t nx, std::size_t ny, std::size_t nz) {
+                  std::size_t nx, std::size_t ny, std::size_t nz,
+                  cancel_fn const* cancel = nullptr) {
   std::vector<phase_id> shape_to_id(shapes.size());
   std::unordered_map<std::size_t, phase_id> id_of_inclusion;
   // Grain value (grain_id + 1) per shape, 0 for a shape without grain_id;
@@ -181,7 +184,7 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
     }
   }
   return detail::sample_voxel_grid_with_ids(
-      shapes, domain_box, nx, ny, nz, shape_to_id);
+      shapes, domain_box, nx, ny, nz, shape_to_id, 0, cancel);
 }
 
 // Phase-aware overload: each voxel gets the phase id resolved from
@@ -205,7 +208,7 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::array<T, 3> const& domain_box,
                   std::size_t nx, std::size_t ny, std::size_t nz,
                   phase_collection<T> const& phases,
-                  bool strict = false) {
+                  bool strict = false, cancel_fn const* cancel = nullptr) {
   // Pre-resolve phase ids once per shape — avoids re-hashing the name
   // on every voxel and lets us throw early on unknown names.
   std::vector<phase_id> shape_to_id(shapes.size(), 0);
@@ -233,7 +236,7 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
   }
   return detail::sample_voxel_grid_with_ids(
       shapes, domain_box, nx, ny, nz, shape_to_id,
-      static_cast<phase_id>(matrix_id));
+      static_cast<phase_id>(matrix_id), cancel);
 }
 
 // Effective z-dimension of the grid given the domain (collapses to 1 in 2D).

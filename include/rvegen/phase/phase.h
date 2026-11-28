@@ -49,6 +49,12 @@ public:
   using phase_type = phase<value_type>;
 
   phase_collection() = default;
+  // `_ordered` holds pointers into `_by_name`; a copy would point into the
+  // source. Moving keeps the (node-based) map nodes, so moves stay valid.
+  phase_collection(phase_collection const&) = delete;
+  phase_collection& operator=(phase_collection const&) = delete;
+  phase_collection(phase_collection&&) noexcept = default;
+  phase_collection& operator=(phase_collection&&) noexcept = default;
 
   // Adds a new phase. The id is auto-assigned and monotonic in
   // insertion order, starting at 1. Throws if the name is already

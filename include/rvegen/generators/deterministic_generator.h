@@ -15,8 +15,10 @@
 //   * the pipeline's top-level `seed` reaches them through
 //     `set_pipeline_seed()` (compute() has no engine to draw from);
 //     only generators that sample (Voronoi) use it;
-//   * `opts.cancel` is polled once before the build, `opts.on_progress`
-//     is invoked once after it with shapes_placed == shapes_target.
+//   * `opts.cancel` is polled once before the build and then once per
+//     yarn / cell inside it (generation_cancelled unwinds, no shapes);
+//     `opts.on_progress` is invoked once after it with
+//     shapes_placed == shapes_target.
 //
 // Derived classes implement `build(domain_box)` only.
 
@@ -24,6 +26,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "cancel_poll.h"
 #include "rve_generator_base.h"
 
 namespace rvegen {
@@ -45,7 +48,13 @@ public:
           std::array<T, 3> const& domain_box,
           progress_options const& opts = {}) final {
     if (opts.cancel()) return {};
-    auto shapes = build(domain_box);
+    _cancel = opts.cancel;
+    shape_vector shapes;
+    try {
+      shapes = build(domain_box);
+    } catch (generation_cancelled const&) {
+      return {};
+    }
     progress_info info;
     info.shapes_placed = shapes.size();
     info.shapes_target = shapes.size();
@@ -57,6 +66,13 @@ public:
 protected:
   [[nodiscard]] virtual shape_vector
   build(std::array<T, 3> const& domain_box) const = 0;
+
+  // The cancel callback of the running compute(); pass to the build
+  // loops (poll_cancel) so a long build stays interruptible.
+  [[nodiscard]] cancel_fn const* cancel() const noexcept { return &_cancel; }
+
+private:
+  cancel_fn _cancel;
 };
 
 } // namespace rvegen

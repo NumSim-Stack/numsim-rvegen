@@ -87,6 +87,7 @@
 
 #include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
+#include "cancel_poll.h"
 #include "../shapes/voronoi_cell.h"
 #include "rve_generator_base.h"   // progress_options (cancel hook)
 #include "voronoi_backend_voropp.h"
@@ -283,6 +284,20 @@ public:
     }
     check_volume_sum(out);
     return out;
+  }
+
+  // Same tessellation for the deterministic-generator and Python paths,
+  // which carry a `cancel_fn` (cancel_poll.h): a true answer unwinds with
+  // generation_cancelled, like the weave generators.
+  [[nodiscard]] shape_vector build(cancel_fn const* cancel) const {
+    if (!cancel || !*cancel) return build();
+    progress_options opts;
+    opts.cancel = *cancel;
+    try {
+      return build(opts);
+    } catch (voronoi_cancelled const&) {
+      throw generation_cancelled{};
+    }
   }
 
 private:
@@ -589,8 +604,9 @@ private:
 // share the grain's id (sample_voxel_grid honours it).
 template <typename T = double>
 [[nodiscard]] inline std::vector<std::unique_ptr<shape_base<T>>>
-voronoi_to_shapes(voronoi_generator_3d<T> const& gen) {
-  auto shapes = gen.build();
+voronoi_to_shapes(voronoi_generator_3d<T> const& gen,
+                  cancel_fn const* cancel = nullptr) {
+  auto shapes = gen.build(cancel);
   for (std::size_t i = 0; i < shapes.size(); ++i) {
     shapes[i]->info().set("grain_id", i);
   }

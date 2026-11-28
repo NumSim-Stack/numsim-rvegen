@@ -329,6 +329,42 @@ void test_voxel_writer_round_trip() {
   }
 }
 
+// A cancel callback that fires mid-build stops the deterministic generators
+// (polled per yarn / cell) and yields no shapes.
+void test_cancel_during_build() {
+  auto run_cancel = [&](json const& spec, std::array<double, 3> box,
+                        std::size_t after, std::size_t& polls) {
+    auto g = build_gen(spec);
+    gen_t::input_vector none;
+    rvegen::number_of_inclusions<double> t{1};
+    rvegen::progress_options o;
+    polls = 0;
+    o.cancel = [&] { return ++polls > after; };
+    return g->compute(none, t, box, o);
+  };
+  std::size_t polls = 0;
+  auto v2 = run_cancel({{"type", "voronoi_2d"}, {"n_seeds", 300}, {"seed", 1}},
+                       {1.0, 1.0, 0.0}, 5, polls);
+  REQUIRE(v2.empty() && polls == 6);   // stopped at the 6th poll, not after 300 cells
+  // in_house: polled per cell (Voro++ only before its single call).
+  auto v3 = run_cancel({{"type", "voronoi_3d"}, {"n_seeds", 40}, {"seed", 1},
+                        {"backend", "in_house"}},
+                       {1.0, 1.0, 1.0}, 3, polls);
+  REQUIRE(v3.empty() && polls == 4);
+  auto w = run_cancel({{"type", "weave"}, {"n_warp_yarns", 20}, {"n_weft_yarns", 20},
+                       {"yarn_radius", 0.01}, {"amplitude", 0.012}},
+                      {1.0, 1.0, 0.4}, 4, polls);
+  REQUIRE(w.empty() && polls == 5);
+  auto tw = run_cancel({{"type", "tow_weave"}, {"n_warp_yarns", 4}, {"n_weft_yarns", 4},
+                        {"yarn_radius", 0.05}, {"amplitude", 0.06},
+                        {"n_fibres_per_tow", 3}}, {1.0, 1.0, 0.4}, 10, polls);
+  REQUIRE(tw.empty());
+  // Not cancelled: full result.
+  auto full = run_cancel({{"type", "voronoi_2d"}, {"n_seeds", 20}, {"seed", 1}},
+                         {1.0, 1.0, 0.0}, 1000000, polls);
+  REQUIRE(full.size() == 20);
+}
+
 } // namespace
 
 int main() {
@@ -346,6 +382,7 @@ int main() {
   test_voronoi_pipeline_seed();
   test_unknown_distribution_name();
   test_voxel_writer_round_trip();
+  test_cancel_during_build();
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "deterministic_generators_test OK\n";
   return EXIT_SUCCESS;
