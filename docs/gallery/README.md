@@ -89,6 +89,15 @@ versions mesh differently, so the element counts in their titles change.
 
 <img src="fibres_3d-vtk_legacy.png" alt="fibres_3d: voxel grid (.vtk)" width="440">
 
+## fibres_statistics
+
+[`fibres_statistics.json`](../../examples/fibres_statistics.json) · 3D 1×1×1 · polyline_tube_oriented_input · generator `periodic` · 102 shapes
+
+> Statistics of an anisotropic RVE: short fibres whose axes follow a Bingham distribution around +x. The statistics post-process reports the exact two-point probability S2 as a radial average and along each axis; S2_x(r) stays high over the length of a fibre while S2_y(r) and S2_z(r) fall off within its diameter.
+
+<img src="fibres_statistics-three_js.png" alt="fibres_statistics: three.js viewer (screenshot)" width="440">
+<img src="fibres_statistics-statistics.png" alt="fibres_statistics: statistics: S2(r) and g(r)" width="440">
+
 ## mesh_inclusions_3d
 
 [`mesh_inclusions_3d.json`](../../examples/mesh_inclusions_3d.json) · 3D 1×1×1 · mesh_inclusion_input · generator `only_inside` · 40 shapes

@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -128,16 +129,19 @@ void test_s2_3d_limits() {
   const double phi_v = voxel_fraction(rvegen::sample_voxel_grid(shapes, box, n, n, n));
   REQUIRE(phi_v > 0.05);
 
-  // r → 0: with 256 bins the first bin sits at r ≈ 0.001, far below the
-  // voxel size 1/32, so S2 is the voxel volume fraction up to noise.
-  const auto s2_fine = rvegen::two_point_correlation_3d(shapes, box, n, n, n,
-                                                        256, 20'000);
+  // r = 0: S2 is the voxel volume fraction, exactly (the pair counts are
+  // integers, #127). With 256 bins the bins are narrower than a voxel, and
+  // the first ones hold no lag at all.
+  const auto fine = rvegen::two_point_correlations(shapes, box, n, n, n, 256);
+  REQUIRE(fine.inclusion.zero == phi_v);
+  const auto s2_fine = rvegen::two_point_correlation_3d(shapes, box, n, n, n, 256);
   REQUIRE(s2_fine.size() == 256);
-  REQUIRE(std::abs(s2_fine.front().s2 - phi_v) < 0.01);
+  REQUIRE(std::isnan(s2_fine.front().s2));
+  // The first lag is one voxel, 1/32: bin 16 of 256 up to 0.5.
+  REQUIRE(s2_fine[16].s2 < phi_v && s2_fine[16].s2 > 0.7 * phi_v);
 
   // r large (≥ ~4R): S2 → φ².
-  const auto s2 = rvegen::two_point_correlation_3d(shapes, box, n, n, n,
-                                                   16, 40'000);
+  const auto s2 = rvegen::two_point_correlation_3d(shapes, box, n, n, n, 16);
   REQUIRE(s2.size() == 16);
   REQUIRE(std::abs(s2.back().r - 0.5 * 15.5 / 16.0) < 1e-12);
   double tail = 0.0;
@@ -147,9 +151,9 @@ void test_s2_3d_limits() {
   }
   tail /= double(count);
   const double phi2 = phi_v * phi_v;
-  std::cout << "  S2_3d: phi_v=" << phi_v << " S2(0)=" << s2_fine.front().s2
+  std::cout << "  S2_3d: phi_v=" << phi_v << " S2(0)=" << fine.inclusion.zero
             << " tail=" << tail << " phi^2=" << phi2 << '\n';
-  REQUIRE(std::abs(tail - phi2) < 0.15 * phi2);
+  REQUIRE(std::abs(tail - phi2) < 0.05 * phi2);
 }
 
 void test_rdf_3d_poisson() {
@@ -421,12 +425,23 @@ void test_statistics_post_process_3d() {
     "nx": 16, "ny": 16, "nz": 16, "nbins": 8 })",
                                    shapes, {1.0, 1.0, 1.0}, path3);
   REQUIRE(text.find("# dimension = 3D\n") != std::string::npos);
-  const auto s2 = rvegen::two_point_correlation_3d(shapes, {1.0, 1.0, 1.0},
-                                                   16, 16, 16, 8);
+  // Outside the pipeline nothing says the box is periodic: pairs inside
+  // the box only. The row of r = 0 comes first, then the bins.
+  const auto s2 = rvegen::two_point_correlation_3d(
+      shapes, {1.0, 1.0, 1.0}, 16, 16, 16, 8,
+      rvegen::two_point_boundary::bounded);
   const auto g = rvegen::radial_distribution_3d(shapes, {1.0, 1.0, 1.0}, 8);
-  std::ostringstream first_row;
-  first_row << '\n' << s2[0].r << ',' << s2[0].s2 << ',' << g[0].g << '\n';
-  REQUIRE(text.find(first_row.str()) != std::string::npos);
+  // The first bin ends where the first lag (one voxel, 1/16) begins: it
+  // holds no lag and its S2 field is empty. The second one has a value.
+  REQUIRE(std::isnan(s2[0].s2));
+  std::ostringstream bins;
+  bins << std::setprecision(12) << '\n'
+       << s2[0].r << ",," << g[0].g << ",,,\n"
+       << s2[1].r << ',' << s2[1].s2 << ',' << g[1].g << ',';
+  REQUIRE(text.find(bins.str()) != std::string::npos);
+  REQUIRE(text.find("\n0,") != std::string::npos);
+  REQUIRE(text.find("# columns: r, S2(r), g(r), S2_x(r), S2_y(r), S2_z(r)\n") !=
+          std::string::npos);
 
   shape_vector circles;
   circles.emplace_back(std::make_unique<rvegen::circle<double>>(0.5, 0.5, 0.2));
@@ -561,17 +576,22 @@ void test_statistics_csv_with_few_inclusions() {
       const auto text = run_statistics(cfg, shapes,
                                        {1.0, 1.0, is3d ? 1.0 : 0.0}, path);
       const auto rows = data_rows(text);
-      REQUIRE(rows.size() == 4);
+      REQUIRE(rows.size() == 5);   // r = 0 and the four bins
       const bool has_note =
           text.find("# g(r) undefined") != std::string::npos;
       REQUIRE(has_note == (count < 2));
-      for (auto const& r : rows) {
+      // r, S2, g and one S2 column per axis; g is the third field and is
+      // empty at r = 0 and wherever it is undefined.
+      for (std::size_t n = 0; n < rows.size(); ++n) {
+        auto const& r = rows[n];
         const auto c1 = r.find(',');
         const auto c2 = r.find(',', c1 + 1);
-        REQUIRE(c1 != std::string::npos && c2 != std::string::npos);
-        REQUIRE(r.find(',', c2 + 1) == std::string::npos);
-        if (c2 == std::string::npos) continue;
-        REQUIRE((c2 + 1 == r.size()) == (count < 2));
+        const auto c3 = r.find(',', c2 + 1);
+        REQUIRE(c1 != std::string::npos && c2 != std::string::npos &&
+                c3 != std::string::npos);
+        REQUIRE(std::count(r.begin(), r.end(), ',') == (is3d ? 5 : 4));
+        if (c3 == std::string::npos) continue;
+        REQUIRE((c3 == c2 + 1) == (count < 2 || n == 0));
       }
       if (count == 1 && !rows.empty()) {
         // S2 is kept: the first bin (r ~ 0) equals the voxel fraction > 0.

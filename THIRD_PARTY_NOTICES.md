@@ -12,6 +12,7 @@ licences.
 | Eigen | headers, found or fetched at build time | MPL-2.0, source at https://gitlab.com/libeigen/eigen |
 | Boost | headers, found at build time | Boost Software License 1.0 |
 | Voro++ | backend of `voronoi_generator_3d`: linked when the build finds an installed Voro++ or is configured with `RVEGEN_WITH_VORO_PP=ON` (pinned sources); part of the Python wheels | modified BSD (LBNL) |
+| pocketfft (C++ header), Max-Planck-Society, Martin Reinecke, Peter Bell | bundled in `include/rvegen/external/pocketfft`, header installed with rvegen; the FFT of the two-point statistics | BSD 3-Clause |
 | numsim-core | headers, found at build time | see https://github.com/NumSim-Stack/numsim-core |
 
 gmsh is not linked or redistributed: rvegen only writes `.geo` files that
@@ -144,4 +145,50 @@ Enhancements, then you hereby grant the following license: a  non-exclusive,
 royalty-free perpetual license to install, use, modify, prepare derivative
 works, incorporate into other computer software, distribute, and sublicense
 such enhancements or derivative works thereof, in binary and source code form.
+```
+
+## pocketfft
+
+```
+This file is part of pocketfft.
+
+Copyright (C) 2010-2024 Max-Planck-Society
+Copyright (C) 2019-2020 Peter Bell
+
+For the odd-sized DCT-IV transforms:
+  Copyright (C) 2003, 2007-14 Matteo Frigo
+  Copyright (C) 2003, 2007-14 Massachusetts Institute of Technology
+
+For the prev_good_size search:
+  Copyright (C) 2024 Tan Ping Liang, Peter Bell
+
+For the safeguards against integer overflow in good_size search:
+  Copyright (C) 2024 Cris Luengo
+
+Authors: Martin Reinecke, Peter Bell
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice, this
+  list of conditions and the following disclaimer in the documentation and/or
+  other materials provided with the distribution.
+* Neither the name of the copyright holder nor the names of its contributors may
+  be used to endorse or promote products derived from this software without
+  specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```

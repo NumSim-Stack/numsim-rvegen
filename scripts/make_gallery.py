@@ -688,13 +688,21 @@ def plot_statistics(src: Path, dst: Path) -> None:
             elif m := re.match(r"#\s*columns:\s*(.+)", line):
                 columns = [c.strip() for c in m.group(1).split(",")]
         elif line.strip():
-            rows.append([float(v) for v in line.split(",")])
+            # An empty field: a bin without a lag, or g(r) at r = 0.
+            rows.append([float(v) if v.strip() else np.nan
+                         for v in line.split(",")])
     data = np.asarray(rows)
     if data.ndim != 2 or data.shape[1] < 3:
         raise ValueError("expected r, S2(r), g(r) columns")
     r, s2, g = data[:, 0], data[:, 1], data[:, 2]
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4))
     a1.plot(r, s2, "o-", ms=3, label=columns[1] if len(columns) > 1 else "S2(r)")
+    # The profiles along the axes follow g(r); phase columns are not drawn.
+    for c in range(3, min(len(columns), data.shape[1])):
+        if not re.fullmatch(r"S2_[xyz]\(r\)", columns[c]):
+            break
+        a1.plot(r, data[:, c], "-", lw=1.2, c=PALETTE[(c - 1) % len(PALETTE)],
+                label=columns[c])
     if phi is not None:
         a1.axhline(phi, ls="--", c="grey", lw=1, label=f"φ = {phi:.3f}")
         a1.axhline(phi * phi, ls=":", c="grey", lw=1, label=f"φ² = {phi * phi:.3f}")

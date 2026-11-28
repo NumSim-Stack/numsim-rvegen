@@ -4,15 +4,15 @@
 // descriptors of an RVE:
 //
 //   * volume_fraction_in_domain — accepts shapes, returns φ.
-//   * two_point_correlation_2d — S2(r), the probability that two points
-//     separated by r are both in the inclusion phase. S2(0) = φ;
-//     S2(∞) = φ². Computed on a voxel grid via random-pair sampling.
+//   * two_point_correlations — S2, the probability that two points a lag
+//     apart are both in an inclusion: exact on a voxel grid by FFT, as a
+//     radial average and along x, y, z; per phase and between phases.
+//     two_point_correlation_2d / _3d give the radial average alone.
 //   * radial_distribution_2d — g(r), the pair-correlation function for
 //     particle centres. Useful for periodic packings.
-//   * two_point_correlation_3d / radial_distribution_3d — the 3D
-//     counterparts: S2 over an nx × ny × nz voxel grid with random
-//     directions on the unit sphere, and g(r) with spherical-shell
-//     normalisation against the number density N / (Lx·Ly·Lz).
+//   * radial_distribution_3d — the 3D counterpart: g(r) with
+//     spherical-shell normalisation against the number density
+//     N / (Lx·Ly·Lz).
 //
 // All implementations work on the existing shape_base / voxel_grid types.
 // The *_2d variants are planar: on a 3D domain, two_point_correlation_2d
@@ -27,17 +27,19 @@
 #include <cstdint>
 #include <memory>
 #include <numbers>
-#include <random>
+#include <stdexcept>
+#include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
-#include "../distributions/portable_math.h"
 #include "../domain.h"
-#include "../distributions/portable_random.h"
+#include "../phase/phase.h"
 #include "../postprocess/voxel_grid.h"
 #include "../generators/rve_generator_base.h"
 #include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
+#include "two_point_fft.h"
 #include "../util/wrap_to_box.h"
 
 namespace rvegen {
@@ -57,22 +59,151 @@ template <typename T>
 }
 
 // ---------------------------------------------------------------------------
-// Two-point correlation S2(r) on a voxelized 2D RVE.
+// Two-point statistics on the voxel grid, exact (#127).
 //
-// Discretization: voxelize at (nx, ny), then for each radius bin sample
-// `samples_per_bin` random voxel pairs at that separation and count how
-// many have both endpoints in the inclusion phase. Periodic wrap via
-// modulo on the indices.
+// S2(l) is the probability that two points a lag l apart both lie in an
+// inclusion. On an nx x ny (x nz) grid of voxel centres it is a count of
+// voxel pairs, which the FFT gives for every lag at once
+// (two_point_fft.h): no random sampling, and the same numbers on every
+// platform. Reported are
+//   * the value at lag 0, which is the volume fraction of the grid,
+//   * the radial average: all lags of a length within a bin,
+//   * the profiles along x, y and z: the lags along that axis only. For an
+//     isotropic structure they agree with the radial average; aligned
+//     fibres or a weave show up as profiles that differ.
+// Bin b of `nbins` covers lag lengths in [b, b + 1) * max_r / nbins, with
+// max_r half the smallest edge of the box unless given; r in the results
+// is the bin centre. A bin narrower than the voxel can hold no lag: its value is
+// NaN (the profiles along an axis have lags only at multiples of the voxel
+// size, so they run empty first).
 //
-// Returns: vector of (r, S2(r)) pairs, r ∈ [0, max_r] in `nbins` steps.
-// max_r defaults to half the smaller domain edge — beyond that, periodic
-// images dominate and S2 is no longer informative.
+// With phases, the same for every phase (the points of the phase,
+// including the matrix) and for every pair of phases (first point in one,
+// second in the other; the average of both orders).
+//
+// Cost: the voxelization, O(nx*ny*nz * shapes), plus a few FFTs of the
+// grid. A bounded box is padded by its largest lag, to about 1.5 times the
+// voxels per axis; 16 bytes per padded voxel and stored phase.
 // ---------------------------------------------------------------------------
 struct s2_sample {
-  double r;       // radius in domain units
-  double s2;      // probability that two points separated by r are both in inclusion
+  double r;       // bin centre, in domain units
+  double s2;      // probability that two points r apart are both in an inclusion
 };
 
+struct two_point_statistics {
+  struct correlation {
+    std::string a, b;            // phase names; a == b: the phase itself
+    two_point_profile profile;
+  };
+  two_point_boundary boundary{two_point_boundary::periodic};
+  std::array<std::size_t, 3> grid{};     // voxels per axis (nz = 1 in 2D)
+  std::size_t nbins{0};
+  double max_r{0.0};
+  two_point_profile inclusion;           // points covered by any shape
+  std::vector<correlation> phases;       // empty without phases
+
+  [[nodiscard]] double r(std::size_t bin) const noexcept {
+    return two_point_bin_centre(bin, nbins, max_r);
+  }
+  [[nodiscard]] std::vector<s2_sample> radial() const {
+    std::vector<s2_sample> out;
+    out.reserve(nbins);
+    for (std::size_t b = 0; b < nbins; ++b)
+      out.push_back({r(b), inclusion.radial[b]});
+    return out;
+  }
+};
+
+template <typename T>
+[[nodiscard]] two_point_statistics two_point_correlations(
+    std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
+    std::type_identity_t<domain<T>> const& domain_box,
+    std::size_t nx, std::size_t ny, std::size_t nz, std::size_t nbins = 32,
+    two_point_boundary boundary = two_point_boundary::periodic,
+    std::type_identity_t<phase_collection<T>> const* phases = nullptr,
+    cancel_fn const* cancel = nullptr, double max_r = 0.0) {
+  two_point_statistics out;
+  out.boundary = boundary;
+  out.nbins = nbins;
+  out.grid = {nx, ny, effective_nz(domain_box, nz)};
+  const std::array<double, 3> extent{double(domain_box[0]), double(domain_box[1]),
+                                     domain_box.is_3d() ? double(domain_box[2]) : 0.0};
+  if (!(max_r > 0.0)) {   // half the smallest edge of the box
+    max_r = 0.5 * std::min(extent[0], extent[1]);
+    if (domain_box.is_3d()) max_r = std::min(max_r, 0.5 * extent[2]);
+  }
+  if (!(max_r > 0.0) || !std::isfinite(max_r)) {
+    throw std::invalid_argument{
+        "two-point statistics: the domain box needs positive finite edges"};
+  }
+  out.max_r = max_r;
+  const bool wrap = boundary == two_point_boundary::periodic;
+  const voxel_correlator correlator{out.grid, extent, {wrap, wrap, wrap},
+                                    out.max_r, nbins};
+
+  // One voxelization serves both questions: a voxel holds 0 where no shape
+  // is, else 1 + the phase id of the shape that covers it (1 + 0 for a
+  // shape without a phase).
+  std::vector<phase_id> shape_to_id(shapes.size(), 1);
+  std::size_t matrix_id = 0;
+  if (phases != nullptr) {
+    matrix_id = phases->matrix_id();
+    for (std::size_t s = 0; s < shapes.size(); ++s) {
+      const auto name = shapes[s]->phase_name();
+      const std::size_t id = name.empty() ? std::size_t{0} : phases->id_of(name);
+      if (id >= std::numeric_limits<phase_id>::max() ||
+          matrix_id >= std::numeric_limits<phase_id>::max()) {
+        throw std::runtime_error{
+            "two-point statistics: phase id exceeds phase_id range (uint32)"};
+      }
+      shape_to_id[s] = static_cast<phase_id>(id + 1);
+    }
+  }
+  const auto grid = detail::sample_voxel_grid_with_ids(
+      shapes, domain_box, nx, ny, nz, shape_to_id, 0, cancel);
+
+  {
+    const auto covered = correlator.transform(
+        grid, [](phase_id v) { return v != 0; }, cancel);
+    out.inclusion = correlator.correlate(covered, covered, cancel);
+  }
+  if (phases == nullptr) return out;
+
+  // The phases, in the order of their ids; id 0 without a phase of that id
+  // is what belongs to no phase.
+  std::vector<std::pair<std::size_t, std::string>> classes;
+  bool zero_declared = false;
+  for (auto const* p : phases->ordered()) {
+    classes.emplace_back(p->id, p->name);
+    zero_declared = zero_declared || p->id == 0;
+  }
+  std::sort(classes.begin(), classes.end());
+  const auto phase_of = [matrix_id](phase_id v) {
+    return v == 0 ? matrix_id : std::size_t{v} - 1;
+  };
+  if (!zero_declared &&
+      std::any_of(grid.begin(), grid.end(),
+                  [&](phase_id v) { return phase_of(v) == 0; })) {
+    classes.insert(classes.begin(), {std::size_t{0}, std::string{"unassigned"}});
+  }
+  std::vector<voxel_correlator::spectrum> spectra;
+  spectra.reserve(classes.size());
+  for (auto const& c : classes) {
+    spectra.push_back(correlator.transform(
+        grid, [&, id = c.first](phase_id v) { return phase_of(v) == id; }, cancel));
+  }
+  for (std::size_t i = 0; i < classes.size(); ++i) {
+    for (std::size_t j = i; j < classes.size(); ++j) {
+      out.phases.push_back({classes[i].second, classes[j].second,
+                            correlator.correlate(spectra[i], spectra[j], cancel)});
+    }
+  }
+  return out;
+}
+
+// S2(r), radial average, of a 2D RVE (on a 3D domain: of its mid-plane
+// cross-section) and of a 3D RVE. See two_point_correlations for the
+// profiles along the axes and for phases.
 template <typename T>
 [[nodiscard]] std::vector<s2_sample>
 two_point_correlation_2d(
@@ -80,61 +211,15 @@ two_point_correlation_2d(
     std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nx, std::size_t ny,
     std::size_t nbins = 32,
-    std::size_t samples_per_bin = 4'000,
-    std::uint64_t seed = 2026) {
-  auto grid = sample_voxel_grid(accepted, domain_box, nx, ny, 1);
-  const double Lx = double(domain_box[0]);
-  const double Ly = double(domain_box[1]);
-  const double dx = Lx / double(nx);
-  const double dy = Ly / double(ny);
-  const double max_r = std::min(Lx, Ly) * 0.5;
-
-  std::vector<s2_sample> out;
-  out.reserve(nbins);
-
-  std::mt19937_64 engine{seed};
-  // Portable transforms (see portable_random.h) so the sampled pairs do
-  // not depend on the standard library; every product is rounded before it
-  // is added, so a build that fuses multiply-add picks the same voxels.
-  using portable_detail::rounded;
-  portable_uniform_int<std::size_t> ix{0, nx - 1};
-  portable_uniform_int<std::size_t> iy{0, ny - 1};
-  portable_uniform_real<double> theta{0.0, 2.0 * 3.14159265358979323846};
-
-  for (std::size_t b = 0; b < nbins; ++b) {
-    const double r = max_r * (double(b) + 0.5) / double(nbins);
-    std::size_t both_in = 0;
-    for (std::size_t s = 0; s < samples_per_bin; ++s) {
-      const std::size_t i0 = ix(engine);
-      const std::size_t j0 = iy(engine);
-      const double a = theta(engine);
-      const double x1 = rounded((double(i0) + 0.5) * dx) +
-                        rounded(r * portable_cos(a));
-      const double y1 = rounded((double(j0) + 0.5) * dy) +
-                        rounded(r * portable_sin(a));
-      const std::size_t i1 = std::min(std::size_t(wrap_to_box(x1, Lx) / dx), nx - 1);
-      const std::size_t j1 = std::min(std::size_t(wrap_to_box(y1, Ly) / dy), ny - 1);
-      if (grid[j0 * nx + i0] != 0 && grid[j1 * nx + i1] != 0) ++both_in;
-    }
-    out.push_back({r, double(both_in) / double(samples_per_bin)});
-  }
-  return out;
+    two_point_boundary boundary = two_point_boundary::periodic) {
+  // The plane's own range, also for the mid-plane of a 3D box.
+  const double max_r =
+      0.5 * std::min(double(domain_box[0]), double(domain_box[1]));
+  return two_point_correlations(accepted, domain_box, nx, ny, 1, nbins,
+                                boundary, nullptr, nullptr, max_r)
+      .radial();
 }
 
-// ---------------------------------------------------------------------------
-// Two-point correlation S2(r) on a voxelized 3D RVE.
-//
-// Same definition as two_point_correlation_2d, extended to three axes:
-// voxelize at (nx, ny, nz), and for each radius bin draw `samples_per_bin`
-// random voxel centres plus a direction uniform on the unit sphere; the
-// endpoint is wrapped periodically along x, y and z. Bin b sits at
-// r = max_r · (b + 0.5) / nbins with max_r = min(Lx, Ly, Lz) / 2.
-//
-// Cost: voxelization is O(nx·ny·nz · shapes) is_inside calls and
-// nx·ny·nz · 4 bytes of memory (128³ ≈ 2.1 M voxels, 8 MiB); the pair
-// sampling is O(nbins · samples_per_bin), independent of the grid. The
-// voxelization dominates, so pick nz (and nx, ny) to suit the time budget.
-// ---------------------------------------------------------------------------
 template <typename T>
 [[nodiscard]] std::vector<s2_sample>
 two_point_correlation_3d(
@@ -142,59 +227,12 @@ two_point_correlation_3d(
     std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz,
     std::size_t nbins = 32,
-    std::size_t samples_per_bin = 4'000,
-    std::uint64_t seed = 2026) {
-  auto grid = sample_voxel_grid(accepted, domain_box, nx, ny, nz);
-  const double Lx = double(domain_box[0]);
-  const double Ly = double(domain_box[1]);
-  const double Lz = double(domain_box[2]);
-  const double dx = Lx / double(nx);
-  const double dy = Ly / double(ny);
-  const double dz = Lz / double(nz);
-  const double max_r = std::min({Lx, Ly, Lz}) * 0.5;
-
-  std::vector<s2_sample> out;
-  out.reserve(nbins);
-
-  std::mt19937_64 engine{seed};
-  using portable_detail::rounded;   // products are rounded before they are added
-  // Portable transforms (see portable_random.h), as in 2D: the sampled
-  // pairs do not depend on the standard library.
-  portable_uniform_int<std::size_t> ix{0, nx - 1};
-  portable_uniform_int<std::size_t> iy{0, ny - 1};
-  portable_uniform_int<std::size_t> iz{0, nz - 1};
-  portable_uniform_real<double> cos_theta{-1.0, 1.0};
-  portable_uniform_real<double> phi{0.0, 2.0 * std::numbers::pi};
-
-  auto at = [&](std::size_t i, std::size_t j, std::size_t k) {
-    return grid[(k * ny + j) * nx + i];
-  };
-
-  for (std::size_t b = 0; b < nbins; ++b) {
-    const double r = max_r * (double(b) + 0.5) / double(nbins);
-    std::size_t both_in = 0;
-    for (std::size_t s = 0; s < samples_per_bin; ++s) {
-      const std::size_t i0 = ix(engine);
-      const std::size_t j0 = iy(engine);
-      const std::size_t k0 = iz(engine);
-      const double ct = cos_theta(engine);
-      const double st = std::sqrt(std::max(0.0, 1.0 - rounded(ct * ct)));
-      const double rst = rounded(r * st);
-      const double a = phi(engine);
-      const double x1 = rounded((double(i0) + 0.5) * dx) +
-                        rounded(rst * portable_cos(a));
-      const double y1 = rounded((double(j0) + 0.5) * dy) +
-                        rounded(rst * portable_sin(a));
-      const double z1 = rounded((double(k0) + 0.5) * dz) + rounded(r * ct);
-      const std::size_t i1 = std::min(std::size_t(wrap_to_box(x1, Lx) / dx), nx - 1);
-      const std::size_t j1 = std::min(std::size_t(wrap_to_box(y1, Ly) / dy), ny - 1);
-      const std::size_t k1 = std::min(std::size_t(wrap_to_box(z1, Lz) / dz), nz - 1);
-      if (at(i0, j0, k0) != 0 && at(i1, j1, k1) != 0) ++both_in;
-    }
-    out.push_back({r, double(both_in) / double(samples_per_bin)});
-  }
-  return out;
+    two_point_boundary boundary = two_point_boundary::periodic) {
+  return two_point_correlations(accepted, domain_box, nx, ny, nz, nbins, boundary)
+      .radial();
 }
+
+
 
 // ---------------------------------------------------------------------------
 // Radial distribution function g(r) for shape *centres* (not voxel pairs).

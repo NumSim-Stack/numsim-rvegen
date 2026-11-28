@@ -181,7 +181,7 @@ declared by its static `parameters()` method):
 |                 | `svg`                      | `output_path`, `canvas_width` (2D picture) |
 |                 | `svg_3d`                   | `output_path`, `canvas_width` (projected 3D picture) |
 |                 | `three_js`                 | `output_path` (HTML viewer; loads three.js from unpkg.com, so the page needs network access) |
-|                 | `statistics`               | `output_path` (CSV), `nx`, `ny`, `nbins`: two-point correlation S2(r) and radial distribution g(r) |
+|                 | `statistics`               | `output_path` (CSV), `nx`, `ny`, `nz` (3D), `nbins`; optional `periodic`, `phase_correlations`: exact two-point probability S2, radial and along each axis, per phase; radial distribution g(r) |
 |                 | `run_summary`              | `output_path` (JSON): rvegen version, seed, the config, the generation report, shape count and volume fraction |
 
 The cross-references in shape inputs (e.g. `"pos_x_dist": "uniform_x"`) refer
@@ -222,6 +222,38 @@ reach, so a `volume_fraction` target may need more `max_attempts` or become
 unreachable; the report says which. `examples/periodic_min_gap.json` is a
 periodic pack with `min_gap` and `wall_gap` set to the mesh size.
 
+### Statistics: the two-point probability S2
+
+S2 at a lag is the probability that two points that far apart both lie in
+an inclusion. The `statistics` post-process counts it exactly on its
+nx x ny (x nz) voxel grid: the pair counts for every lag come from an FFT
+and are integers, so there is no sampling noise and the file is the same on
+every platform. The CSV has a row for r = 0, where S2 is the volume
+fraction of the grid, and one per bin up to half the smallest box edge:
+
+```
+# columns: r, S2(r), g(r), S2_x(r), S2_y(r), S2_z(r)
+```
+
+- `S2(r)` averages over all directions; `S2_x`, `S2_y`, `S2_z` take the
+  lags along one axis. They agree for an isotropic structure and differ for
+  aligned fibres or a weave (`examples/fibres_statistics.json`).
+- `"periodic"` says how the box ends: `true` wraps lags around (an RVE that
+  was generated periodic), `false` counts only pairs inside the box. Left
+  out, it follows the generator of the run. The header of the file says
+  which was used.
+- With `phases`, four more columns follow per phase (`S2[fibre](r)`, ...)
+  and per pair of phases (`S2[fibre|matrix](r)`: one point in each);
+  `"phase_correlations": false` leaves them out, as do more than 12 phases.
+- A field is empty where a bin holds no lag, which happens with bins
+  narrower than a voxel, along the axes first.
+- Cost: the voxelization plus a few FFTs, 16 bytes per voxel and phase. A
+  box that is not periodic is padded to about 1.5 times the voxels per axis.
+
+From C++ the same is `two_point_correlations` (`statistics/microstructure_stats.h`).
+The FFT is the bundled pocketfft header (BSD 3-Clause), kept in a namespace
+of its own.
+
 ### Worked examples
 
 `examples/` holds one config per feature area (2D/3D, periodic, polydisperse,
@@ -248,6 +280,8 @@ points:
 - `examples/mesh_inclusions_rotated.json`: copies of an STL mesh with random
   orientation and size.
 - `examples/circles_statistics.json`: S2(r) and g(r) of a dense pack.
+- `examples/fibres_statistics.json`: S2 of aligned short fibres, along the
+  fibres and across them.
 
 Run any of them with `./build/rvegen <path-to.json>` from any directory; the
 files appear in the current directory (or in `--output-dir`). Assets a config
@@ -417,7 +451,8 @@ include/rvegen/
                             tow_weave
   postprocess/              post_process_base + gmsh_geo, voxel, vtk_legacy, svg,
                             svg_3d, three_js, statistics; voxel_grid helper
-  statistics/               S2(r) / g(r) microstructure statistics
+  statistics/               S2 (exact, by FFT) / g(r) microstructure statistics
+  external/pocketfft/       bundled FFT header (BSD 3-Clause)
   visualization/            mesh_dispatcher + per-shape triangle meshes
   io/                       STL / PLY mesh readers
   phase/                    phase tags for voxel output
