@@ -254,12 +254,13 @@ jobs:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: |
+          set -o pipefail
           sudo apt-get install -y --no-install-recommends voro++-dev
           cmake -G Ninja -B build-voropp-system \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps" \
-            -DRVEGEN_VORO_PP_PROVIDER=SYSTEM | tee configure.log
-          grep -q "Voro++ backend ON, installed library" configure.log
+            -DRVEGEN_VORO_PP_PROVIDER=SYSTEM | tee "$RUNNER_TEMP/configure-voropp.log"
+          grep -q "Voro++ backend ON, installed library" "$RUNNER_TEMP/configure-voropp.log"
           cmake --build build-voropp-system --target rvegen \
             rvegen_voronoi_backend_test rvegen_voronoi_polycrystal_test
           ctest --test-dir build-voropp-system --output-on-failure \

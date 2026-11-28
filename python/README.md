@@ -165,10 +165,14 @@ live under `[tool.cibuildwheel]` in `pyproject.toml`.
 The build includes the Voro++ backend of `voronoi_3d` /
 `VoronoiGenerator3d` (`rvegen.voro_pp_available()` is `True`), so 3D
 tessellations of 10^4 grains and more take seconds. The pinned Voro++
-sources are downloaded at build time unless an installed Voro++ is found.
-For a build without network access pass `-DRVEGEN_WITH_VORO_PP=OFF`
-(`CMAKE_ARGS="-DRVEGEN_WITH_VORO_PP=OFF" pip install .`): the built-in backend then
-stops at 300 seeds (3000 periodic) unless `allow_slow_backend=True` is given.
+sources are downloaded at build time and compiled into the module, so it
+has no run-time dependency on a Voro++ library. Without network access the
+configure step fails at that download; pass `-DRVEGEN_WITH_VORO_PP=OFF`
+(`CMAKE_ARGS="-DRVEGEN_WITH_VORO_PP=OFF" pip install .`) and the built-in
+backend is used, which stops at 300 seeds (3000 periodic) unless
+`allow_slow_backend=True` is given. `-DRVEGEN_VORO_PP_PROVIDER=SYSTEM`
+links an installed Voro++ instead (for distribution packages); with it a
+Voro++ fatal error ends the interpreter.
 
 ## What's NOT exposed yet
 

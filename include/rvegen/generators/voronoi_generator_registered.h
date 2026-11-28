@@ -211,10 +211,14 @@ protected:
                    ? std::string{"voronoi_3d: tessellated with Voro++"}
                    : std::string{"voronoi_3d: tessellated with the in-house "
                                  "backend"} +
-                         (by_default ? " (this build has no Voro++; the "
-                                       "in-house backend is limited to a "
-                                       "few hundred seeds)"
-                                     : ""));
+                         (by_default
+                              ? " (this build has no Voro++; the in-house "
+                                "backend is limited to " +
+                                    std::to_string(
+                                        voronoi_in_house_max_seeds(periodic)) +
+                                    (periodic ? " periodic" : " bounded") +
+                                    " seeds)"
+                              : ""));
     std::vector<std::array<T, 3>> seeds;
     std::vector<T> weights;
     if (_handler.contains("grain_diameter_mean")) {

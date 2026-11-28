@@ -452,9 +452,10 @@ periodic box) unless the generator is given `"allow_slow_backend": true`.
 Voro++ is roughly linear in the number of seeds (8000 periodic grains in
 0.2 s) and is what `"backend": "auto"` uses when the build has it; the run
 prints which backend tessellated. Configure with `-DRVEGEN_WITH_VORO_PP=ON`
-for polycrystals of more than a few hundred grains; the Python wheels are
-built that way. With an installed Voro++ instead of the pinned sources, a
-Voro++ fatal error ends the process instead of raising an exception.
+for polycrystals of more than a few hundred grains; the Python module is
+built that way, always from the pinned sources. With an installed Voro++
+instead of the pinned sources, a Voro++ fatal error ends the process instead
+of raising an exception.
 
 The default build needs Boost headers, Eigen, nlohmann_json and numsim-core
 (>= 1.3), all installed. CMake does fall back to downloading Eigen or

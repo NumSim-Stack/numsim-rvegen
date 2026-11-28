@@ -705,6 +705,34 @@ void test_paths_and_verbose_lines() {
                                    ? "rvegen: voronoi_3d: tessellated with Voro++"
                                    : "this build has no Voro++"));
   }
+  // allow_slow_backend reaches the generator from the config (#123): 301
+  // bounded seeds are refused without it and tessellated with it (stopped
+  // here after a few cells; the whole build takes over a minute).
+  {
+    auto run = [](bool allow) {
+      auto cfg = json::parse(R"({
+        "domain_box": [1.0, 1.0, 1.0],
+        "generator": {"type": "voronoi_3d", "n_seeds": 301,
+                      "backend": "in_house"},
+        "postprocess": []
+      })");
+      if (allow) cfg["generator"]["allow_slow_backend"] = true;
+      rvegen::pipeline_options o;
+      int polls = 0;
+      o.progress.cancel = [&polls] { return ++polls > 40; };
+      try {
+        (void)rvegen::run_pipeline(cfg, o);
+      } catch (rvegen::pipeline_cancelled const&) {
+        return std::string{"cancelled"};
+      } catch (std::exception const& e) {
+        return std::string{e.what()};
+      }
+      return std::string{"finished"};
+    };
+    REQUIRE(run(false).find("301 seeds exceed the limit of 300") !=
+            std::string::npos);
+    REQUIRE(run(true) == "cancelled");
+  }
   // Parameters left to their default are listed per block, sorted.
   {
     lines l;

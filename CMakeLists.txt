@@ -181,15 +181,29 @@ endif()
 # An installed library has neither: a Voro++ fatal error then ends the
 # process, and a library compiled with contraction can return overlapping
 # periodic weighted cells, which the volume check after every tessellation
-# reports as an error. Prefer BUNDLED where that matters (the wheels and CI
-# use it). Voro++ v0.4.6 ships no CMake build, hence the SOURCE_SUBDIR trick
+# reports as an error. Prefer BUNDLED where that matters (the Python build
+# defaults to it, see python/CMakeLists.txt). Voro++ v0.4.6 ships no CMake build, hence the SOURCE_SUBDIR trick
 # (populate only) plus our own target. Only the in-tree build links it; the
 # installed package stays header-only (see voronoi_backend_voropp.h).
 # ---------------------------------------------------------------------------
-set(RVEGEN_WITH_VORO_PP "AUTO" CACHE STRING
+# A cache entry whose value a project that adds rvegen with
+# add_subdirectory() can preset with a plain set(): before CMake 3.21
+# (CMP0126) set(... CACHE ...) removes a normal variable of the same name,
+# which the option() these two replaced did not do.
+macro(rvegen_cache_string name default doc)
+  if(DEFINED ${name} AND NOT DEFINED CACHE{${name}})
+    set(_rvegen_preset "${${name}}")
+    set(${name} "${default}" CACHE STRING "${doc}")
+    set(${name} "${_rvegen_preset}")
+    unset(_rvegen_preset)
+  else()
+    set(${name} "${default}" CACHE STRING "${doc}")
+  endif()
+endmacro()
+rvegen_cache_string(RVEGEN_WITH_VORO_PP "AUTO"
     "Voro++ backend for voronoi_generator_3d: AUTO (if installed), ON or OFF")
 set_property(CACHE RVEGEN_WITH_VORO_PP PROPERTY STRINGS AUTO ON OFF)
-set(RVEGEN_VORO_PP_PROVIDER "AUTO" CACHE STRING
+rvegen_cache_string(RVEGEN_VORO_PP_PROVIDER "AUTO"
     "Where Voro++ comes from: AUTO (installed, else pinned sources), SYSTEM or BUNDLED")
 set_property(CACHE RVEGEN_VORO_PP_PROVIDER PROPERTY STRINGS AUTO SYSTEM BUNDLED)
 
@@ -202,10 +216,14 @@ if(NOT _rvegen_voropp_provider MATCHES "^(AUTO|SYSTEM|BUNDLED)$")
 endif()
 if(_rvegen_voropp_with STREQUAL "AUTO")
   set(_rvegen_voropp_want auto)
-elseif(RVEGEN_WITH_VORO_PP)
+elseif(_rvegen_voropp_with MATCHES "^(ON|YES|TRUE|Y|1)$")
   set(_rvegen_voropp_want on)
-else()
+elseif(_rvegen_voropp_with MATCHES "^(OFF|NO|FALSE|N|0)$")
   set(_rvegen_voropp_want off)
+else()
+  message(FATAL_ERROR
+    "RVEGEN_WITH_VORO_PP must be AUTO, ON or OFF, not "
+    "'${RVEGEN_WITH_VORO_PP}'")
 endif()
 
 set(_rvegen_voropp "")   # "", system or bundled
@@ -214,9 +232,16 @@ if(NOT _rvegen_voropp_want STREQUAL "off")
     set(_rvegen_voropp bundled)
   else()
     find_path(RVEGEN_VORO_PP_INCLUDE_DIR voro++.hh PATH_SUFFIXES voro++)
-    find_library(RVEGEN_VORO_PP_LIBRARY NAMES voro++ voro)
+    find_library(RVEGEN_VORO_PP_LIBRARY NAMES voro++)
     if(RVEGEN_VORO_PP_INCLUDE_DIR AND RVEGEN_VORO_PP_LIBRARY)
       set(_rvegen_voropp system)
+    elseif(RVEGEN_VORO_PP_INCLUDE_DIR OR RVEGEN_VORO_PP_LIBRARY)
+      # Half an installation is worth a line: it explains an "OFF" below.
+      message(STATUS "rvegen: installed Voro++ not usable: voro++.hh "
+                     "${RVEGEN_VORO_PP_INCLUDE_DIR}, library "
+                     "${RVEGEN_VORO_PP_LIBRARY}")
+    endif()
+    if(_rvegen_voropp)
     elseif(_rvegen_voropp_provider STREQUAL "SYSTEM")
       if(_rvegen_voropp_want STREQUAL "on")
         message(FATAL_ERROR
