@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <fstream>
@@ -22,6 +21,8 @@
 
 #include "post_process_base.h"
 #include "../intersection/aabb_overlap.h"
+#include "../shapes/shape_extent.h"
+#include "../util/format_number.h"
 #include "../phase/phase.h"
 #include "../shapes/box.h"
 #include "../shapes/circle.h"
@@ -413,10 +414,8 @@ private:
     _length_scale = std::max({box[0], box[1], box[2]});
   }
 
-  // Shortest decimal form that round-trips to the same value
-  // (std::to_chars without a precision) — `0.05` stays `0.05`, while
-  // values that need 17 digits get them. Independent of the stream's
-  // precision / locale settings.
+  // Numbers are written with format_number (shortest form that reads back
+  // to the same value, independent of stream precision and locale).
   static void require_finite(value_type v, char const* what) {
     if (!std::isfinite(v)) {
       throw std::runtime_error{std::string{"gmsh_geo_writer: non-finite "} +
@@ -426,9 +425,7 @@ private:
 
   static std::string raw_num(value_type v) {
     require_finite(v, "coordinate or size");
-    std::array<char, 64> buf{};
-    auto const res = std::to_chars(buf.data(), buf.data() + buf.size(), v);
-    return std::string(buf.data(), res.ptr);
+    return format_number(v);
   }
 
   // A length (coordinate, radius, mesh size) in the units of the script:
@@ -464,45 +461,12 @@ private:
   // would leave geometry outside the RVE.
   static bool needs_clip(shape_base<value_type> const& s,
                          std::array<value_type, 3> const& box) {
-    if (auto const* bb = s.bounding_box(); bb != nullptr) {
-      return !aabb_inside(*bb, box[0], box[1], box[2]);
-    }
-    const auto mid = s.get_middle_point();
-    const auto ext = s.max_expansion();
-    for (std::size_t k = 0; k < 3; ++k) {
-      if (mid[k] - ext[k] < value_type{0} || mid[k] + ext[k] > box[k]) {
-        return true;
-      }
-    }
-    return false;
+    return !aabb_inside(extent_of(s), box[0], box[1], box[2]);
   }
 
-  // Plain extent box so aabb_overlap() also works for shapes that have no
-  // bounding box computed (centre ± max_expansion()).
-  struct extent_box final : bounding_box_base<value_type> {
-    std::array<value_type, 3> top, bottom;
-    [[nodiscard]] std::array<value_type, 3> const& top_point() const override { return top; }
-    [[nodiscard]] std::array<value_type, 3> const& bottom_point() const override { return bottom; }
-    [[nodiscard]] std::unique_ptr<bounding_box_base<value_type>> clone() const override {
-      return std::make_unique<extent_box>(*this);
-    }
-  };
-
-  static extent_box extent_of(shape_base<value_type> const& s) {
-    extent_box e;
-    if (auto const* bb = s.bounding_box(); bb != nullptr) {
-      e.top = bb->top_point();
-      e.bottom = bb->bottom_point();
-    } else {
-      const auto mid = s.get_middle_point();
-      const auto ext = s.max_expansion();
-      for (std::size_t k = 0; k < 3; ++k) {
-        e.top[k] = mid[k] + ext[k];
-        e.bottom[k] = mid[k] - ext[k];
-      }
-    }
-    return e;
-  }
+  // Shape extents come from shapes/shape_extent.h (bounding box when
+  // computed, otherwise centre ± max_expansion()).
+  using extent_box = shape_extent<value_type>;
 
   // ---- tessellation (conforming partition, built-in kernel) -------------
   //

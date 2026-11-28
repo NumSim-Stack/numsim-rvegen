@@ -41,6 +41,11 @@
 #include "shapes/mesh_inclusion.h"
 #include "shapes/shape_variant.h"
 #include "shapes/shape_pool.h"
+#include "shapes/shape_extent.h"
+
+// Shared small helpers
+#include "util/wrap_to_box.h"
+#include "util/format_number.h"
 
 // intersection
 #include "intersection/collision_details.h"

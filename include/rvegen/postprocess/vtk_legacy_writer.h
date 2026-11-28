@@ -3,7 +3,6 @@
 #include <array>
 #include <cstddef>
 #include <fstream>
-#include <iomanip>
 #include <ios>
 #include <ostream>
 #include <stdexcept>
@@ -15,6 +14,7 @@
 #include "post_process_base.h"
 #include "../phase/phase.h"
 #include "../types.h"
+#include "../util/format_number.h"
 #include "phase_table.h"
 #include "voxel_grid.h"
 
@@ -176,18 +176,16 @@ public:
                  "name table in <output>.phases.json)")
         : " (1-based inclusion index, wraps share their primary's id, 0 = matrix)";
 
-    // SPACING is written with round-trip precision (17 significant
-    // digits) so L = n · spacing holds in the reader; the caller's stream
-    // precision is restored afterwards.
-    const auto old_precision = out.precision();
+    // SPACING is written with format_number (reads back to the same
+    // value), so L = n · spacing holds in the reader.
     out << "# vtk DataFile Version 3.0\n"
         << "rvegen voxel grid [rvegen-vtk-format: v3]" << title_suffix << "\n"
         << "ASCII\n"
         << "DATASET STRUCTURED_POINTS\n"
         << "DIMENSIONS " << (_nx + 1) << ' ' << (_ny + 1) << ' ' << pz << '\n'
         << "ORIGIN 0 0 0\n"
-        << "SPACING " << std::setprecision(17) << dx << ' ' << dy << ' '
-        << dz << std::setprecision(old_precision) << '\n'
+        << "SPACING " << format_number(dx) << ' ' << format_number(dy)
+        << ' ' << format_number(dz) << '\n'
         << "CELL_DATA " << checked_voxel_count(_nx, _ny, nz_eff) << '\n'
         << "SCALARS " << field_name << " int 1\n"
         << "LOOKUP_TABLE default\n";
