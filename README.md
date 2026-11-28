@@ -120,7 +120,7 @@ Top-level structure:
 
 ```json
 {
-  "domain_box":    [Lx, Ly, Lz],
+  "domain_box":    [Lx, Ly] or [Lx, Ly, Lz],
   "seed":          <integer>,
   "distributions": { "<name>": { "type": "...", ...params }, ... },
   "shapes":        [ { "type": "...", ...params }, ... ],
@@ -130,7 +130,11 @@ Top-level structure:
 }
 ```
 
-`Lz = 0` means a 2D RVE (the third axis collapses). `seed` is optional;
+`domain_box` fixes the dimension of the RVE: `[Lx, Ly]` is a 2D rectangle,
+`[Lx, Ly, Lz]` a 3D cuboid (`[Lx, Ly, 0]` is also read as 2D). The extents
+must be finite, `Lx` and `Ly` positive. The shapes must have the same
+dimension: a config with a `circle_input` in a 3D box, or a `sphere_input`
+in a 2D one, is rejected when it is loaded, with the entry named. `seed` is optional;
 defaults to 42. `distributions`, `shapes`, `generator` and `termination` select
 registered types by name; `postprocess` is an array, and every entry owns its
 output file via `output_path`, so one run can write several formats.

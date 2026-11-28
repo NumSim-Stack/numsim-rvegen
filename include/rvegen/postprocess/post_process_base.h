@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "../domain.h"
 #include "../phase/phase.h"
 #include "../shapes/shape_base.h"
 
@@ -57,10 +58,10 @@ public:
   // (and `rvegen --check` calls nothing else), so such a mistake does not
   // cost a generation run. Must not create or truncate any file. run()
   // implementations call it first, so the checks exist once.
-  virtual void validate(std::array<value_type, 3> const& /*domain_box*/) const {}
+  virtual void validate(domain<value_type> const& /*domain_box*/) const {}
 
   virtual void run(shape_vector const& shapes,
-                   std::array<value_type, 3> const& domain_box) const = 0;
+                   domain<value_type> const& domain_box) const = 0;
 };
 
 } // namespace rvegen

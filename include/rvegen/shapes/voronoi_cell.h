@@ -100,6 +100,7 @@ public:
   // positive cell volume. Per-term abs would have summed magnitudes
   // and silently masked a mis-wound input — the at-end abs lets a
   // mis-wound mesh expose itself via a small or zero result.
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
   [[nodiscard]] T volume() const override {
     if (_vertices.empty() || _faces.empty()) return T{0};
     const auto c = _centroid;

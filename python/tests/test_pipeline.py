@@ -328,7 +328,7 @@ def test_run_prints_nothing_to_stdout(capfd):
     [float("nan"), 1.0, 0.0], [1.0, float("inf"), 0.0],
 ])
 def test_voxelize_rejects_invalid_domain(domain):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="rvegen.voxelize: domain_box"):
         rvegen.voxelize([rvegen.Circle(0.5, 0.5, 0.25)], domain, 4, 4, 1)
 
 
@@ -571,3 +571,34 @@ def test_strict_targets_raises(tmp_path):
 
 def test_versions_agree():
     assert rvegen.__version__ == rvegen._core.core_version
+
+
+def test_domain_dimension_is_explicit():
+    cfg = json.loads(json.dumps(CIRCLES))
+    for box in ([1.0, 1.0], [1.0, 1.0, 0.0]):
+        cfg["domain_box"] = box
+        res = rvegen.run(cfg, postprocess=False)
+        assert res.summary["dimension"] == 2
+        assert res.summary["domain_box"] == [1.0, 1.0, 0.0]
+        assert all(s.dimension == 2 and s.measure() == s.area() for s in res)
+    assert rvegen.Sphere(0.5, 0.5, 0.5, 0.1).dimension == 3
+    assert rvegen.Sphere(0.5, 0.5, 0.5, 0.1).measure() == pytest.approx(
+        4.0 / 3.0 * 3.141592653589793 * 1e-3)
+
+
+def test_mixed_dimensions_are_rejected_at_load():
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["domain_box"] = [1.0, 1.0, 1.0]
+    with pytest.raises(ValueError, match=r"shapes\[0\] \('circle_input'\): produces "
+                                         r"2D shapes, but domain_box .* is 3D"):
+        rvegen.run(cfg, postprocess=False)
+    with pytest.raises(ValueError, match="produces 2D shapes"):
+        rvegen.check(cfg)
+
+
+@pytest.mark.parametrize("box", [[0, 0, 0], [1, -1], [1, 1, -1], [1], "unit"])
+def test_invalid_domain_box_is_rejected(box):
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["domain_box"] = box
+    with pytest.raises(ValueError, match="domain_box"):
+        rvegen.check(cfg)

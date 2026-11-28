@@ -74,6 +74,7 @@ public:
   [[nodiscard]] T depth()  const noexcept { return this->max[2] - this->min[2]; }
 
   [[nodiscard]] T area()   const override { return T{0}; }
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
   [[nodiscard]] T volume() const override { return width() * height() * depth(); }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {

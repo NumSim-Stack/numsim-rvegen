@@ -45,7 +45,7 @@ public:
   [[nodiscard]] shape_vector
   compute(input_vector& /*inputs*/,
           termination_base<T> const& /*termination*/,
-          std::array<T, 3> const& domain_box,
+          domain<T> const& domain_box,
           progress_options const& opts = {}) final {
     this->clear_report();
     if (opts.cancel()) {
@@ -71,7 +71,7 @@ public:
 
 protected:
   [[nodiscard]] virtual shape_vector
-  build(std::array<T, 3> const& domain_box) const = 0;
+  build(domain<T> const& domain_box) const = 0;
 
   // The cancel callback of the running compute(); pass to the build
   // loops (poll_cancel) so a long build stays interruptible.

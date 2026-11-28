@@ -359,6 +359,12 @@ add_test(NAME generation_report_test COMMAND rvegen_generation_report_test)
 set_tests_properties(generation_report_test PROPERTIES
   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+# The domain type (#122): dimension and extent validation in one place,
+# and the load-time check that a config's shapes have the box's dimension.
+add_executable(rvegen_domain_test tests/domain_test.cpp)
+target_link_libraries(rvegen_domain_test PRIVATE rvegen_lib)
+add_test(NAME domain_test COMMAND rvegen_domain_test)
+
 # Periodic copies linked to their primary (#121): lattice shift, shared id,
 # and every count going by is_primary() instead of a centre test.
 add_executable(rvegen_periodic_images_test tests/periodic_images_test.cpp)
@@ -719,6 +725,27 @@ set_tests_properties(cli_validate_rejects_misspelt_section PROPERTIES
   PASS_REGULAR_EXPRESSION
     "unknown top-level key 'post_process' \\(did you mean 'postprocess'\\?\\)"
   LABELS "cli")
+# A config that mixes 2D and 3D fails at load, in --check and in a run, and
+# the message names the input (#122).
+foreach(_mode check run)
+  if(_mode STREQUAL "check")
+    set(_flag --check)
+  else()
+    set(_flag --quiet)
+  endif()
+  add_test(NAME cli_rejects_mixed_dimensions_${_mode}
+    COMMAND rvegen ${_flag}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mixed_dimensions.json)
+  set_tests_properties(cli_rejects_mixed_dimensions_${_mode} PROPERTIES
+    PASS_REGULAR_EXPRESSION
+      "shapes\\[1\\] \\('circle_input'\\): produces 2D shapes, but domain_box \\[1.0,1.0,1.0\\] is 3D"
+    LABELS "cli")
+  add_test(NAME cli_rejects_mixed_dimensions_${_mode}_status
+    COMMAND rvegen ${_flag}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mixed_dimensions.json)
+  set_tests_properties(cli_rejects_mixed_dimensions_${_mode}_status PROPERTIES
+    WILL_FAIL TRUE LABELS "cli")
+endforeach()
 add_test(NAME cli_rejects_unknown_option
   COMMAND rvegen --chekc ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)
 set_tests_properties(cli_rejects_unknown_option PROPERTIES
@@ -821,6 +848,16 @@ if(Python3_Interpreter_FOUND)
   # only if the checker reports the shortfall (the regex decides, not the
   # exit status). cli_check_selftest covers the checker's own parsing
   # (statistics CSV with an empty g(r), the accepted fill window).
+  # No "Lz > 0 means 3D" and no "whichever of area and volume is not zero"
+  # outside the domain type (#122).
+  add_test(NAME no_dimension_inference
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_dimension_inference_check.py
+            ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME no_dimension_inference_self_test
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_dimension_inference_check.py
+            --self-test)
   add_test(NAME cli_check_rejects_underfill
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py

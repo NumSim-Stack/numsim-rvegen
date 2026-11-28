@@ -132,6 +132,17 @@ void test_seed_and_warnings() {
   };
   REQUIRE(has("\"shapes\" is ignored"));
   REQUIRE(has("\"termination\" is ignored"));
+  // The ignored "shapes" block is not checked against the box either: 2D
+  // circles left over in a 3D Voronoi config still only warn (#122).
+  {
+    auto stale = circles_config();
+    stale["domain_box"] = json::array({1.0, 1.0, 1.0});
+    stale["generator"] = json{{"type", "voronoi_3d"}, {"n_seeds", 4},
+                              {"backend", "in_house"}};
+    warns.clear();
+    REQUIRE(!rvegen::generate(stale, o).shapes.empty());
+    REQUIRE(has("\"shapes\" is ignored"));
+  }
   // An unknown top-level key is an error by default (#120), a warning with
   // strict_keys = false; both carry a hint when a valid key is close.
   REQUIRE(!has("unknown top-level key"));
@@ -350,6 +361,10 @@ void test_check_config() {
   auto late = [&](json writer, std::array<double, 3> box, char const* needle) {
     auto c = circles_config();
     c["domain_box"] = box;
+    if (rvegen::domain<double>{box}.is_3d())   // a 3D box takes 3D shapes
+      c["shapes"] = json::array({json{{"type", "sphere_input"},
+                                      {"pos_x_dist", "x"}, {"pos_y_dist", "x"},
+                                      {"pos_z_dist", "x"}, {"radius_dist", "r"}}});
     c["postprocess"] = json::array(
         {json{{"type", "svg"}, {"canvas_width", 100},
               {"output_path", (dir / "first.svg").string()}},

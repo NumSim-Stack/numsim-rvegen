@@ -1,6 +1,9 @@
 #pragma once
 
 #include <array>
+#include <type_traits>
+
+#include "../domain.h"
 
 #include "../shapes/bounding_box_base.h"
 
@@ -61,15 +64,15 @@ aabb_overlap_shifted(bounding_box_base<T> const& lhs,
 // Periodic AABB overlap test: do `lhs` and any periodic image of `rhs`
 // (translated by integer multiples of the domain box dimensions) overlap?
 //
-// Iterates 3×3 (2D, when box[2] == 0) or 3×3×3 (3D) shifts including
+// Iterates 3×3 (2D domain) or 3×3×3 (3D domain) shifts including
 // (0,0,0). Brute force is acceptable here — RVE inner loops typically have
 // O(N) accepted shapes, and periodic checks add a 9× / 27× constant factor.
 template <typename T>
 [[nodiscard]] bool periodic_aabb_overlap(
     bounding_box_base<T> const& lhs,
     bounding_box_base<T> const& rhs,
-    std::array<T, 3> const& domain_box) noexcept {
-  const bool is_3d = domain_box[2] > T{0};
+    std::type_identity_t<domain<T>> const& domain_box) noexcept {
+  const bool is_3d = domain_box.is_3d();
   for (int dx = -1; dx <= 1; ++dx) {
     for (int dy = -1; dy <= 1; ++dy) {
       for (int dz = -1; dz <= 1; ++dz) {
@@ -87,7 +90,7 @@ template <typename T>
 
 // True if the shape's middle point sits in [0, Lx) × [0, Ly) × [0, Lz)
 // (half-open, so a point on the upper face belongs to the next cell).
-// 2D RVEs (domain_box[2] == 0) ignore the z component.
+// A 2D domain ignores the z component.
 //
 // Not a test for "is this a periodic copy": that is
 // shape_base::is_primary(). It remains as the estimate for shapes that
@@ -95,8 +98,8 @@ template <typename T>
 template <typename T>
 [[nodiscard]] constexpr bool
 is_centre_in_domain(std::array<T, 3> const& middle_point,
-                    std::array<T, 3> const& domain_box) noexcept {
-  bool const is_3d = domain_box[2] > T{0};
+                    std::type_identity_t<domain<T>> const& domain_box) noexcept {
+  bool const is_3d = domain_box.is_3d();
   return middle_point[0] >= T{0} && middle_point[0] < domain_box[0] &&
          middle_point[1] >= T{0} && middle_point[1] < domain_box[1] &&
          (!is_3d || (middle_point[2] >= T{0} && middle_point[2] < domain_box[2]));

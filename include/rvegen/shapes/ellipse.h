@@ -89,6 +89,7 @@ public:
   [[nodiscard]] T area() const override {
     return this->extent[0] * this->extent[1] * std::numbers::pi_v<T>;
   }
+  [[nodiscard]] int dimension() const noexcept override { return 2; }
   [[nodiscard]] T volume() const override { return T{0}; }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {

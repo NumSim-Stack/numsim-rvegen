@@ -83,6 +83,11 @@ public:
   // destroys the freshly-allocated candidate.
   [[nodiscard]] virtual std::unique_ptr<shape_base<T>> new_shape() = 0;
 
+  // Dimension of the shapes this input produces: 2 (planar) or 3 (solid).
+  // The pipeline rejects an input whose dimension differs from the
+  // domain's when the config is loaded.
+  [[nodiscard]] virtual int dimension() const noexcept = 0;
+
   [[nodiscard]] rvegen::info const& info() const noexcept { return _info; }
   [[nodiscard]] rvegen::info& info() noexcept { return _info; }
   void set_info(rvegen::info i) noexcept { _info = std::move(i); }

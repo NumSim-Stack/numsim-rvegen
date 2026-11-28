@@ -160,6 +160,8 @@ public:
   // vector, so 1000 placements share one triangle vector instead of
   // cloning it 1000 times. set_middle_point only updates the per-shape
   // offset.
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
+
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     auto mesh = std::make_unique<mesh_inclusion<value_type>>(_prototype);
     mesh->set_middle_point({_px(), _py(), _pz()});

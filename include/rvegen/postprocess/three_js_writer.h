@@ -69,7 +69,7 @@ public:
     return _output_path;
   }
 
-  void validate(std::array<value_type, 3> const& /*domain_box*/) const override {
+  void validate(domain<value_type> const& /*domain_box*/) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "three_js_writer: output_path not set; cannot run() as post-process"};
@@ -77,7 +77,7 @@ public:
   }
 
   void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+           domain<value_type> const& domain_box) const override {
     validate(domain_box);
     std::ofstream out{_output_path};
     if (!out) {
@@ -89,7 +89,7 @@ public:
 
   void write(std::ostream& out,
              shape_vector const& shapes,
-             std::array<value_type, 3> const& domain_box) const {
+             domain<value_type> const& domain_box) const {
     const auto Lx = domain_box[0];
     const auto Ly = domain_box[1];
     const auto Lz = domain_box[2];

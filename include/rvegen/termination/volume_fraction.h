@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 #include <numsim-core/input_parameter_controller.h>
 
@@ -34,16 +35,15 @@ public:
   // without copies needs the box, i.e. the schema-driven ctor.
   volume_fraction(value_type target_fraction, value_type domain_size) noexcept
       : _target{target_fraction},
-        _domain_box{T{0}, T{0}, T{0}},
         _domain_size{domain_size} {}
 
-  // Schema-driven ctor — derives domain_size from the box dimensions.
-  // domain_box[2] == 0 means 2D RVE → use Lx*Ly; otherwise Lx*Ly*Lz.
+  // Schema-driven ctor — the domain size is the box's area (2D) or
+  // volume (3D).
   volume_fraction(parameter_handler_t const& handler,
-                  std::array<value_type, 3> const& domain_box)
+                  domain<value_type> const& domain_box)
       : _target{handler.template get<value_type>("target_fraction")},
         _domain_box{domain_box},
-        _domain_size{compute_domain_size(domain_box)} {}
+        _domain_size{domain_box.measure()} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t p;
@@ -76,16 +76,13 @@ public:
   [[nodiscard]] value_type fraction(shape_vector const& accepted) const {
     if (!(_domain_size > value_type{0})) return value_type{0};
     value_type sum{};
-    bool const have_box =
-        _domain_box[0] > value_type{0} && _domain_box[1] > value_type{0};
     for (auto const& shape : accepted) {
       // (`count_all` is deliberately ignored.) Without a box (direct
       // construction) only the periodic copies can be told apart.
-      if (have_box ? !is_counted_in_rve(*shape, _domain_box)
-                   : !shape->is_primary())
+      if (_domain_box ? !is_counted_in_rve(*shape, *_domain_box)
+                      : !shape->is_primary())
         continue;
-      const auto v = shape->volume();
-      sum += (v > value_type{0}) ? v : shape->area();
+      sum += shape->measure();
     }
     return sum / _domain_size;
   }
@@ -101,15 +98,8 @@ public:
   }
 
 private:
-  static constexpr value_type compute_domain_size(
-      std::array<value_type, 3> const& box) noexcept {
-    auto size = box[0] * box[1];
-    if (box[2] > value_type{0}) size *= box[2];
-    return size;
-  }
-
   value_type _target;
-  std::array<value_type, 3> _domain_box;
+  std::optional<domain<value_type>> _domain_box;   // empty: direct ctor
   value_type _domain_size;
 };
 
