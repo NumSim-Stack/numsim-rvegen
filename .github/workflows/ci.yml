@@ -44,12 +44,14 @@ jobs:
           # UB class behind #75 (uniform_real a > b) and #80 (PLY
           # double -> size_t casts). UBSan failures are fatal
           # (-fno-sanitize-recover) so they fail the job instead of just
-          # printing a diagnostic.
+          # printing a diagnostic. -O1 on top of Debug (assertions stay on):
+          # unoptimised sanitizer code is 10-50x slower in the Eigen / GTE
+          # templates, which put the full test suite beyond the time limit.
           - name: "gcc-14 Debug (ASan + UBSan)"
             cc: gcc-14
             cxx: g++-14
             build_type: Debug
-            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+            cxx_flags: "-O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
             full: false
             timeout: 60
           # Clang 19 from the Ubuntu 24.04 archive (19.1.x), paired with
