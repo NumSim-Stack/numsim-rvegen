@@ -125,6 +125,17 @@ A termination (`termination/termination_base.h`) reports through `kind()`,
 same accounting as `is_met()`; one that never stops by itself returns
 `has_target() == false`.
 
+A generator asks its termination after every accepted shape, so a criterion
+that walks all accepted shapes each time makes a run cost the square of the
+number of inclusions. Keep one `termination_tally<T>` per criterion and
+`compute()` call (a tally is not shared between criteria) and
+ask with `termination.is_met(accepted, count_all, tally)`; a criterion that
+adds something up per shape overrides that overload and looks only at the
+shapes after `tally.seen` (see `volume_fraction`). The default falls back to
+the pass over all shapes, so a criterion without a tally keeps working. For a
+progress callback use `running_volume_fraction<T>` instead of
+`current_volume_fraction()`.
+
 ## Periodic copies
 
 A generator that makes a periodic RVE stores, next to each inclusion that
