@@ -86,7 +86,17 @@ public:
 protected:
   // For compute() implementations: call first, so that a compute() that
   // ends in an exception does not leave the previous run's report behind.
-  void clear_report() noexcept { _report.reset(); }
+  void clear_report() noexcept {
+    _report.reset();
+    _gaps = {};
+  }
+
+  // For generators with minimum gaps: call after clear_report(); every
+  // report recorded by this compute() then carries them.
+  void report_gaps(double min_gap, double min_gap_relative,
+                   double wall_gap) noexcept {
+    _gaps = {min_gap, min_gap_relative, wall_gap};
+  }
 
   // For compute() implementations: call on every return path. `count_all`
   // is the hint the implementation gives termination::is_met.
@@ -102,6 +112,9 @@ protected:
     r.attempts = attempts;
     r.max_attempts = max_attempts;
     r.reason = reason;
+    r.min_gap = _gaps[0];
+    r.min_gap_relative = _gaps[1];
+    r.wall_gap = _gaps[2];
     _report = std::move(r);
   }
   // A generator that builds its shapes without a termination target.
@@ -113,6 +126,7 @@ protected:
 
 private:
   std::optional<generation_report> _report;
+  std::array<double, 3> _gaps{};
 };
 
 // The volume / area fraction of the shapes that count as material of the

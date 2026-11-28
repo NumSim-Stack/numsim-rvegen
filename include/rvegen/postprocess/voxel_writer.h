@@ -96,6 +96,10 @@ public:
   // also writes the `<output_path>.phases.json` name table. Caller retains ownership; the pointer must
   // outlive the writer's next `run()` / `write()` / `sample()` call.
   // Passing nullptr clears the attachment and restores shape-index mode.
+  void set_run_info(nlohmann::json const* info) noexcept override {
+    _info = info;
+  }
+
   void set_phases(phase_collection<value_type> const* phases) noexcept override {
     _phases = phases;
   }
@@ -162,6 +166,10 @@ public:
         << "# Lx Ly Lz: " << format_number(domain_box[0]) << ' '
         << format_number(domain_box[1]) << ' '
         << format_number(domain_box[2]) << '\n';
+    // Only when the run kept minimum gaps (#111): one more comment line.
+    if (auto const note = this->placement_gap_note(_info); !note.empty()) {
+      out << "# placement: " << note << '\n';
+    }
     if (_phases) {
       if (_phases->has_matrix()) {
         out << "# id scheme: phase ids from phase_collection (uncovered "
@@ -208,6 +216,7 @@ private:
   std::size_t _nz{32};
   std::string _output_path{};
   phase_collection<value_type> const* _phases{nullptr};
+  nlohmann::json const* _info{nullptr};
   bool _phase_strict{false};
 };
 

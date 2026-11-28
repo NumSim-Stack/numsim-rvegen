@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <type_traits>
 #include <vector>
@@ -45,6 +46,11 @@ public:
   using fn_t      = bool (*)(shape_base<T> const&, shape_base<T> const&);
   using row_t     = std::vector<fn_t>;     // inner row, indexed by rhs id
   using table_t   = std::vector<row_t>;    // outer, indexed by lhs id
+  // "closer than gap?" (#111): collision_details(a, b, gap), see
+  // collision_gap.h. A second table, so the plain test above is untouched.
+  using gap_fn_t    = bool (*)(shape_base<T> const&, shape_base<T> const&, T);
+  using gap_row_t   = std::vector<gap_fn_t>;
+  using gap_table_t = std::vector<gap_row_t>;
 
   collision_dispatcher(collision_dispatcher const&) = delete;
   collision_dispatcher& operator=(collision_dispatcher const&) = delete;
@@ -66,6 +72,18 @@ public:
     if constexpr (!std::is_same_v<A, B>) {
       _table[B::m_id][A::m_id] = &dispatch<B, A>;
     }
+    // The gap-aware test is registered when collision_details(A, B, gap)
+    // exists at this point (include collision_gap.h, as
+    // register_collisions.h does, or declare your own overload before
+    // registering). A pair without one falls back to the distance between
+    // the bounding boxes when a gap is asked for: never too close, but it
+    // may refuse a placement that would have been fine.
+    if constexpr (has_gap_test<A, B>) {
+      _gap_table[A::m_id][B::m_id] = &dispatch_gap<A, B>;
+    }
+    if constexpr (!std::is_same_v<A, B> && has_gap_test<B, A>) {
+      _gap_table[B::m_id][A::m_id] = &dispatch_gap<B, A>;
+    }
   }
 
   // ---- Bound subobject ---------------------------------------------------
@@ -75,7 +93,9 @@ public:
   class bound {
   public:
     constexpr bound() noexcept = default;
-    constexpr explicit bound(row_t const* row) noexcept : _row{row} {}
+    constexpr explicit bound(row_t const* row,
+                             gap_row_t const* gap_row = nullptr) noexcept
+        : _row{row}, _gap_row{gap_row} {}
 
     [[nodiscard]] bool operator()(shape_base<T> const& a,
                                   shape_base<T> const& b) const noexcept {
@@ -86,10 +106,25 @@ public:
       return fn ? fn(a, b) : aabb_fallback(a, b);
     }
 
+    // True when a and b overlap or are closer than `gap`. gap <= 0 is the
+    // plain test above.
+    [[nodiscard]] bool operator()(shape_base<T> const& a,
+                                  shape_base<T> const& b, T gap) const {
+      if (!(gap > T{0})) return (*this)(a, b);
+      if (_gap_row) {
+        const auto rhs = static_cast<std::size_t>(b.shape_id());
+        if (rhs < _gap_row->size()) {
+          if (auto fn = (*_gap_row)[rhs]) return fn(a, b, gap);
+        }
+      }
+      return aabb_fallback(a, b, gap);
+    }
+
     [[nodiscard]] bool has_inner() const noexcept { return _row != nullptr; }
 
   private:
     row_t const* _row{nullptr};
+    gap_row_t const* _gap_row{nullptr};
   };
 
   // Hoist the LHS lookup. Cache the returned `bound` and reuse it across
@@ -97,7 +132,7 @@ public:
   [[nodiscard]] bound bind_lhs(shape_base<T> const& lhs) const noexcept {
     const auto idx = static_cast<std::size_t>(lhs.shape_id());
     if (idx >= _table.size()) return bound{};
-    return bound{&_table[idx]};
+    return bound{&_table[idx], &_gap_table[idx]};
   }
 
   // Single-call API — does both lookups every time. Convenient for
@@ -105,6 +140,20 @@ public:
   [[nodiscard]] bool operator()(shape_base<T> const& a,
                                 shape_base<T> const& b) const noexcept {
     return bind_lhs(a)(a, b);
+  }
+
+  [[nodiscard]] bool operator()(shape_base<T> const& a,
+                                shape_base<T> const& b, T gap) const {
+    return bind_lhs(a)(a, b, gap);
+  }
+
+  // Number of registered pairs that have a gap-aware test.
+  [[nodiscard]] std::size_t gap_size() const noexcept {
+    std::size_t n = 0;
+    for (auto const& row : _gap_table) {
+      for (auto fn : row) if (fn) ++n;
+    }
+    return n;
   }
 
   // Number of registered (lhs, rhs) pairs. Diagnostic use.
@@ -118,6 +167,7 @@ public:
 
   void clear() noexcept {
     _table.clear();
+    _gap_table.clear();
     _ids.clear();
   }
 
@@ -132,6 +182,45 @@ private:
     for (auto& row : _table) {
       if (row.size() < needed) row.resize(needed, nullptr);
     }
+    if (_gap_table.size() < needed) _gap_table.resize(needed);
+    for (auto& row : _gap_table) {
+      if (row.size() < needed) row.resize(needed, nullptr);
+    }
+  }
+
+  template <typename A, typename B>
+  static constexpr bool has_gap_test =
+      requires(A const& a, B const& b, T gap) {
+        { collision_details(a, b, gap) } -> std::convertible_to<bool>;
+      };
+
+  template <typename A, typename B>
+  static bool dispatch_gap(shape_base<T> const& a, shape_base<T> const& b,
+                           T gap) {
+    assert(dynamic_cast<A const*>(&a) != nullptr &&
+           "collision_dispatcher: lhs type mismatch with registered slot");
+    assert(dynamic_cast<B const*>(&b) != nullptr &&
+           "collision_dispatcher: rhs type mismatch with registered slot");
+    return collision_details(static_cast<A const&>(a),
+                             static_cast<B const&>(b), gap);
+  }
+
+  // Distance between the bounding boxes <= gap.
+  static bool aabb_fallback(shape_base<T> const& a, shape_base<T> const& b,
+                            T gap) noexcept {
+    auto const* abb = a.bounding_box();
+    auto const* bbb = b.bounding_box();
+    if (!abb || !bbb) return false;
+    auto const alo = abb->bottom_point();
+    auto const ahi = abb->top_point();
+    auto const blo = bbb->bottom_point();
+    auto const bhi = bbb->top_point();
+    T d2{0};
+    for (std::size_t k = 0; k < 3; ++k) {
+      const T s = std::max({T{0}, alo[k] - bhi[k], blo[k] - ahi[k]});
+      d2 += s * s;
+    }
+    return d2 <= gap * gap;
   }
 
   template <typename A, typename B>
@@ -158,6 +247,7 @@ private:
   }
 
   table_t _table;
+  gap_table_t _gap_table;
   shape_id_claims _ids;
 };
 

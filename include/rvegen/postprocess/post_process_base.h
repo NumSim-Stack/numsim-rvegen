@@ -2,6 +2,7 @@
 
 #include <array>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -50,6 +51,27 @@ public:
   // ignores it (run_summary_writer writes it out). The pointer must
   // outlive the next run().
   virtual void set_run_info(nlohmann::json const* /*info*/) noexcept {}
+
+  // "min_gap = 0.02, wall_gap = 0.01": the minimum distances the placement
+  // kept (#111), for a file header. Empty without run info and when no gap
+  // was set, so a run without gaps writes the header it always wrote.
+  [[nodiscard]] static std::string
+  placement_gap_note(nlohmann::json const* info) {
+    std::string note;
+    if (info == nullptr || !info->is_object() || !info->contains("report") ||
+        !info->at("report").is_object()) {
+      return note;
+    }
+    auto const& report = info->at("report");
+    for (char const* key : {"min_gap", "min_gap_relative", "wall_gap"}) {
+      auto const it = report.find(key);
+      if (it == report.end() || !it->is_number() || !(it->get<double>() > 0.0))
+        continue;
+      if (!note.empty()) note += ", ";
+      note += std::string{key} + " = " + it->dump();
+    }
+    return note;
+  }
 
   // Everything run() would reject that depends only on the configuration
   // and the domain box, not on the generated shapes: a missing output

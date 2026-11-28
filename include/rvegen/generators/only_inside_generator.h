@@ -9,6 +9,7 @@
 #include "../intersection/aabb_overlap.h"
 #include "../intersection/collision_dispatcher.h"
 #include "../types.h"
+#include "placement_gap.h"
 #include "rve_generator_base.h"
 
 namespace rvegen {
@@ -39,13 +40,15 @@ public:
 
   // Schema-driven ctor.
   explicit only_inside_generator(parameter_handler_t const& handler)
-      : _max_attempts{handler.template get<std::size_t>("max_attempts")} {}
+      : _max_attempts{handler.template get<std::size_t>("max_attempts")},
+        _gap{handler} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t p;
     p.template required<std::size_t>("max_attempts")
         .template add<min_only<std::size_t{1}>>()
         .template add<numsim_core::description_label<"maximum placement attempts before giving up">>();
+    placement_gap<T>::declare(p);
     return p;
   }
 
@@ -55,6 +58,9 @@ public:
           domain<value_type> const& domain_box,
           progress_options const& opts = {}) override {
     this->clear_report();
+    this->report_gaps(static_cast<double>(_gap.min_gap),
+                      static_cast<double>(_gap.min_gap_relative),
+                      static_cast<double>(_gap.wall_gap));
     shape_vector accepted;
     if (inputs.empty()) {
       this->record_report(termination, accepted, true, 0, _max_attempts,
@@ -71,7 +77,7 @@ public:
     // re-evaluated after each accept rather than on every attempt.
     // Every accepted shape is inside the box (hence a primary), so the
     // primaries filter is skipped (count_all): O(1) for number_of_inclusions.
-    aabb_grid<value_type> grid;
+    gap_neighbourhood<value_type> placed{_gap};
     bool done = termination.is_met(accepted, true);
 
     while (!done && attempts < _max_attempts) {
@@ -94,6 +100,10 @@ public:
                        domain_box[0], domain_box[1], domain_box[2])) {
         continue;
       }
+      if (_gap.wall_gap > value_type{0} &&
+          !boundary_clear(*candidate, domain_box, _gap.wall_gap, false)) {
+        continue;
+      }
 
       // (b) Two-stage collision check against accepted shapes:
       //     Stage 1: grid broad phase -> AABB-overlapping neighbours only.
@@ -103,16 +113,12 @@ public:
       // hoist the outer dispatcher lookup once via bind_lhs.
       // If the user hasn't called rvegen::register_all_collision_pairs(),
       // the bound dispatcher returns AABB results — same conservative
-      // behaviour as before.
-      auto const bound_dispatcher =
-          collision_dispatcher<value_type>::instance().bind_lhs(*candidate);
-      const bool collides =
-          grid.any_overlap(*cand_bb, [&](std::size_t i) {
-            return bound_dispatcher(*candidate, *accepted[i]);
-          });
-      if (collides) continue;
+      // behaviour as before. With a minimum gap (placement_gap.h) the
+      // search box is padded and the pair test asks "closer than the gap?".
+      const value_type size = _gap.size_of(*candidate);
+      if (placed.too_close(*candidate, size, accepted)) continue;
 
-      grid.insert(*cand_bb);
+      placed.insert(*candidate, size);
       accepted.push_back(std::move(candidate));
 
       if (accepted.size() - last_emit >= opts.emit_every) {
@@ -133,8 +139,13 @@ public:
   [[nodiscard]] std::size_t max_attempts() const noexcept { return _max_attempts; }
   void set_max_attempts(std::size_t n) noexcept { _max_attempts = n; }
 
+  // Minimum distances between inclusions and to the faces (#111).
+  [[nodiscard]] placement_gap<T> const& gap() const noexcept { return _gap; }
+  void set_gap(placement_gap<T> const& gap) noexcept { _gap = gap; }
+
 private:
   std::size_t _max_attempts{100'000};
+  placement_gap<T> _gap{};
 };
 
 } // namespace rvegen

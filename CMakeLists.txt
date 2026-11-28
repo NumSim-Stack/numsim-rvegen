@@ -235,6 +235,15 @@ add_executable(rvegen_collision_pairs_test tests/collision_pairs_test.cpp)
 target_link_libraries(rvegen_collision_pairs_test PRIVATE rvegen_lib)
 add_test(NAME collision_pairs_test COMMAND rvegen_collision_pairs_test)
 
+# Minimum gap between inclusions and to the faces (#111): exact pair
+# distances, generated packs measured by sampling (periodic images
+# included), relative and wall gaps, zero gaps change nothing.
+add_executable(rvegen_min_gap_test tests/min_gap_test.cpp)
+target_link_libraries(rvegen_min_gap_test PRIVATE rvegen_lib)
+target_compile_definitions(rvegen_min_gap_test PRIVATE
+    RVEGEN_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples")
+add_test(NAME min_gap_test COMMAND rvegen_min_gap_test)
+
 add_executable(rvegen_placement_test tests/placement_test.cpp)
 target_link_libraries(rvegen_placement_test PRIVATE
     rvegen_lib
@@ -883,6 +892,17 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_dimension_inference_check.py
             ${CMAKE_CURRENT_SOURCE_DIR})
+  # Periodic packs generated with a minimum gap mesh without errors, 20
+  # seeds each in 2D and 3D (#111). Needs gmsh.
+  if(RVEGEN_GMSH_EXECUTABLE)
+    add_test(NAME gmsh_min_gap
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tests/gmsh_min_gap_check.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --gmsh "${RVEGEN_GMSH_EXECUTABLE}"
+              --workdir ${CMAKE_CURRENT_BINARY_DIR}/gmsh_min_gap)
+    set_tests_properties(gmsh_min_gap PROPERTIES TIMEOUT 900)
+  endif()
   add_test(NAME no_dimension_inference_self_test
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_dimension_inference_check.py

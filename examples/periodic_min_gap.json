@@ -1,0 +1,21 @@
+{
+  "_comment": "Periodic 2D pack that a mesher can take as it is: min_gap keeps every two circles at least one element size apart, wall_gap does the same at the box faces and corners (a circle stays that far away or reaches that far through). Without the two keys the same pack contains circles 1e-3 apart and caps a few 1e-3 thick, which gmsh resolves with slivers.",
+  "domain_box": [1.0, 1.0],
+  "seed": 21,
+  "distributions": {
+    "any": {"type": "uniform_real", "a": 0.0, "b": 1.0},
+    "radius": {"type": "uniform_real", "a": 0.04, "b": 0.08}
+  },
+  "shapes": [
+    {"type": "circle_input", "pos_x_dist": "any", "pos_y_dist": "any",
+     "radius_dist": "radius", "phase_name": "fibre"}
+  ],
+  "generator": {"type": "periodic", "max_attempts": 200000,
+                "min_gap": 0.03, "wall_gap": 0.03},
+  "termination": {"type": "volume_fraction", "target_fraction": 0.3},
+  "postprocess": [
+    {"type": "gmsh_geo", "output_path": "periodic_min_gap.geo",
+     "periodic": true, "char_length_min": 0.01, "char_length_max": 0.03,
+     "algorithm": 6}
+  ]
+}

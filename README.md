@@ -169,9 +169,9 @@ declared by its static `parameters()` method):
 |                 | `box_input`                | 3 position + 3 extent dist names         |
 |                 | `polyline_tube_input`, `polyline_tube_directional_input` | swept-tube fibres |
 |                 | `mesh_inclusion_input`     | `mesh_path` (STL/PLY): placed copies of a triangle mesh |
-| **generator**   | `only_inside`              | `max_attempts`                           |
-|                 | `periodic`                 | `max_attempts`                           |
-|                 | `random`                   | `max_attempts`                           |
+| **generator**   | `only_inside`              | `max_attempts`; optional `min_gap`, `min_gap_relative`, `wall_gap` |
+|                 | `periodic`                 | `max_attempts`; optional `min_gap`, `min_gap_relative`, `wall_gap` |
+|                 | `random`                   | `max_attempts`; optional `min_gap`, `min_gap_relative`, `wall_gap` |
 | **termination** | `number_of_inclusions`     | `target` (count)                         |
 |                 | `volume_fraction`          | `target_fraction` (0..1)                 |
 |                 | `until_full`               | (no params; relies on generator's cap)   |
@@ -200,6 +200,27 @@ copy is linked to its primary: it carries the lattice shift from it and both
 share an inclusion id. Inclusion counts, volume fractions, statistics, phase
 assignment by index and shape-index voxel output all count such an inclusion
 once, including one centred exactly on a face or a corner.
+
+**Minimum gaps.** Rejecting overlaps alone lets two inclusions end up 1e-6
+apart, which a mesher answers with sliver elements or no mesh at all. The
+placement generators `only_inside`, `periodic` and `random` take three
+optional keys, all 0 by default:
+
+| Key | Meaning |
+|-----|---------|
+| `min_gap` | Smallest distance between two inclusions, in box units. For a mesh, about the largest element size. |
+| `min_gap_relative` | The same as a fraction of the equivalent diameter (the circle or sphere of equal area or volume) of the smaller of the two inclusions. The larger of the two requirements applies. |
+| `wall_gap` | Clearance to the boundary of the box: an inclusion stays at least this far from a face or, where the generator lets it cross (`periodic`, `random`), reaches at least this far through it; likewise at the corners (2D) and the edges and corners (3D). |
+
+The distance is measured between the shapes themselves for every built-in
+pair (circle, ellipse, rectangle, sphere, box, tube, mesh inclusion), periodic
+copies and all lattice images included. The gaps are recorded in the
+generation report (`run_summary`, Python `summary["report"]`) and in a comment
+line of the `.geo` and voxel files. With all three at 0 a run is bit-identical
+to one without the keys. A gap lowers the densest packing a generator can
+reach, so a `volume_fraction` target may need more `max_attempts` or become
+unreachable; the report says which. `examples/periodic_min_gap.json` is a
+periodic pack with `min_gap` and `wall_gap` set to the mesh size.
 
 ### Worked examples
 
