@@ -774,7 +774,10 @@ void test_periodic_images_missing_the_cell() {
     const auto shapes = make_shapes(std::move(v));
     rvegen::gmsh_geo_writer<double> writer{};
     const auto txt = script_of(writer, shapes, {1.0, 1.0, 0.0});
-    REQUIRE(txt.find("!= 1") != std::string::npos);  // guarded result list
+    // A polygon is pre-clipped to the domain in C++: one that misses the
+    // box is skipped outright; any other shape keeps the guarded list.
+    REQUIRE(txt.find("!= 1") != std::string::npos ||
+            txt.find("polygon skipped") != std::string::npos);
     // Not periodic: the polygon-only shape exercises the guard on its own.
     const std::string stem = "gmsh_rt_missing_polygon";
     const cleanup_on_success cleanup{stem};

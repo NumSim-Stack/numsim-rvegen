@@ -30,8 +30,11 @@
 //   that's the producer's responsibility.
 //
 // Out of scope here, ships in follow-up PRs against #8:
-//   * Periodic Voronoi (cells that wrap across the RVE box). Trivial
-//     once the tessellator is wired in.
+//   * (Periodic Voronoi now exists: voronoi_generator_{2d,3d} with
+//     `periodic = true` return the cell around each seed, possibly
+//     poking out of the box; periodic images come from
+//     generate_periodic_wraps, which derives the bounding box itself if
+//     the cell has none.)
 //   * `voronoi_cell_input` — JSON-driven loader (cell vertex / face
 //     data is heterogeneous; needs careful schema design).
 //   * Precise `collision_details(voronoi_cell, X)` overloads — falls

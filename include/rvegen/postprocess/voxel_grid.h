@@ -136,6 +136,13 @@ sample_voxel_grid_with_ids(
 // primary and its wraps, linked by periodic_generator) share one number.
 // Without periodic wraps this is the plain 1-based shape index.
 //
+// Voronoi grains: a shape whose info() has an integer "grain_id" (set by
+// voronoi_to_shapes) is marked with grain_id + 1 instead, so the periodic
+// wrap pieces of one grain share that grain's value and the value matches
+// the grain numbering of the generator. If a shape list mixes grains with
+// other shapes, the other shapes are numbered after the largest grain
+// value, so the two numberings never collide.
+//
 // 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz_eff = 1)
 // at z = 0. 3D RVEs sample voxel centres along z as well, so nz = 1 gives
 // the mid-plane slice z = Lz/2.
@@ -147,9 +154,22 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::size_t nx, std::size_t ny, std::size_t nz) {
   std::vector<phase_id> shape_to_id(shapes.size());
   std::unordered_map<std::size_t, phase_id> id_of_inclusion;
+  // Grain value (grain_id + 1) per shape, 0 for a shape without grain_id;
+  // other shapes are numbered from the largest grain value on.
+  std::vector<phase_id> grain_value(shapes.size(), 0);
   phase_id next_id = 0;
   for (std::size_t s = 0; s < shapes.size(); ++s) {
-    if (auto const inc = inclusion_id(*shapes[s])) {
+    auto const& info = shapes[s]->info();
+    if (info.contains("grain_id")) {
+      grain_value[s] =
+          static_cast<phase_id>(info.template get<std::size_t>("grain_id") + 1);
+      next_id = std::max(next_id, grain_value[s]);
+    }
+  }
+  for (std::size_t s = 0; s < shapes.size(); ++s) {
+    if (grain_value[s] != 0) {
+      shape_to_id[s] = grain_value[s];
+    } else if (auto const inc = inclusion_id(*shapes[s])) {
       auto const [it, inserted] =
           id_of_inclusion.try_emplace(*inc, next_id + 1);
       if (inserted) ++next_id;

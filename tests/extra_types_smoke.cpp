@@ -2451,7 +2451,7 @@ void test_voronoi_generator_3d_partition_invariant() {
 void test_voronoi_generator_3d_validation_throws() {
   bool t1 = false;
   try { rvegen::voronoi_generator_3d<double>{0, 1, 1, {{0.5, 0.5, 0.5}}}; }
-  catch (std::runtime_error const&) { t1 = true; }
+  catch (std::invalid_argument const&) { t1 = true; }   // non-positive extent
   REQUIRE(t1);
 
   bool t2 = false;
@@ -2597,12 +2597,12 @@ void test_voronoi_generator_2d_validation_throws() {
 
   bool threw_zero_Lx = false;
   try { rvegen::voronoi_generator_2d<double>{0.0, 1.0, {{0.5, 0.5}}}; }
-  catch (std::runtime_error const&) { threw_zero_Lx = true; }
+  catch (std::invalid_argument const&) { threw_zero_Lx = true; }
   REQUIRE(threw_zero_Lx);
 
   bool threw_zero_Ly = false;
   try { rvegen::voronoi_generator_2d<double>{1.0, 0.0, {{0.5, 0.5}}}; }
-  catch (std::runtime_error const&) { threw_zero_Ly = true; }
+  catch (std::invalid_argument const&) { threw_zero_Ly = true; }
   REQUIRE(threw_zero_Ly);
 }
 

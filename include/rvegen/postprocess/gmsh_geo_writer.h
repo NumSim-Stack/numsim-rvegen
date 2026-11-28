@@ -319,7 +319,10 @@ public:
     for (auto const& s : shapes) {
       if (!is_3d) {
         if (auto const* p = dynamic_cast<convex_polygon<value_type> const*>(s.get()); p) {
-          if (is_degenerate_polygon(*p)) {
+          // Clip to the domain: periodic wrap images may poke out of it,
+          // and a polygon with < 3 clipped vertices (empty / collapsed /
+          // sliver) would give an invalid `Line Loop{}`.
+          if (clipped_vertices(*p, box).size() < 3) {
             buf << "// (degenerate polygon skipped)\n";
             continue;
           }
@@ -601,7 +604,7 @@ private:
       } else if (auto const* e = dynamic_cast<ellipse<value_type> const*>(raw); e) {
         write_ellipse(out, *e, entity_id);
       } else if (auto const* p = dynamic_cast<convex_polygon<value_type> const*>(raw); p) {
-        write_polygon(out, *p, entity_id);
+        write_polygon(out, clipped_vertices(*p, domain_box), entity_id);
       }
       ids.push_back(entity_id++);
     }
@@ -717,25 +720,75 @@ private:
     }
   }
 
-  static bool is_degenerate_polygon(convex_polygon<value_type> const& p) {
-    auto const& v = p.vertices();
-    if (v.size() < 3) return true;
-    value_type a2{0};
-    for (std::size_t k = 0; k < v.size(); ++k) {
-      auto const& a = v[k];
-      auto const& b = v[(k + 1) % v.size()];
-      a2 += a[0] * b[1] - b[0] * a[1];
+  // Sutherland-Hodgman clip of a (convex) polygon against [0,Lx]x[0,Ly];
+  // consecutive near-duplicate vertices (a vertex lying on a clip edge) are
+  // merged so no zero-length Line is emitted. A polygon fully inside is
+  // returned unchanged. Returns fewer than 3 vertices when nothing (or only
+  // a sliver) remains.
+  static std::vector<std::array<value_type, 2>>
+  clip_polygon_to_rect(std::vector<std::array<value_type, 2>> poly,
+                       value_type Lx, value_type Ly) {
+    const value_type eps = std::min(Lx, Ly) * value_type{1e-12};
+    // axis, bound, keep-side sign: keep points with sign*(p[axis]-bound) <= 0
+    struct edge { int axis; value_type bound; value_type sign; };
+    const edge edges[4] = {{0, value_type{0}, value_type{-1}},
+                           {0, Lx, value_type{1}},
+                           {1, value_type{0}, value_type{-1}},
+                           {1, Ly, value_type{1}}};
+    for (auto const& e : edges) {
+      if (poly.size() < 3) return {};
+      std::vector<std::array<value_type, 2>> out;
+      const std::size_t n = poly.size();
+      for (std::size_t i = 0; i < n; ++i) {
+        auto const& a = poly[i];
+        auto const& b = poly[(i + 1) % n];
+        const value_type da = e.sign * (a[e.axis] - e.bound);
+        const value_type db = e.sign * (b[e.axis] - e.bound);
+        const bool ain = da <= value_type{0}, bin = db <= value_type{0};
+        if (ain) out.push_back(a);
+        if (ain != bin) {
+          const value_type t = da / (da - db);
+          std::array<value_type, 2> q{a[0] + t * (b[0] - a[0]),
+                                      a[1] + t * (b[1] - a[1])};
+          q[e.axis] = e.bound;   // exactly on the boundary
+          out.push_back(q);
+        }
+      }
+      poly = std::move(out);
     }
-    return !(std::abs(a2) > value_type{0});
+    std::vector<std::array<value_type, 2>> res;
+    for (auto const& v : poly) {
+      if (!res.empty() && std::abs(v[0] - res.back()[0]) <= eps &&
+          std::abs(v[1] - res.back()[1]) <= eps) continue;
+      res.push_back(v);
+    }
+    while (res.size() > 1 && std::abs(res.front()[0] - res.back()[0]) <= eps &&
+           std::abs(res.front()[1] - res.back()[1]) <= eps) res.pop_back();
+    // Drop slivers with (numerically) zero area.
+    value_type area2{0};
+    for (std::size_t i = 0; i < res.size(); ++i) {
+      auto const& a = res[i];
+      auto const& b = res[(i + 1) % res.size()];
+      area2 += a[0] * b[1] - a[1] * b[0];
+    }
+    if (res.size() < 3 || std::abs(area2) <= eps * std::max(Lx, Ly)) return {};
+    return res;
+  }
+
+  static std::vector<std::array<value_type, 2>>
+  clipped_vertices(convex_polygon<value_type> const& p, std::array<value_type, 3> const& box) {
+    std::vector<std::array<value_type, 2>> poly;
+    for (auto const& v : p.vertices()) poly.push_back({v[0], v[1]});
+    return clip_polygon_to_rect(std::move(poly), box[0], box[1]);
   }
 
   // Points / lines / loop get fresh tags from gmsh (newp / newl / newll)
   // so they never collide with the tags OCC auto-assigns to the
   // boundaries of Rectangle / Disk entities. Only the Plane Surface uses
   // the explicit inclusion id.
-  void write_polygon(std::ostream& out, convex_polygon<value_type> const& p,
-                            std::size_t id) const {
-    auto const& verts = p.vertices();
+  void write_polygon(std::ostream& out,
+                     std::vector<std::array<value_type, 2>> const& verts,
+                     std::size_t id) const {
     const std::size_t n = verts.size();
     for (std::size_t k = 0; k < n; ++k) {
       out << "_p" << k << " = newp; Point(_p" << k << ") = {"

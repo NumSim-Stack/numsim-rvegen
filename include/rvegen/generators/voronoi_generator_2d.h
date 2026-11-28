@@ -17,6 +17,19 @@
 //
 //   The 3D counterpart lives in voronoi_generator_3d.h.
 //
+// Periodic mode (#8): `periodic = true` tessellates the rectangle as a
+// 2-torus. Each cell is the Voronoi cell of its seed against all 3x3 image
+// seeds (shifted by -L, 0, +L per axis), starting from the rectangle of
+// size (Lx, Ly) centred on the seed and with NO clipping to the domain. A
+// cell crossing a box edge is returned as ONE whole convex polygon that
+// sticks out of [0,Lx]x[0,Ly] (the same convention as periodic inclusions
+// with wraps); areas still sum to Lx*Ly and opposite edges match up to a
+// translation by L.
+//
+// Weights (#8, Laguerre / power diagram): optional per-seed weights w_i
+// [length^2] replace |x-p_i|^2 by |x-p_i|^2 - w_i. A weighted cell may be
+// empty (< 3 vertices) and need not contain its seed.
+//
 // Output type:
 //   `build()` returns `std::vector<polygon_type>` where
 //   `polygon_type = std::vector<std::array<T, 2>>` — one CCW vertex
@@ -48,6 +61,8 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "voronoi_seed_validation.h"
@@ -64,18 +79,47 @@ public:
   // Domain is the rectangle `[0, Lx] × [0, Ly]`. Seeds must lie in
   // the closed domain (boundary seeds are fine) and must be pairwise
   // distinct; violations throw std::runtime_error.
-  voronoi_generator_2d(T Lx, T Ly, std::vector<point_type> seeds)
-      : _Lx{Lx}, _Ly{Ly}, _seeds{std::move(seeds)} {
-    if (Lx <= T{0} || Ly <= T{0}) {
+  voronoi_generator_2d(T Lx, T Ly, std::vector<point_type> seeds,
+                       bool periodic = false, std::vector<T> weights = {})
+      : _Lx{Lx}, _Ly{Ly}, _seeds{std::move(seeds)}, _periodic{periodic},
+        _weights{std::move(weights)} {
+    if (!_weights.empty() && _weights.size() != _seeds.size()) {
       throw std::runtime_error{
-          "voronoi_generator_2d: Lx and Ly must both be positive"};
+          "voronoi_generator_2d: weights must be empty or one per seed"};
+    }
+    for (auto const& [name, v] :
+         std::array<std::pair<char const*, T>, 2>{{{"Lx", Lx}, {"Ly", Ly}}}) {
+      if (!std::isfinite(v) || !(v > T{0})) {
+        throw std::invalid_argument{
+            std::string{"voronoi_generator_2d: "} + name +
+            " must be finite and positive (got " + std::to_string(v) + ")"};
+      }
     }
     if (_seeds.empty()) {
       throw std::runtime_error{
           "voronoi_generator_2d: at least one seed required"};
     }
+    for (std::size_t i = 0; i < _seeds.size(); ++i) {
+      if (!std::isfinite(_seeds[i][0]) || !std::isfinite(_seeds[i][1])) {
+        throw std::invalid_argument{
+            "voronoi_generator_2d: seeds[" + std::to_string(i) +
+            "] has a non-finite coordinate"};
+      }
+    }
+    for (std::size_t i = 0; i < _weights.size(); ++i) {
+      if (!std::isfinite(_weights[i])) {
+        throw std::invalid_argument{"voronoi_generator_2d: weights[" +
+                                    std::to_string(i) + "] is not finite"};
+      }
+    }
     detail::validate_voronoi_seeds<T, 2>({Lx, Ly}, _seeds,
-                                         "voronoi_generator_2d");
+                                         "voronoi_generator_2d", periodic);
+  }
+
+  [[nodiscard]] bool periodic() const noexcept { return _periodic; }
+
+  [[nodiscard]] std::array<T, 3> box() const noexcept {
+    return {_Lx, _Ly, T{0}};
   }
 
   [[nodiscard]] std::size_t seed_count() const noexcept {
@@ -88,16 +132,27 @@ public:
   [[nodiscard]] std::vector<polygon_type> build() const {
     std::vector<polygon_type> out;
     out.reserve(_seeds.size());
-    const polygon_type bbox = make_bounding_rectangle();
+    polygon_type bbox = make_bounding_rectangle();
+    const int range = _periodic ? 1 : 0;
     const T merge_tol =
         std::numeric_limits<T>::epsilon() * T{16} * std::min(_Lx, _Ly);
 
     for (std::size_t i = 0; i < _seeds.size(); ++i) {
       polygon_type cell = bbox;
       auto const& p_i = _seeds[i];
-      for (std::size_t j = 0; j < _seeds.size(); ++j) {
-        if (i == j) continue;
-        auto const& p_j = _seeds[j];
+      if (_periodic) {   // rectangle of one period centred on the seed
+        cell = {{p_i[0] - _Lx / 2, p_i[1] - _Ly / 2},
+                {p_i[0] + _Lx / 2, p_i[1] - _Ly / 2},
+                {p_i[0] + _Lx / 2, p_i[1] + _Ly / 2},
+                {p_i[0] - _Lx / 2, p_i[1] + _Ly / 2}};
+      }
+      const T w_i = _weights.empty() ? T{0} : _weights[i];
+      for (std::size_t j = 0; j < _seeds.size() && cell.size() >= 3; ++j)
+      for (int sx = -range; sx <= range && cell.size() >= 3; ++sx)
+      for (int sy = -range; sy <= range && cell.size() >= 3; ++sy) {
+        if (i == j && sx == 0 && sy == 0) continue;
+        const point_type p_j{_seeds[j][0] + sx * _Lx, _seeds[j][1] + sy * _Ly};
+        const T w_j = _weights.empty() ? T{0} : _weights[j];
         // Perpendicular-bisector half-plane, unit normal n toward p_j:
         //   n · x ≤ n · (p_i + p_j) / 2
         const T dx = p_j[0] - p_i[0];
@@ -106,9 +161,9 @@ public:
         const T A = dx / len;
         const T B = dy / len;
         const T C = A * (p_i[0] + p_j[0]) * T{0.5} +
-                    B * (p_i[1] + p_j[1]) * T{0.5};
+                    B * (p_i[1] + p_j[1]) * T{0.5} -
+                    (w_j - w_i) / (T{2} * len);   // power-diagram shift
         cell = clip_polygon(cell, A, B, C, merge_tol);
-        if (cell.size() < 3) break;   // collapsed; further clipping won't recover
       }
       out.push_back(std::move(cell));
     }
@@ -119,6 +174,8 @@ private:
   T _Lx;
   T _Ly;
   std::vector<point_type> _seeds;
+  bool _periodic;
+  std::vector<T> _weights;   // empty = plain Voronoi
 
   // Bounding rectangle vertices in CCW order, starting bottom-left.
   [[nodiscard]] polygon_type make_bounding_rectangle() const {
@@ -203,16 +260,24 @@ template <typename T>
 // One-line bridge from voronoi_generator_2d into the rvegen shape
 // pipeline: build the cells, wrap each as a convex_polygon, return
 // the shape_vector that the standard writers (voxel, gmsh, svg)
-// consume. Always returns one shape per seed, in seed order (#79):
+// consume. The first seed_count() entries are the cells in seed order (#79):
 // a numerically collapsed (< 3 vertex) cell becomes an empty
 // convex_polygon placeholder (area 0, contains nothing) so downstream
 // per-grain data indexed by seed stays aligned.
+//
+// For a periodic generator a cell that sticks out of the box is built whole,
+// so its wrapped pieces (translated copies, generate_periodic_wraps) are
+// appended after the primaries: without them part of the box has no owner
+// (about 27 % of the voxels in a typical 8-seed case). Every piece carries
+// info "grain_id" = its seed index, so all pieces of one grain share the
+// grain's id (sample_voxel_grid honours it).
 //
 // Lives in its own header so callers can pull in the helper without
 // dragging in shape_base / convex_polygon transitively when they
 // only want the raw polygon output.
 
 #include "../shapes/convex_polygon.h"
+#include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
 
 namespace rvegen {
@@ -223,12 +288,21 @@ voronoi_to_shapes(voronoi_generator_2d<T> const& gen) {
   auto cells = gen.build();
   std::vector<std::unique_ptr<shape_base<T>>> out;
   out.reserve(cells.size());
-  for (auto& v : cells) {
+  for (std::size_t i = 0; i < cells.size(); ++i) {
+    auto& v = cells[i];
     if (v.size() < 3) {
       out.push_back(std::make_unique<convex_polygon<T>>());   // placeholder
-      continue;
+    } else {
+      out.push_back(std::make_unique<convex_polygon<T>>(std::move(v)));
     }
-    out.push_back(std::make_unique<convex_polygon<T>>(std::move(v)));
+    out.back()->info().set("grain_id", i);
+  }
+  if (gen.periodic()) {
+    const std::size_t n = out.size();
+    for (std::size_t i = 0; i < n; ++i) {
+      auto wraps = generate_periodic_wraps<T>(*out[i], gen.box());
+      for (auto& w : wraps) out.push_back(std::move(w));
+    }
   }
   return out;
 }
