@@ -703,30 +703,42 @@ void test_paths_and_verbose_lines() {
     fs::remove(out_dir / "paths_test_out.vox");
   }
   // A file that is only found relative to the working directory (how every
-  // path was read before) is still used, with a warning.
+  // path was read before) is used on request, with a warning. The file is
+  // made inside the working directory: a path with ".." steps could also
+  // resolve from input_dir.
   {
-    std::error_code ec;
-    const auto rel = fs::relative(cfg_dir / "data" / "tet.stl",
-                                  fs::current_path(), ec);
-    if (!ec && !rel.empty() && rel.is_relative()) {
-      lines l;
-      auto o = options(l);
-      o.input_dir = out_dir;   // not there
-      o.output_dir = out_dir;
-      json old_style = cfg;
-      old_style["shapes"][0]["mesh_path"] = rel.generic_string();
-      // Only on request: a caller that names the input directory gets an
-      // error for a missing file, never a look-alike from somewhere else.
-      const auto msg =
-          error_of([&] { (void)rvegen::run_pipeline(old_style, o); });
-      REQUIRE(msg.find("tet.stl") != std::string::npos);
-      REQUIRE(l.warn.empty());
-      o.input_cwd_fallback = true;
-      REQUIRE(rvegen::run_pipeline(old_style, o).shapes.size() == 3);
-      REQUIRE(l.warn.size() == 1);
-      REQUIRE(lines::has(l.warn, "exists relative to the working directory"));
-      REQUIRE(lines::has(l.warn, "shapes[0] ('mesh_inclusion_input'): mesh_path"));
-    }
+    const fs::path cwd_data = "paths_test_cwd_data";
+    struct remove_dir {
+      fs::path d;
+      ~remove_dir() {
+        std::error_code ec;
+        fs::remove_all(d, ec);
+      }
+    } cleanup{cwd_data};
+    fs::remove_all(cwd_data);
+    fs::create_directories(cwd_data);
+    write_tetrahedron(cwd_data / "tet.stl");
+    lines l;
+    auto o = options(l);
+    o.input_dir = cfg_dir;   // has data/tet.stl, not paths_test_cwd_data/
+    o.output_dir = out_dir;
+    json old_style = cfg;
+    old_style["shapes"][0]["mesh_path"] = "paths_test_cwd_data/tet.stl";
+    // Only on request: a caller that names the input directory gets an
+    // error for a missing file, never a look-alike from somewhere else.
+    const auto msg = error_of([&] { (void)rvegen::run_pipeline(old_style, o); });
+    REQUIRE(msg.find((cfg_dir / "paths_test_cwd_data" / "tet.stl").string()) !=
+            std::string::npos);
+    REQUIRE(l.warn.empty());
+    o.input_cwd_fallback = true;
+    REQUIRE(rvegen::run_pipeline(old_style, o).shapes.size() == 3);
+    REQUIRE(l.warn.size() == 1);
+    REQUIRE(lines::has(l.warn, "exists relative to the working directory"));
+    REQUIRE(lines::has(l.warn, "shapes[0] ('mesh_inclusion_input'): mesh_path"));
+    // With the fallback on, a file that IS in input_dir still wins.
+    l.warn.clear();
+    REQUIRE(rvegen::run_pipeline(cfg, o).shapes.size() == 3);
+    REQUIRE(l.warn.empty());
   }
 }
 
