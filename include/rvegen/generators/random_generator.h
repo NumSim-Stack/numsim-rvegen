@@ -97,7 +97,7 @@ public:
       // (see only_inside_generator for the rationale). A shape may cross
       // a face here; with a wall gap it must then reach that far through.
       if (_gap.wall_gap > value_type{0} &&
-          !faces_clear(*cand_bb, domain_box, _gap.wall_gap, true)) {
+          !boundary_clear(*candidate, domain_box, _gap.wall_gap, true)) {
         continue;
       }
       const value_type size = _gap.size_of(*candidate);

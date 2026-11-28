@@ -101,7 +101,7 @@ public:
         continue;
       }
       if (_gap.wall_gap > value_type{0} &&
-          !faces_clear(*cand_bb, domain_box, _gap.wall_gap, false)) {
+          !boundary_clear(*candidate, domain_box, _gap.wall_gap, false)) {
         continue;
       }
 

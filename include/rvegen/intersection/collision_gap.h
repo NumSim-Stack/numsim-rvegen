@@ -13,22 +13,22 @@
 // mesher needs: two inclusions 1e-6 apart give sliver elements or no mesh
 // at all.
 //
-// Exact and conservative pairs:
-//   * Exact (true iff distance <= gap): every pair of circle, rectangle,
-//     sphere, box, polyline_tube and mesh_inclusion, including mixed ones.
-//   * Conservative (never accepts a pair closer than gap, may refuse one
-//     that is a little farther): pairs with an ellipse. The ellipse is
-//     replaced by the smallest ellipse with the same axes that contains
-//     everything within `gap` of it (detail::inflated); along the minor
-//     axis that is up to about 0.2 * gap more than needed for an aspect
-//     ratio of 2 and gap = 0.1 * minor axis.
+// Every pair is exact (true iff the distance is <= gap, to within
+// rounding): circle, rectangle, sphere, box, polyline_tube and
+// mesh_inclusion pairs from closed-form or GTE distance queries. Pairs with
+// an ellipse have no closed form: two ellipses that bound the offset
+// region from inside and outside settle most calls, and the band in
+// between is decided by the distance itself, minimised over the boundary
+// of one shape (detail::min_over_ellipse).
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <type_traits>
 #include <vector>
 
+#include <Mathematics/DistPointHyperellipsoid.h>
 #include <Mathematics/DistPointSegment.h>
 #include <Mathematics/DistPointTriangle.h>
 #include <Mathematics/DistSegment3AlignedBox3.h>
@@ -118,6 +118,84 @@ template <typename T>
   return false;
 }
 
+// The ellipse with both semi-axes grown by `gap`: contained in the region
+// within `gap` of `e` (which bulges beyond it between the axes), so a hit
+// on it proves "closer than gap".
+template <typename T>
+[[nodiscard]] inline gte::Ellipse2<T> grown(gte::Ellipse2<T> e, T gap) {
+  e.extent[0] += gap;
+  e.extent[1] += gap;
+  return e;
+}
+
+// Smallest value of f(point) over the boundary of `e`, for f the distance
+// to a convex set that does not meet `e`. Such an f is convex in the
+// plane, so along the boundary it falls to the nearest point and rises
+// again on both sides (a second, higher dip can exist on the far side):
+// 64 samples find the right valley, a golden-section search finishes it.
+// The result is never below the true minimum and within about 1e-12 of it
+// relative to the size of the ellipse.
+template <typename T, typename F>
+[[nodiscard]] inline T min_over_ellipse(gte::Ellipse2<T> const& e, F&& f) {
+  constexpr int samples = 64;
+  constexpr T two_pi = T{2} * std::numbers::pi_v<T>;
+  auto at = [&](T t) {
+    const T u = e.extent[0] * std::cos(t);
+    const T v = e.extent[1] * std::sin(t);
+    gte::Vector2<T> p;
+    p[0] = e.center[0] + u * e.axis[0][0] + v * e.axis[1][0];
+    p[1] = e.center[1] + u * e.axis[0][1] + v * e.axis[1][1];
+    return f(p);
+  };
+  T best = at(T{0});
+  int best_i = 0;
+  for (int i = 1; i < samples; ++i) {
+    const T v = at(two_pi * static_cast<T>(i) / samples);
+    if (v < best) {
+      best = v;
+      best_i = i;
+    }
+  }
+  T lo = two_pi * static_cast<T>(best_i - 1) / samples;
+  T hi = two_pi * static_cast<T>(best_i + 1) / samples;
+  const T ratio = (std::sqrt(T{5}) - T{1}) / T{2};
+  T x1 = hi - ratio * (hi - lo);
+  T x2 = lo + ratio * (hi - lo);
+  T f1 = at(x1);
+  T f2 = at(x2);
+  for (int it = 0; it < 80 && hi - lo > T{1e-12}; ++it) {
+    if (f1 < f2) {
+      hi = x2;
+      x2 = x1;
+      f2 = f1;
+      x1 = hi - ratio * (hi - lo);
+      f1 = at(x1);
+    } else {
+      lo = x1;
+      x1 = x2;
+      f1 = f2;
+      x2 = lo + ratio * (hi - lo);
+      f2 = at(x2);
+    }
+  }
+  return std::min({best, f1, f2});
+}
+
+// Distance from a point outside `e` to `e` (GTE).
+template <typename T>
+[[nodiscard]] inline T point_ellipse_distance(gte::Vector2<T> const& p,
+                                              gte::Ellipse2<T> const& e) {
+  gte::DCPQuery<T, gte::Vector2<T>, gte::Hyperellipsoid<2, T>> query;
+  return query(p, e).distance;
+}
+
+// The computed distance is an upper bound that can exceed the true one by
+// rounding: a pair this close to the gap counts as too close.
+template <typename T>
+[[nodiscard]] constexpr bool within_gap(T distance, T gap) noexcept {
+  return distance <= gap * (T{1} + T{1e-9});
+}
+
 } // namespace detail
 
 // ---- 2D ---------------------------------------------------------------------
@@ -160,20 +238,34 @@ template <typename T>
 template <typename T>
 [[nodiscard]] bool collision_details(ellipse<T> const& lhs,
                                      ellipse<T> const& rhs, T gap) {
-  return detail::gte_ellipses_collide<T>(detail::inflated<T>(lhs, gap), rhs);
+  // Outside the outer bound: farther than gap. Inside the inner bound:
+  // closer. In between, the distance decides.
+  if (!detail::gte_ellipses_collide<T>(detail::inflated<T>(lhs, gap), rhs))
+    return false;
+  if (detail::gte_ellipses_collide<T>(detail::grown<T>(lhs, gap), rhs))
+    return true;
+  gte::Ellipse2<T> const& other = lhs;
+  const T distance = detail::min_over_ellipse<T>(
+      rhs, [&](gte::Vector2<T> const& p) {
+        return detail::point_ellipse_distance<T>(p, other);
+      });
+  return detail::within_gap(distance, gap);
 }
 
 template <typename T>
 [[nodiscard]] bool collision_details(circle<T> const& c, ellipse<T> const& e,
                                      T gap) {
-  // The circle is the one that grows: exact for the circle, and the
-  // ellipse is taken as it is.
-  gte::Ellipse2<T> circle_as_ellipse;
-  circle_as_ellipse.center = c.center;
-  circle_as_ellipse.axis[0] = {T{1}, T{0}};
-  circle_as_ellipse.axis[1] = {T{0}, T{1}};
-  circle_as_ellipse.extent = {c.radius + gap, c.radius + gap};
-  return detail::gte_ellipses_collide<T>(circle_as_ellipse, e);
+  // Centre in the ellipse, or the ellipse within radius + gap of the
+  // centre (GTE point-ellipse distance). Also right for a radius of 0,
+  // which is how a single point is probed (placement_gap.h).
+  const T dx = c.center[0] - e.center[0];
+  const T dy = c.center[1] - e.center[1];
+  const T u = (dx * e.axis[0][0] + dy * e.axis[0][1]) / e.extent[0];
+  const T v = (dx * e.axis[1][0] + dy * e.axis[1][1]) / e.extent[1];
+  if (u * u + v * v <= T{1}) return true;
+  gte::Ellipse2<T> const& ellipse_only = e;
+  return detail::point_ellipse_distance<T>(c.center, ellipse_only) <=
+         c.radius + gap;
 }
 template <typename T>
 [[nodiscard]] bool collision_details(ellipse<T> const& e, circle<T> const& c,
@@ -184,7 +276,17 @@ template <typename T>
 template <typename T>
 [[nodiscard]] bool collision_details(rectangle<T> const& r,
                                      ellipse<T> const& e, T gap) {
-  return detail::rectangle_ellipse_collide<T>(r, detail::inflated<T>(e, gap));
+  if (!detail::rectangle_ellipse_collide<T>(r, detail::inflated<T>(e, gap)))
+    return false;
+  if (detail::rectangle_ellipse_collide<T>(r, detail::grown<T>(e, gap)))
+    return true;
+  const T distance = detail::min_over_ellipse<T>(
+      e, [&](gte::Vector2<T> const& p) {
+        const T dx = std::max({T{0}, r.min[0] - p[0], p[0] - r.max[0]});
+        const T dy = std::max({T{0}, r.min[1] - p[1], p[1] - r.max[1]});
+        return std::sqrt(dx * dx + dy * dy);
+      });
+  return detail::within_gap(distance, gap);
 }
 template <typename T>
 [[nodiscard]] bool collision_details(ellipse<T> const& e,

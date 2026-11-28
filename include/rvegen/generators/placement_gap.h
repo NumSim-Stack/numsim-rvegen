@@ -13,11 +13,14 @@
 //   "min_gap_relative"  the same as a fraction of the equivalent diameter
 //                       of the smaller of the two inclusions (default 0);
 //                       the larger of the two requirements applies
-//   "wall_gap"          clearance to the domain faces (default 0): an
-//                       inclusion either stays at least this far from a
-//                       face or, where the generator lets inclusions cross
-//                       a face (`random`, `periodic`), reaches at least
-//                       this far through it. `only_inside` never crosses.
+//   "wall_gap"          clearance to the boundary of the domain (default
+//                       0): an inclusion either stays at least this far
+//                       from a face or, where the generator lets
+//                       inclusions cross a face (`random`, `periodic`),
+//                       reaches at least this far through it; the same
+//                       for the corners of a 2D box and the edges and
+//                       corners of a 3D one (boundary_clear() below).
+//                       `only_inside` never crosses.
 //
 // All three default to 0, and with 0 a generator takes exactly the code
 // path it took before these keys existed: same candidates, same accepted
@@ -43,7 +46,10 @@
 #include "../intersection/aabb_grid.h"
 #include "../intersection/collision_dispatcher.h"
 #include "../shapes/bounding_box_base.h"
+#include "../shapes/circle.h"
+#include "../shapes/polyline_tube.h"
 #include "../shapes/shape_base.h"
+#include "../shapes/sphere.h"
 #include "../types.h"
 
 namespace rvegen {
@@ -133,6 +139,152 @@ faces_clear(bounding_box_base<T> const& bb,
       const bool clear = lo[k] >= plane + gap || hi[k] <= plane - gap;
       const bool through = lo[k] <= plane - gap && hi[k] >= plane + gap;
       if (!(clear || (may_cross && through))) return false;
+    }
+  }
+  return true;
+}
+
+namespace detail {
+
+// Is `shape` within `gap` of the point p? The point is probed as a circle
+// (2D) or sphere (3D) of radius 0 through the collision dispatcher, so
+// every shape type with a registered pair against those is measured
+// exactly.
+template <typename T>
+[[nodiscard]] inline bool near_point(shape_base<T> const& shape,
+                                     std::array<T, 3> const& p, T gap,
+                                     bool three_d) {
+  auto const& dispatch = collision_dispatcher<T>::instance();
+  if (three_d) {
+    sphere<T> probe{p[0], p[1], p[2], T{0}};
+    probe.make_bounding_box();
+    return dispatch(shape, probe, gap);
+  }
+  circle<T> probe{p[0], p[1], T{0}};
+  probe.make_bounding_box();
+  return dispatch(shape, probe, gap);
+}
+
+// Does the shape contain the axis-aligned square (2D) or cube (3D) of
+// half-width `gap` around p? Its corners are probed: for a convex shape
+// that is the whole cube, hence every point within `gap` of p.
+template <typename T>
+[[nodiscard]] inline bool deep_inside(shape_base<T> const& shape,
+                                      std::array<T, 3> const& p, T gap,
+                                      bool three_d) {
+  const T tiny = gap * T{1e-6};   // "in the shape", decided by the gap test
+  for (int corner = 0; corner < (three_d ? 8 : 4); ++corner) {
+    const std::array<T, 3> q{p[0] + ((corner & 1) ? gap : -gap),
+                             p[1] + ((corner & 2) ? gap : -gap),
+                             three_d ? p[2] + ((corner & 4) ? gap : -gap)
+                                     : p[2]};
+    if (!near_point(shape, q, tiny, three_d)) return false;
+  }
+  return true;
+}
+
+} // namespace detail
+
+// The full wall_gap rule for one shape (bounding box made): no part of
+// its surface runs within `gap` of the boundary of the domain without
+// crossing it properly.
+//
+//   faces    faces_clear() above.
+//   corners  (2D, and 3D where three crossed faces meet) the shape is at
+//            least `gap` away from the corner, or the square / cube of
+//            half-width `gap` around the corner lies inside it.
+//   edges    (3D, where two crossed faces meet) the shape is at least
+//            `gap` away from the edge line, or one of 33 equally spaced
+//            points of the line within the shape's extent has such a cube
+//            inside the shape.
+//
+// Without this an inclusion that just covers a corner leaves, in the
+// periodic copy at the opposite corner, a piece as small as one likes.
+// The probes are conservative: a shape that crosses an edge at a shallow
+// angle (a long fibre) may be refused although it would have been fine.
+// `may_cross` = false is the `only_inside` rule: faces only, since a shape
+// that stays `gap` inside every face is clear of edges and corners too.
+template <typename T>
+[[nodiscard]] inline bool
+boundary_clear(shape_base<T> const& shape,
+               std::type_identity_t<domain<T>> const& domain_box, T gap,
+               bool may_cross) {
+  auto const& bb = *shape.bounding_box();
+  if (!faces_clear(bb, domain_box, gap, may_cross)) return false;
+  if (!may_cross) return true;
+
+  const int dim = domain_box.dimension();
+  const bool three_d = dim == 3;
+  auto const lo = bb.bottom_point();
+  auto const hi = bb.top_point();
+  // Planes the shape crosses, per axis: 0 = the face at 0, 1 = the face
+  // at L. (After faces_clear, "not crossed" means at least gap away.)
+  std::array<std::array<bool, 2>, 3> crossed{};
+  int axes_crossed = 0;
+  for (int axis = 0; axis < dim; ++axis) {
+    const auto k = static_cast<std::size_t>(axis);
+    crossed[k][0] = lo[k] < T{0} && hi[k] > T{0};
+    crossed[k][1] = lo[k] < domain_box[k] && hi[k] > domain_box[k];
+    if (crossed[k][0] || crossed[k][1]) ++axes_crossed;
+  }
+  if (axes_crossed < 2) return true;
+
+  auto corner_ok = [&](std::array<T, 3> const& c) {
+    return !detail::near_point(shape, c, gap, three_d) ||
+           detail::deep_inside(shape, c, gap, three_d);
+  };
+
+  if (!three_d) {
+    for (int sx = 0; sx < 2; ++sx) {
+      for (int sy = 0; sy < 2; ++sy) {
+        if (!crossed[0][static_cast<std::size_t>(sx)] ||
+            !crossed[1][static_cast<std::size_t>(sy)])
+          continue;
+        if (!corner_ok({sx ? domain_box[0] : T{0}, sy ? domain_box[1] : T{0},
+                        T{0}}))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  auto const& dispatch = collision_dispatcher<T>::instance();
+  // Edges: the line where the faces (axis i, side si) and (axis j, side sj)
+  // meet, running along axis k over the extent of the shape.
+  for (std::size_t k = 0; k < 3; ++k) {
+    const std::size_t i = (k + 1) % 3, j = (k + 2) % 3;
+    for (std::size_t si = 0; si < 2; ++si) {
+      for (std::size_t sj = 0; sj < 2; ++sj) {
+        if (!crossed[i][si] || !crossed[j][sj]) continue;
+        std::array<T, 3> a{}, b{};
+        a[i] = b[i] = si ? domain_box[i] : T{0};
+        a[j] = b[j] = sj ? domain_box[j] : T{0};
+        a[k] = lo[k] - gap;
+        b[k] = hi[k] + gap;
+        polyline_tube<T> line{std::vector<std::array<T, 3>>{a, b}, T{0}};
+        line.make_bounding_box();
+        if (!dispatch(shape, line, gap)) continue;   // at least gap away
+        bool through = false;
+        constexpr int probes = 33;
+        for (int n = 0; n < probes && !through; ++n) {
+          std::array<T, 3> p = a;
+          p[k] = lo[k] + (hi[k] - lo[k]) * static_cast<T>(n) /
+                             static_cast<T>(probes - 1);
+          through = detail::deep_inside(shape, p, gap, true);
+        }
+        if (!through) return false;
+      }
+    }
+  }
+  // Corners where three crossed faces meet.
+  for (std::size_t sx = 0; sx < 2; ++sx) {
+    for (std::size_t sy = 0; sy < 2; ++sy) {
+      for (std::size_t sz = 0; sz < 2; ++sz) {
+        if (!crossed[0][sx] || !crossed[1][sy] || !crossed[2][sz]) continue;
+        if (!corner_ok({sx ? domain_box[0] : T{0}, sy ? domain_box[1] : T{0},
+                        sz ? domain_box[2] : T{0}}))
+          return false;
+      }
     }
   }
   return true;

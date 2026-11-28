@@ -124,7 +124,7 @@ public:
       const value_type reach = _gap.reach(size);
       if (self_periodic_collides(*prim_bb, domain_box, reach)) continue;
       if (_gap.wall_gap > value_type{0} &&
-          !faces_clear(*prim_bb, domain_box, _gap.wall_gap, true)) {
+          !boundary_clear(*primary, domain_box, _gap.wall_gap, true)) {
         continue;
       }
 
