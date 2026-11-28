@@ -54,7 +54,8 @@ void print_usage(char const* argv0) {
       << "  config.json   JSON file describing the RVE generation pipeline.\n"
       << "                Each entry under \"postprocess\" carries its own\n"
       << "                output_path. Relative input paths in it (mesh_path)\n"
-      << "                are resolved against the directory of this file.\n\n"
+      << "                are resolved against the directory of this file (as\n"
+      << "                given; a symbolic link is not followed).\n\n"
       << "  --output-dir DIR\n"
       << "                Resolve relative output_path entries against DIR\n"
       << "                (an existing directory) instead of the working\n"
@@ -63,7 +64,7 @@ void print_usage(char const* argv0) {
       << "                Resolve relative input paths against DIR instead of\n"
       << "                the directory of the config file.\n\n"
       << "  --quiet       Print nothing on success. Warnings and errors still\n"
-      << "                go to stderr.\n\n"
+      << "                go to stderr, and so do the lines of --progress.\n\n"
       << "  --verbose     Also print, per config block, which parameters took\n"
       << "                their default, how relative paths were resolved and\n"
       << "                where the seed came from.\n\n"
@@ -133,7 +134,10 @@ int run(int argc, char** argv) {
     std::string dir;
     if (arg.size() > name.size()) {
       dir = arg.substr(name.size() + 1);   // after "--name="
-    } else if (i + 1 < argc) {
+    } else if (i + 1 < argc && !std::string_view{argv[i + 1]}.starts_with("--")) {
+      // The next argument, unless it is an option: "--output-dir --quiet"
+      // is a forgotten directory. (A directory whose name starts with
+      // "--" can be given as "--name=DIR".)
       dir = argv[++i];
     }
     if (dir.empty()) {
@@ -241,8 +245,11 @@ int run(int argc, char** argv) {
   if (input_dir) {
     opts.input_dir = *input_dir;
   } else {
+    // The directory of the path as given: a symbolic link to a config is
+    // not followed, its data is looked up next to the link.
     opts.input_dir = std::filesystem::path{config_path}.parent_path();
     if (opts.input_dir.empty()) opts.input_dir = ".";
+    opts.input_cwd_fallback = true;   // configs written before #129
   }
   if (output_dir) opts.output_dir = *output_dir;
   for (auto const* dir : {&input_dir, &output_dir}) {

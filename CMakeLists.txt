@@ -741,6 +741,11 @@ add_test(NAME cli_rejects_quiet_with_verbose
           ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)
 set_tests_properties(cli_rejects_quiet_with_verbose PROPERTIES
   PASS_REGULAR_EXPRESSION "--quiet and --verbose exclude each other" LABELS "cli")
+add_test(NAME cli_rejects_option_as_directory
+  COMMAND rvegen --output-dir --quiet
+          ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)
+set_tests_properties(cli_rejects_option_as_directory PROPERTIES
+  PASS_REGULAR_EXPRESSION "option '--output-dir' needs a directory" LABELS "cli")
 add_test(NAME cli_rejects_missing_output_dir
   COMMAND rvegen --output-dir ${CMAKE_CURRENT_BINARY_DIR}/no_such_directory
           ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)

@@ -97,6 +97,13 @@ struct pipeline_options {
   // paths are never changed.
   std::filesystem::path input_dir;
   std::filesystem::path output_dir;
+  // Transition aid for callers that used to read every path relative to
+  // the working directory (the CLI, rvegen.run(<file>)): a relative input
+  // that does not exist in `input_dir` but does exist relative to the
+  // working directory is used from there, with a warning. Off by default,
+  // and off whenever the caller named the input directory explicitly: a
+  // stale file in the working directory must not replace a missing input.
+  bool input_cwd_fallback = false;
   // An unknown top-level config key is an error: "post_process" instead of
   // "postprocess" would otherwise run the whole generation and write
   // nothing. false downgrades it to a warning. Keys starting with '_'
@@ -217,7 +224,7 @@ inline void resolve_block_paths(nlohmann::json& block, std::string const& label,
     const std::filesystem::path given{text};
     if (given.is_absolute()) continue;
     const auto resolved = dir / given;
-    if (!output) {
+    if (!output && opts.input_cwd_fallback) {
       // Before input_dir existed every path was relative to the working
       // directory. Keep such a setup running, but say so.
       std::error_code ec;
@@ -711,6 +718,9 @@ inline void run_post_processes(nlohmann::json const& config,
   result.pending_post_processes.clear();
   std::size_t n = 0;
   for (auto const& spec : config.at("postprocess")) {
+    // A cancel request (Ctrl-C, a log callback that raised) also stops
+    // between writers: no further file is started.
+    if (opts.progress.cancel()) throw pipeline_cancelled{};
     auto& pp = writers.at(n++);
     if (result.phases) pp->set_phases(&*result.phases);
     pp->run(result.shapes, result.domain_box);

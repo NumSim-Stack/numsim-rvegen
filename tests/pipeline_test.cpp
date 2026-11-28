@@ -443,6 +443,26 @@ void test_cancel_stops_pipeline() {
   catch (rvegen::pipeline_cancelled const&) { cancelled = true; }
   REQUIRE(cancelled);
   REQUIRE(!std::filesystem::exists("pipeline_cancel.svg"));
+
+  // A cancel request that arrives after generation (a log callback that
+  // failed on the "generated" line) stops before the next writer.
+  cfg["postprocess"].push_back(
+      {{"type", "svg"}, {"canvas_width", 200},
+       {"output_path", "pipeline_cancel_2.svg"}});
+  std::filesystem::remove("pipeline_cancel_2.svg");
+  bool stop = false;
+  rvegen::pipeline_options late;
+  late.progress.cancel = [&stop] { return stop; };
+  late.info = [&stop](std::string const& line) {
+    if (line.find("post-process 'svg' done") != std::string::npos) stop = true;
+  };
+  cancelled = false;
+  try { (void)rvegen::run_pipeline(cfg, late); }
+  catch (rvegen::pipeline_cancelled const&) { cancelled = true; }
+  REQUIRE(cancelled);
+  REQUIRE(std::filesystem::exists("pipeline_cancel.svg"));      // finished
+  REQUIRE(!std::filesystem::exists("pipeline_cancel_2.svg"));   // not started
+  std::filesystem::remove("pipeline_cancel.svg");
 }
 
 // Voronoi generators follow the pipeline seed; an explicit generator seed
@@ -695,6 +715,13 @@ void test_paths_and_verbose_lines() {
       o.output_dir = out_dir;
       json old_style = cfg;
       old_style["shapes"][0]["mesh_path"] = rel.generic_string();
+      // Only on request: a caller that names the input directory gets an
+      // error for a missing file, never a look-alike from somewhere else.
+      const auto msg =
+          error_of([&] { (void)rvegen::run_pipeline(old_style, o); });
+      REQUIRE(msg.find("tet.stl") != std::string::npos);
+      REQUIRE(l.warn.empty());
+      o.input_cwd_fallback = true;
       REQUIRE(rvegen::run_pipeline(old_style, o).shapes.size() == 3);
       REQUIRE(l.warn.size() == 1);
       REQUIRE(lines::has(l.warn, "exists relative to the working directory"));

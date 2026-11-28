@@ -462,6 +462,48 @@ def test_log_callback_exception_propagates():
     assert len(rvegen.run(cfg, postprocess=False)) > 0
 
 
+def test_log_callback_failure_stops_before_writers(tmp_path):
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["postprocess"] = [{"type": "svg", "canvas_width": 200, "output_path": "late.svg"}]
+
+    def bad(line):
+        if "generated" in line:
+            raise KeyError(line)
+
+    with pytest.raises(KeyError):
+        rvegen.run(cfg, output_dir=tmp_path, log=bad)
+    assert not (tmp_path / "late.svg").exists()        # no writer was started
+    rvegen.run(cfg, output_dir=tmp_path, log=lambda line: None)
+    assert (tmp_path / "late.svg").is_file()
+
+    # The callable's exception is not hidden by a later pipeline error
+    # (the output directory is missing, reported after the first debug line).
+    def always(line):
+        raise KeyError(line)
+
+    with pytest.raises(KeyError):
+        rvegen.check(cfg, output_dir=tmp_path / "missing", log=always, verbose=True)
+
+    # Not a callable: rejected before anything runs.
+    for not_callable in (True, 5, "print"):
+        with pytest.raises(TypeError, match="callable"):
+            rvegen.run(cfg, postprocess=False, log=not_callable)
+        with pytest.raises(TypeError, match="callable"):
+            rvegen.check(cfg, log=not_callable)
+
+
+@pytest.mark.skipif(not (EXAMPLES / "mesh_inclusions_3d.json").is_file(),
+                    reason="examples/ not available (installed wheel)")
+def test_explicit_input_dir_never_falls_back_to_cwd(tmp_path, monkeypatch):
+    cfg = json.loads((EXAMPLES / "mesh_inclusions_3d.json").read_text())
+    monkeypatch.chdir(EXAMPLES)            # data/octahedron.stl exists here
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(RuntimeError, match="octahedron.stl"):
+        rvegen.check(cfg, input_dir=empty)
+    assert rvegen.check(cfg) is None       # a dict: the working directory
+
+
 def test_metadata_object_and_string_forms_agree():
     def run(metadata):
         cfg = json.loads(json.dumps(CIRCLES))

@@ -186,7 +186,10 @@ auto interruptible(F&& f) {
 // binding rethrows it with rethrow_if_failed().
 class log_sink {
 public:
-  explicit log_sink(py::object callable) : _log{std::move(callable)} {}
+  explicit log_sink(py::object callable) : _log{std::move(callable)} {
+    if (!_log.is_none() && PyCallable_Check(_log.ptr()) == 0)
+      throw py::type_error{"log must be a callable taking one str, or None"};
+  }
 
   // Routes the pipeline's lines to the callable (no-op for log=None).
   void attach(rvegen::pipeline_options& opts, bool verbose) {
@@ -227,7 +230,12 @@ void set_directories(rvegen::pipeline_options& opts, loaded_config const& cfg,
     return std::filesystem::path{
         py::module_::import("os").attr("fspath")(o).cast<std::string>()};
   };
-  opts.input_dir = input_dir.is_none() ? cfg.dir : to_path(input_dir);
+  if (input_dir.is_none()) {
+    opts.input_dir = cfg.dir;
+    opts.input_cwd_fallback = !cfg.dir.empty();   // configs written before #129
+  } else {
+    opts.input_dir = to_path(input_dir);
+  }
   if (!output_dir.is_none()) opts.output_dir = to_path(output_dir);
 }
 
@@ -793,7 +801,12 @@ PYBIND11_MODULE(_core, m) {
         opts.warn = [&warnings_out](std::string const& w) {
           warnings_out.push_back(w);
         };
-        rvegen::check_config(cfg.json, opts);
+        try {
+          rvegen::check_config(cfg.json, opts);
+        } catch (...) {
+          sink.rethrow_if_failed();   // the log callable's exception first
+          throw;
+        }
         sink.rethrow_if_failed();
         for (auto const& w : warnings_out) {
           if (PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1) < 0)
@@ -841,6 +854,9 @@ PYBIND11_MODULE(_core, m) {
           sink.rethrow_if_failed();         // the log callable's exception
           watch.rethrow_if_interrupted();   // KeyboardInterrupt from Ctrl-C
           throw;
+        } catch (...) {
+          sink.rethrow_if_failed();         // not lost behind a later error
+          throw;
         }
         sink.rethrow_if_failed();
         for (auto const& w : warnings_out) {
@@ -882,8 +898,9 @@ PYBIND11_MODULE(_core, m) {
       "Output: run() prints nothing. log, a callable taking one str "
       "(log=print, a logger's .info), receives each progress line as it is "
       "produced; verbose=True adds the detail lines (defaults used per "
-      "block, resolved paths, the seed). Warnings are always raised as "
-      "UserWarning.");
+      "block, resolved paths, the seed). An exception raised by log stops "
+      "the run (no further writer is started) and propagates. Warnings are "
+      "always raised as UserWarning.");
 
   // ---- Voxelisation ---------------------------------------------------------
   m.def("voxelize",
