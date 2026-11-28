@@ -13,7 +13,9 @@
 //     thread/renderer boundary would crash the GUI. The renderer skips
 //     empty meshes silently.
 //   * register_shape<Shape>() is idempotent; calling twice replaces the
-//     entry rather than failing.
+//     entry rather than failing. Registering a DIFFERENT shape type whose
+//     static_indexing id is already taken throws std::logic_error (see
+//     shape_id_claims.h) instead of silently overwriting the slot.
 //   * clear() empties the table for test isolation.
 
 #include <cassert>
@@ -23,6 +25,7 @@
 #include <numsim-core/static_indexing.h>
 
 #include "../shapes/shape_base.h"
+#include "../shapes/shape_id_claims.h"
 #include "triangle_mesh.h"
 
 namespace rvegen {
@@ -44,6 +47,7 @@ public:
   // Idempotent — calling twice with the same Shape replaces the entry.
   template <typename Shape>
   void register_shape() {
+    _ids.template claim<Shape>("mesh_dispatcher");
     grow_to_fit(Shape::m_id);
     _table[Shape::m_id] = &dispatch<Shape>;
     ++_generation;
@@ -86,7 +90,11 @@ public:
     return n;
   }
 
-  void clear() noexcept { _table.clear(); ++_generation; }
+  void clear() noexcept {
+    _table.clear();
+    _ids.clear();
+    ++_generation;
+  }
 
   // Bumped by every table mutation; lets callers detect "changed since I
   // last looked" without scanning the table.
@@ -117,6 +125,7 @@ private:
   }
 
   std::vector<fn_t> _table;
+  shape_id_claims _ids;
   std::size_t _generation{0};
 };
 

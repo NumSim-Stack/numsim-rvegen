@@ -84,13 +84,11 @@ endif()
 # tree (vcpkg / conda-forge / `find_package(rvegen)`) get
 # INSTALL_INTERFACE paths so the CMake config relocates correctly.
 #
-# numsim-core: rvegen depends on numsim-core's headers. The installed
-# rvegen CMake config attempts to find numsim-core via a CMake config,
-# but until numsim-core itself ships one (its own packaging is a
-# separate concern), consumers must put numsim-core's include path on
-# the compiler search path themselves. The rvegen install does NOT
-# bundle numsim-core headers — that would be a relicensing concern
-# and goes against single-source-of-truth packaging.
+# numsim-core: rvegen depends on numsim-core (>= 1.3), found below through
+# its installed CMake package or, as a fallback, a sibling checkout. The
+# rvegen install does NOT bundle numsim-core headers - that would be a
+# relicensing concern and goes against single-source-of-truth packaging;
+# the installed rvegen config re-finds the package via find_dependency.
 #
 # The vendored GTE headers ARE installed alongside rvegen's own
 # headers (separately licenced under Boost; bundling is fine).
@@ -107,7 +105,6 @@ set_target_properties(rvegen_lib PROPERTIES EXPORT_NAME rvegen)
 target_include_directories(rvegen_lib INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/GeometricTools/GTE>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/rvegen/external>
 )
@@ -117,6 +114,42 @@ target_link_libraries(rvegen_lib INTERFACE
     nlohmann_json::nlohmann_json
 )
 target_compile_features(rvegen_lib INTERFACE cxx_std_23)
+
+# numsim-core: prefer its installed CMake package (target
+# numsim-core::numsim-core, shipped since numsim-core ef6d2ac). Point
+# CMAKE_PREFIX_PATH / numsim-core_DIR at the install prefix. Version 1.3 is
+# the minimum: it has the lazy static_indexing ids the shape-id guard
+# needs; an older package is treated as not found. If no package is found,
+# fall back to a sibling checkout (../../numsim-core/include) so
+# the historical layout keeps working. When both exist the package wins;
+# if it is stale (e.g. an old install in /usr/local), configure with
+# -DCMAKE_DISABLE_FIND_PACKAGE_numsim-core=ON to use the sibling instead.
+find_package(numsim-core 1.3 CONFIG QUIET)
+set(RVEGEN_NUMSIM_CORE_FROM_PACKAGE OFF)
+set(_rvegen_core_sibling "${CMAKE_CURRENT_SOURCE_DIR}/../../numsim-core/include")
+if(numsim-core_FOUND)
+  message(STATUS "numsim-core: using CMake package (${numsim-core_DIR})")
+  if(EXISTS "${_rvegen_core_sibling}/numsim-core")
+    message(STATUS
+      "numsim-core: sibling checkout ${_rvegen_core_sibling} is NOT used "
+      "(the package wins); pass -DCMAKE_DISABLE_FIND_PACKAGE_numsim-core=ON "
+      "to build against it instead")
+  endif()
+  target_link_libraries(rvegen_lib INTERFACE numsim-core::numsim-core)
+  set(RVEGEN_NUMSIM_CORE_FROM_PACKAGE ON)
+else()
+  if(EXISTS "${_rvegen_core_sibling}/numsim-core")
+    message(STATUS "numsim-core: package not found, using sibling ${_rvegen_core_sibling}")
+  else()
+    message(WARNING
+      "numsim-core >= 1.3 not found: no CMake package (or one that is too "
+      "old) and no sibling checkout. "
+      "Install numsim-core and set CMAKE_PREFIX_PATH, or add its include "
+      "directory via CMAKE_CXX_FLAGS=-I<path>.")
+  endif()
+  target_include_directories(rvegen_lib INTERFACE
+      $<BUILD_INTERFACE:${_rvegen_core_sibling}>)
+endif()
 
 # ---------------------------------------------------------------------------
 # Optional Voro++ backend for voronoi_generator_3d (#70). OFF by default so
@@ -309,6 +342,12 @@ add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
 
+# Shape-id uniqueness (#85): every built-in shape type has its own
+# static_indexing id, and the dispatchers refuse a duplicate id.
+add_executable(rvegen_shape_id_unique_test tests/shape_id_unique_test.cpp)
+target_link_libraries(rvegen_shape_id_unique_test PRIVATE rvegen_lib)
+add_test(NAME shape_id_unique_test COMMAND rvegen_shape_id_unique_test)
+
 add_executable(rvegen_visualization_writers_test tests/visualization_writers_test.cpp)
 target_link_libraries(rvegen_visualization_writers_test PRIVATE rvegen_lib Threads::Threads)
 add_test(NAME visualization_writers_test COMMAND rvegen_visualization_writers_test)
@@ -338,6 +377,12 @@ add_test(NAME progress_cancel_test COMMAND rvegen_progress_cancel_test)
 # Only registered when gmsh is on the PATH (or RVEGEN_GMSH_EXECUTABLE is
 # set explicitly).
 find_program(RVEGEN_GMSH_EXECUTABLE gmsh)
+# CI sets this so a missing gmsh fails the configure instead of quietly
+# dropping the .geo meshing checks.
+option(RVEGEN_REQUIRE_GMSH "Fail the configure if gmsh is not found" OFF)
+if(RVEGEN_REQUIRE_GMSH AND NOT RVEGEN_GMSH_EXECUTABLE)
+  message(FATAL_ERROR "RVEGEN_REQUIRE_GMSH is ON but gmsh was not found")
+endif()
 if(RVEGEN_GMSH_EXECUTABLE)
   add_executable(rvegen_gmsh_geo_roundtrip_test tests/gmsh_geo_roundtrip_test.cpp)
   target_link_libraries(rvegen_gmsh_geo_roundtrip_test PRIVATE rvegen_lib)
@@ -624,15 +669,74 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
 
-# make_gallery.py regressions: a failing or garbage-writing renderer must
-# give a non-zero exit, and same-stem configs must not overwrite each other. Needs
-# numpy + matplotlib, like the script itself.
+# Output-checking CLI tests (#85): one test per config in examples/. Exit
+# status and stdout are not enough, so tests/cli_example_check.py runs the
+# CLI and then inspects every file the config's postprocess entries wrote
+# (voxel/VTK header vs value count, SVG as XML, statistics CSV, .geo through
+# gmsh when found). Needs Python 3.
 if(Python3_Interpreter_FOUND)
+  file(GLOB _rvegen_example_configs CONFIGURE_DEPENDS
+       ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.json)
+  foreach(_cfg IN LISTS _rvegen_example_configs)
+    get_filename_component(_name ${_cfg} NAME_WE)
+    add_test(NAME cli_check_${_name}
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples
+              --gmsh "${RVEGEN_GMSH_EXECUTABLE}"
+              ${_cfg})
+    # Pass/fail is the script's exit status; 77 = a .geo was not meshed
+    # because gmsh is missing, reported as Skipped rather than Passed.
+    set_tests_properties(cli_check_${_name} PROPERTIES
+      TIMEOUT 900 LABELS "cli"
+      SKIP_RETURN_CODE 77)
+  endforeach()
+
+  # The checker must reject an under-filled RVE: this config stops at
+  # max_attempts 50 far below its volume-fraction target. The test passes
+  # only if the checker reports the shortfall (the regex decides, not the
+  # exit status). cli_check_selftest covers the checker's own parsing
+  # (statistics CSV with an empty g(r), the accepted fill window).
+  add_test(NAME cli_check_rejects_underfill
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py
+            --rvegen $<TARGET_FILE:rvegen>
+            --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/underfilled_polydisperse.json)
+  set_tests_properties(cli_check_rejects_underfill PROPERTIES
+    TIMEOUT 300 LABELS "cli"
+    PASS_REGULAR_EXPRESSION "FAIL: volume fraction [0-9.]+ not within")
+  add_test(NAME cli_check_selftest
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py --self-test)
+  set_tests_properties(cli_check_selftest PROPERTIES LABELS "cli")
+
+  # The README type catalogue is generated from `rvegen --list-types`.
+  add_test(NAME readme_type_catalogue
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/readme_types_check.py
+            --rvegen $<TARGET_FILE:rvegen>
+            --readme ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
+
+  # Gallery smoke: render every example into a scratch directory. Needs
+  # numpy + matplotlib; Inkscape / Chrome / gmsh are optional and skipped
+  # by the script when absent (--browser none: no Chrome in the test).
+  # gallery_script_check covers the script itself: a failing renderer
+  # must give a non-zero exit, and same-stem configs must not collide.
   execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import numpy, matplotlib"
     RESULT_VARIABLE _rvegen_py_plot_rc
     OUTPUT_QUIET ERROR_QUIET)
   if(_rvegen_py_plot_rc EQUAL 0)
+    add_test(NAME gallery_smoke
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --out ${CMAKE_CURRENT_BINARY_DIR}/gallery_smoke
+              --no-index --browser none
+              ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    set_tests_properties(gallery_smoke PROPERTIES TIMEOUT 1800 LABELS "cli")
     add_test(NAME gallery_script_check
       COMMAND ${Python3_EXECUTABLE}
               ${CMAKE_CURRENT_SOURCE_DIR}/tests/gallery_script_check.py
@@ -648,8 +752,10 @@ if(Python3_Interpreter_FOUND)
               ${CMAKE_CURRENT_SOURCE_DIR}/examples)
     set_tests_properties(gallery_index_check PROPERTIES LABELS "cli")
   else()
-    message(STATUS "numpy/matplotlib not found - skipping gallery_script_check")
+    message(STATUS "numpy/matplotlib not found - skipping gallery_smoke and gallery_script_check")
   endif()
+else()
+  message(STATUS "Python 3 not found - skipping CLI output checks")
 endif()
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
