@@ -50,7 +50,7 @@ only (no "PASS" line matching), so any failure or crash fails the test.
 Exit code 77 (CTest SKIP_RETURN_CODE) means every other check passed but a
 .geo could not be meshed because gmsh is not available.
 
-Usage: cli_example_check.py --rvegen BIN --examples DIR [--gmsh BIN] CONFIG
+Usage: cli_example_check.py --rvegen BIN [--gmsh BIN] CONFIG
        cli_example_check.py --self-test
 """
 import argparse
@@ -441,7 +441,7 @@ def fill_window(target):
     return max(target - 0.02, 0.9 * target), 1.3 * target + 0.01
 
 
-def measured_fraction(rvegen, config, work, domain):
+def measured_fraction(rvegen, config, config_dir, work, domain):
     """Inclusion fraction of the config's RVE, from a voxel grid.
 
     Runs the config again (the seed fixes the shapes) with its post-processes
@@ -455,8 +455,10 @@ def measured_fraction(rvegen, config, work, domain):
                                "output_path": "fill_check.vox"}]
     path = work / "fill_check.json"
     path.write_text(json.dumps(derived))
-    r = subprocess.run([rvegen, str(path)], cwd=work, capture_output=True,
-                       text=True, timeout=900)
+    # The derived config lives in the work directory; its inputs (meshes)
+    # are still the ones next to the original config.
+    r = subprocess.run([rvegen, str(path), "--input-dir", str(config_dir)], cwd=work,
+                       capture_output=True, text=True, timeout=900)
     if r.returncode != 0:
         fail(f"fill check run exited {r.returncode}\n{r.stdout}{r.stderr}")
     vals = [int(l) for l in (work / "fill_check.vox").read_text().splitlines()
@@ -466,13 +468,13 @@ def measured_fraction(rvegen, config, work, domain):
     return sum(1 for v in vals if v > 0) / len(vals)
 
 
-def check_target(rvegen, config, nshapes, work, domain):
+def check_target(rvegen, config, config_dir, nshapes, work, domain):
     """The RVE must reach the termination target the config asks for."""
     term = config.get("termination", {})
     kind = term.get("type")
     if kind == "volume_fraction":
         target = float(term["target_fraction"])
-        got = measured_fraction(rvegen, config, work, domain)
+        got = measured_fraction(rvegen, config, config_dir, work, domain)
         lo, hi = fill_window(target)
         if not lo <= got <= hi:
             fail(f"volume fraction {got:.4f} not within [{lo:.4f}, {hi:.4f}] "
@@ -521,7 +523,6 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rvegen")
-    ap.add_argument("--examples")
     ap.add_argument("--gmsh", default="")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("config", nargs="?")
@@ -529,8 +530,8 @@ def main():
     if a.self_test:
         self_test()
         return
-    if not (a.rvegen and a.examples and a.config):
-        ap.error("--rvegen, --examples and CONFIG are required")
+    if not (a.rvegen and a.config):
+        ap.error("--rvegen and CONFIG are required")
 
     config_path = Path(a.config).resolve()
     config = json.loads(config_path.read_text())
@@ -540,10 +541,8 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="rvegen_cli_") as tmp:
         work = Path(tmp)
-        # Configs reference assets such as data/octahedron.stl relative to cwd.
-        data = Path(a.examples) / "data"
-        if data.is_dir():
-            (work / "data").symlink_to(data.resolve())
+        # Run from an empty directory: outputs land there, inputs such as
+        # data/octahedron.stl are found next to the config.
         r = subprocess.run([str(Path(a.rvegen).resolve()), str(config_path)], cwd=work,
                            capture_output=True, text=True, timeout=900)
         if r.returncode != 0:
@@ -559,7 +558,8 @@ def main():
         mode = IdMode(config, nshapes)
         domain = [float(v) for v in config.get("domain_box", [1, 1, 0])] + [0.0]
         domain = domain[:3]
-        if msg := check_target(str(Path(a.rvegen).resolve()), config, nshapes, work, domain):
+        if msg := check_target(str(Path(a.rvegen).resolve()), config, config_path.parent,
+                              nshapes, work, domain):
             print(f"  target: {msg}")
         domain = [float(v) for v in config.get("domain_box", [1, 1, 0])] + [0.0]
         domain = domain[:3]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import signal
 import threading
 import time
@@ -355,3 +356,93 @@ def test_voronoi_follows_run_seed():
     c1 = areas(rvegen.run(cfg, postprocess=False))
     cfg["seed"] = 6
     assert c1 != areas(rvegen.run(cfg, postprocess=False))
+
+
+# ---- #129: paths relative to the config file, output_dir, log callback ----
+
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+
+
+@pytest.mark.skipif(not (EXAMPLES / "mesh_inclusions_3d.json").is_file(),
+                    reason="examples/ not available (installed wheel)")
+def test_config_file_runs_from_any_directory(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "cwd"
+    out = tmp_path / "out"
+    elsewhere.mkdir()
+    out.mkdir()
+    monkeypatch.chdir(elsewhere)
+    # "mesh_path": "data/octahedron.stl" is found next to the config file.
+    res = rvegen.run(EXAMPLES / "mesh_inclusions_3d.json", output_dir=out)
+    assert len(res) == 40
+    assert (out / "mesh_inclusions_3d.vtk").is_file()
+    assert list(elsewhere.iterdir()) == []
+    assert rvegen.check(str(EXAMPLES / "mesh_inclusions_3d.json")) is None
+
+    # The same config as a dict has no file to be relative to: input_dir.
+    cfg = json.loads((EXAMPLES / "mesh_inclusions_3d.json").read_text())
+    with pytest.raises(RuntimeError, match="octahedron.stl"):
+        rvegen.run(cfg, postprocess=False)
+    res2 = rvegen.run(cfg, postprocess=False, input_dir=EXAMPLES)
+    assert [s.center for s in res2] == [s.center for s in res]
+    with pytest.raises(RuntimeError, match="does not exist"):
+        rvegen.check(cfg, input_dir=EXAMPLES, output_dir=tmp_path / "missing")
+
+
+def test_log_callback(capfd):
+    cfg = json.loads(json.dumps(CIRCLES))
+    lines = []
+    res = rvegen.run(cfg, postprocess=False, log=lines.append)
+    assert lines and all(isinstance(l, str) for l in lines)
+    assert any(f"generated {len(res)} shapes" in l for l in lines)
+    assert not any("seed" in l for l in lines)          # detail lines: verbose only
+
+    detailed = []
+    rvegen.run(cfg, postprocess=False, log=detailed.append, verbose=True)
+    assert any(l.startswith("rvegen: seed ") for l in detailed)
+    assert set(lines) <= set(detailed)
+
+    checked = []
+    rvegen.check(cfg, log=checked.append, verbose=True)
+    assert any(l.startswith("rvegen: seed ") for l in checked)
+
+    # Nothing is printed by rvegen itself, with or without a callback.
+    out, err = capfd.readouterr()
+    assert out == "" and err == ""
+
+    # verbose without a callback stays silent.
+    rvegen.run(cfg, postprocess=False, verbose=True)
+    out, err = capfd.readouterr()
+    assert out == "" and err == ""
+
+
+def test_log_callback_exception_propagates():
+    cfg = json.loads(json.dumps(CIRCLES))
+
+    class Boom(Exception):
+        pass
+
+    def bad(line):
+        raise Boom(line)
+
+    with pytest.raises(Boom):
+        rvegen.run(cfg, postprocess=False, log=bad, verbose=True)
+    with pytest.raises(Boom):
+        rvegen.check(cfg, log=bad, verbose=True)
+    with pytest.raises(TypeError):
+        rvegen.run(cfg, None, False, True, ".")     # input_dir is keyword-only
+    # The module is still usable afterwards.
+    assert len(rvegen.run(cfg, postprocess=False)) > 0
+
+
+def test_metadata_object_and_string_forms_agree():
+    def run(metadata):
+        cfg = json.loads(json.dumps(CIRCLES))
+        cfg["shapes"][0]["metadata"] = metadata
+        return rvegen.run(cfg, postprocess=False)
+
+    obj = {"batch": "A7", "angle_deg": 42.5}
+    a, b = run(obj), run(json.dumps(obj))
+    assert [s.info for s in a] == [s.info for s in b]
+    assert all(s.info["batch"] == "A7" for s in a)
+    with pytest.raises(ValueError, match="'metadata'"):
+        run([1, 2])

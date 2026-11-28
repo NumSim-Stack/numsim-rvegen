@@ -97,7 +97,7 @@ public:
     s.template insert<std::string>("phase_name")
         .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
     s.template insert<std::string>("metadata")
-        .template add<numsim_core::description_label<"optional JSON-encoded string of key/value pairs merged into every produced shape's info blob (e.g. \"{\"orientation_deg\": 42.5}\")">>();
+        .template add<numsim_core::description_label<"optional key/value pairs merged into every produced shape's info blob: a JSON object (e.g. {\"orientation_deg\": 42.5}), or the same object as a JSON-encoded string">>();
     return s;
   }
 

@@ -683,16 +683,15 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
 
 # `rvegen --check` (#120): validation only. Every shipped example must pass
 # it, quickly (the check builds every block but places no shape), and a
-# misspelt section must be rejected with the section it meant. Run from
-# examples/ because mesh inputs are read at validation time and their paths
-# are relative to the working directory.
+# misspelt section must be rejected with the section it meant. Run from the
+# build tree: inputs (mesh files) are found next to the config (#129).
 file(GLOB _rvegen_check_configs CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.json)
 foreach(_cfg IN LISTS _rvegen_check_configs)
   get_filename_component(_name ${_cfg} NAME_WE)
   add_test(NAME cli_validate_${_name} COMMAND rvegen --check ${_cfg})
   set_tests_properties(cli_validate_${_name} PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/examples
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "rvegen: config OK"
     TIMEOUT 20 LABELS "cli")
 endforeach()
@@ -708,6 +707,40 @@ add_test(NAME cli_rejects_unknown_option
 set_tests_properties(cli_rejects_unknown_option PROPERTIES
   PASS_REGULAR_EXPRESSION "unknown option '--chekc'" LABELS "cli")
 
+# Log control and directories (#129). --quiet: no output at all on success
+# (FAIL_REGULAR_EXPRESSION "." = any character printed fails the test; the
+# exit status still counts). The mesh example reads data/octahedron.stl,
+# found next to the config although the test runs in the build tree.
+add_test(NAME cli_quiet_prints_nothing
+  COMMAND rvegen --quiet --output-dir ${CMAKE_CURRENT_BINARY_DIR}
+          ${CMAKE_CURRENT_SOURCE_DIR}/examples/mesh_inclusions_3d.json)
+set_tests_properties(cli_quiet_prints_nothing PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  FAIL_REGULAR_EXPRESSION "." LABELS "cli")
+add_test(NAME cli_quiet_check_prints_nothing
+  COMMAND rvegen --quiet --check
+          ${CMAKE_CURRENT_SOURCE_DIR}/examples/mesh_inclusions_3d.json)
+set_tests_properties(cli_quiet_check_prints_nothing PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  FAIL_REGULAR_EXPRESSION "." LABELS "cli")
+add_test(NAME cli_verbose_lists_details
+  COMMAND rvegen --verbose --check --output-dir=${CMAKE_CURRENT_BINARY_DIR}
+          ${CMAKE_CURRENT_SOURCE_DIR}/examples/voronoi_3d.json)
+set_tests_properties(cli_verbose_lists_details PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  PASS_REGULAR_EXPRESSION "output_path '[^']+' -> '.*rvegen: seed [0-9]+ \\(.*default used for '"
+  LABELS "cli")
+add_test(NAME cli_rejects_quiet_with_verbose
+  COMMAND rvegen --quiet --verbose
+          ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)
+set_tests_properties(cli_rejects_quiet_with_verbose PROPERTIES
+  PASS_REGULAR_EXPRESSION "--quiet and --verbose exclude each other" LABELS "cli")
+add_test(NAME cli_rejects_missing_output_dir
+  COMMAND rvegen --output-dir ${CMAKE_CURRENT_BINARY_DIR}/no_such_directory
+          ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)
+set_tests_properties(cli_rejects_missing_output_dir PROPERTIES
+  PASS_REGULAR_EXPRESSION "\\(--output-dir\\) is not an existing directory" LABELS "cli")
+
 # Output-checking CLI tests (#85): one test per config in examples/. Exit
 # status and stdout are not enough, so tests/cli_example_check.py runs the
 # CLI and then inspects every file the config's postprocess entries wrote
@@ -722,7 +755,6 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${Python3_EXECUTABLE}
               ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py
               --rvegen $<TARGET_FILE:rvegen>
-              --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples
               --gmsh "${RVEGEN_GMSH_EXECUTABLE}"
               ${_cfg})
     # Pass/fail is the script's exit status; 77 = a .geo was not meshed
@@ -741,7 +773,6 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py
             --rvegen $<TARGET_FILE:rvegen>
-            --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/underfilled_polydisperse.json)
   set_tests_properties(cli_check_rejects_underfill PROPERTIES
     TIMEOUT 300 LABELS "cli"

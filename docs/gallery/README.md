@@ -5,9 +5,8 @@
 Every picture below is rendered from a config in `examples/`. Regenerate with
 `scripts/make_gallery.py` or `cmake --build build --target gallery`.
 
-The gallery script resolves each config's relative input paths (`mesh_path`) against
-the config's directory. Run by hand, `examples/mesh_inclusions_3d.json` needs the
-working directory `examples/` (`cd examples && rvegen mesh_inclusions_3d.json`).
+Each config runs from any directory: rvegen resolves relative input paths
+(`mesh_path`) against the config's directory.
 
 The `gmsh_geo` pictures were meshed with gmsh 4.12.1; other gmsh
 versions mesh differently, so the element counts in their titles change.
@@ -86,7 +85,7 @@ versions mesh differently, so the element counts in their titles change.
 
 [`mesh_inclusions_3d.json`](../../examples/mesh_inclusions_3d.json) · 3D 1×1×1 · mesh_inclusion_input · generator `only_inside` · 40 shapes
 
-> Arbitrary inclusion geometry from a triangle mesh: copies of an octahedron read from data/octahedron.stl, placed without overlap and voxelised to 64^3. The mesh_path is relative to the working directory, so run it from the examples/ directory: cd examples && rvegen mesh_inclusions_3d.json.
+> Arbitrary inclusion geometry from a triangle mesh: copies of an octahedron read from data/octahedron.stl, placed without overlap and voxelised to 64^3. The mesh_path is relative to this config file, so the example runs from any directory.
 
 <img src="mesh_inclusions_3d-vtk_legacy.png" alt="mesh_inclusions_3d: voxel grid (.vtk)" width="440">
 

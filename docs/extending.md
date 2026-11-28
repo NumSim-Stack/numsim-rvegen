@@ -80,6 +80,13 @@ file, so its schema normally has a required `output_path` (see
 `register_all_post_processes()` calls. A config may list any number of
 post-processes in its `postprocess` array; they run in order.
 
+A string parameter whose key ends in `_path` is a file path, and the
+pipeline resolves a relative one before the block is built: `output_path` of
+a post-process against the output directory (`--output-dir`), any other one
+(`mesh_path` of an input, a file a generator or post-process reads) against
+the directory of the config file. Name file parameters accordingly and open
+the path as given; do not resolve it yourself.
+
 Put every check that needs only the options and the domain box (a missing
 output path, a grid that is too large, an option that needs a 3D box) into
 `validate(domain_box) const` and call it at the top of `run()`. The pipeline

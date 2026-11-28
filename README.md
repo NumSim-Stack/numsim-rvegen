@@ -68,6 +68,21 @@ turns that error into a warning.
 # -> rvegen: config OK: examples/circles_in_unit_box.json   (nothing generated or written)
 ```
 
+**Files and output.** A relative input path in a config (`mesh_path`) is
+resolved against the directory of the config file, so a config and its data
+can be run from anywhere. A relative `output_path` is resolved against the
+working directory, or against `--output-dir DIR` (an existing directory).
+`--input-dir DIR` overrides the directory input paths are relative to.
+
+```bash
+./build/rvegen examples/mesh_inclusions_3d.json --output-dir results   # reads examples/data/octahedron.stl
+./build/rvegen --quiet   examples/circles_in_unit_box.json   # prints nothing on success
+./build/rvegen --verbose examples/voronoi_3d.json            # + defaults used per block, resolved paths, seed
+```
+
+`--quiet` silences the progress lines on stdout; warnings and errors still go
+to stderr.
+
 The compiler must provide C++23 `<print>` (GCC 14+, or Clang 17+ with a recent
 libc++/libstdc++). With a system default of GCC 13 the configure step stops at
 the `<print>` check, hence `-DCMAKE_CXX_COMPILER=g++-14` above.
@@ -151,6 +166,11 @@ The cross-references in shape inputs (e.g. `"pos_x_dist": "uniform_x"`) refer
 to keys in the `distributions` block. The orchestrator builds distributions
 first, then resolves these names when constructing inputs.
 
+Every shape input also takes `phase_name` and `metadata`. `metadata` is a JSON
+object whose entries are copied onto each shape the input produces:
+`"metadata": {"batch": "A7", "angle_deg": 42.5}`. (The same object as a
+JSON-encoded string, the form older configs use, is still accepted.)
+
 ### Worked examples
 
 `examples/` holds one config per feature area (2D/3D, periodic, polydisperse,
@@ -165,10 +185,10 @@ points:
 - `examples/fe_rve_workflow.json`: periodic FE mesh with every gmsh knob.
 - `examples/circles_statistics.json`: S2(r) and g(r) of a dense pack.
 
-Run any of them with `./build/rvegen <path-to.json>`; the files appear in the
-current directory. Configs that reference assets (`mesh_inclusions_3d.json`
-reads `data/octahedron.stl`) must be run from a directory where that relative
-path resolves, e.g. `cd examples && ../build/rvegen mesh_inclusions_3d.json`.
+Run any of them with `./build/rvegen <path-to.json>` from any directory; the
+files appear in the current directory (or in `--output-dir`). Assets a config
+refers to (`mesh_inclusions_3d.json` reads `data/octahedron.stl`) are found
+next to the config file.
 
 ---
 
