@@ -7,6 +7,7 @@ Python surface:
   ``ConvexPolygon``) over a common ``Shape`` base;
 * ``run(config, seed=None)`` -- the CLI pipeline on a config dict or a JSON
   file path; returns a ``RunResult`` (sequence of shapes + ``.summary``);
+* ``check(config)`` -- validate a config without generating anything;
 * ``voxelize(shapes, domain, nx, ny, nz)`` -- numpy ``uint32`` grid;
 * registry introspection: ``rvegen.distributions``,
   ``direction_distributions``, ``inputs`` (alias ``shapes``), ``generators``,
@@ -33,6 +34,7 @@ from ._core import (
     lognormal_grain_seeds_3d,
     voro_pp_available,
     direction_distributions,
+    check,
     distributions,
     generators,
     inputs,
@@ -61,6 +63,7 @@ __all__ = [
     "WeavePattern",
     "lognormal_grain_seeds_3d",
     "voro_pp_available",
+    "check",
     "direction_distributions",
     "distributions",
     "generators",

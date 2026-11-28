@@ -8,12 +8,14 @@
 //   auto result = rvegen::run_pipeline(cfg, opts);
 //   // result.shapes, result.domain_box, result.seed, ...
 //
-// Steps: register types -> domain box / seed -> distributions (scalar +
-// direction) -> inputs -> post-processes built and phases parsed (so bad
-// writer / phase blocks fail before any shape is placed) -> generator +
-// termination -> compute -> phase_assignment applied -> post-processes run.
-// `generate()` stops after the phase step; `run_post_processes()` runs the
-// writers built by generate().  Messages the
+// Steps: register types -> top-level keys / domain box / seed ->
+// distributions (scalar + direction) -> inputs -> post-processes built,
+// output directories checked and phases parsed -> generator + termination
+// -> compute -> phase_assignment applied -> post-processes run.
+// Everything before `compute` is validation: a typo in any block fails
+// before a shape is placed or a file is written (#120). `check_config()`
+// runs only that part. `generate()` stops after the phase step;
+// `run_post_processes()` runs the writers built by generate().  Messages the
 // CLI prints ("rvegen: generated N shapes", ...) go through
 // `pipeline_options::info` / `warn` so embedders stay silent by default.
 
@@ -22,6 +24,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -30,11 +33,17 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <typeinfo>
 #include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
 
 #include "json/parameter_visitor_nlohmann.h"
 #include "rvegen.h"
@@ -72,6 +81,11 @@ struct pipeline_options {
   // `warn` the stderr warnings. Both default to no-ops.
   std::function<void(std::string const&)> info = [](std::string const&) {};
   std::function<void(std::string const&)> warn = [](std::string const&) {};
+  // An unknown top-level config key is an error: "post_process" instead of
+  // "postprocess" would otherwise run the whole generation and write
+  // nothing. false downgrades it to a warning. Keys starting with '_'
+  // ("_comment") are always allowed.
+  bool strict_keys = true;
 };
 
 struct pipeline_result {
@@ -89,22 +103,175 @@ struct pipeline_result {
   bool post_processes_built = false;
 };
 
+namespace detail {
+
+inline constexpr std::array<char const*, 10> top_level_keys{
+    "domain_box", "seed", "distributions", "direction_distributions",
+    "shapes", "generator", "termination", "postprocess", "phases",
+    "phase_assignment"};
+
+// Levenshtein distance (two rows; the keys are a few characters long).
+[[nodiscard]] inline std::size_t edit_distance(std::string_view a,
+                                               std::string_view b) {
+  std::vector<std::size_t> prev(b.size() + 1), cur(b.size() + 1);
+  for (std::size_t j = 0; j <= b.size(); ++j) prev[j] = j;
+  for (std::size_t i = 1; i <= a.size(); ++i) {
+    cur[0] = i;
+    for (std::size_t j = 1; j <= b.size(); ++j) {
+      cur[j] = std::min({prev[j] + 1, cur[j - 1] + 1,
+                         prev[j - 1] + (a[i - 1] == b[j - 1] ? 0u : 1u)});
+    }
+    std::swap(prev, cur);
+  }
+  return prev[b.size()];
+}
+
+// The valid top-level key a typo most likely meant: the closest one within
+// about a third of its length ("post_process" -> "postprocess", "shape" ->
+// "shapes"); empty when nothing is close ("bogus").
+[[nodiscard]] inline std::string nearest_top_level_key(std::string_view key) {
+  std::string best;
+  std::size_t best_d = std::numeric_limits<std::size_t>::max();
+  for (char const* k : top_level_keys) {
+    const std::size_t d = edit_distance(key, k);
+    if (d < best_d) { best_d = d; best = k; }
+  }
+  const std::size_t limit =
+      std::max<std::size_t>(2, std::max(key.size(), best.size()) / 3);
+  return best_d <= limit ? best : std::string{};
+}
+
+// A section of the wrong JSON kind would otherwise surface as a library
+// exception that does not name the section.
+inline void require_section_kind(nlohmann::json const& config, char const* key,
+                                 bool array) {
+  if (!config.contains(key)) return;
+  auto const& v = config.at(key);
+  if (array ? v.is_array() : v.is_object()) return;
+  throw std::invalid_argument{std::string{"\""} + key + "\" must be " +
+                              (array ? "an array" : "an object") + ", got " +
+                              v.type_name()};
+}
+
+// Each writer's "output_path" must be writable before any shape is placed:
+// its directory exists and accepts new files, and the path itself is not a
+// directory. Nothing is created or truncated here.
+inline void check_output_paths(nlohmann::json const& config) {
+  if (!config.contains("postprocess")) return;
+  std::size_t index = 0;
+  for (auto const& spec : config.at("postprocess")) {
+    const std::size_t i = index++;
+    if (!spec.is_object() || !spec.contains("output_path") ||
+        !spec.at("output_path").is_string())
+      continue;
+    const auto text = spec.at("output_path").get<std::string>();
+    if (text.empty()) continue;
+    const std::string where =
+        "postprocess[" + std::to_string(i) + "] ('" +
+        spec.value("type", std::string{"?"}) + "'): output_path '" + text + "'";
+    const std::filesystem::path path{text};
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
+      throw std::runtime_error{where + " is a directory, not a file"};
+    }
+    auto dir = path.parent_path();
+    if (dir.empty()) dir = ".";
+    if (!std::filesystem::exists(dir, ec)) {
+      throw std::runtime_error{where + ": directory '" + dir.string() +
+                               "' does not exist"};
+    }
+    if (!std::filesystem::is_directory(dir, ec)) {
+      throw std::runtime_error{where + ": '" + dir.string() +
+                               "' is not a directory"};
+    }
+#if defined(__unix__) || defined(__APPLE__)
+    const bool file_exists = std::filesystem::exists(path, ec);
+    // A new file needs write + search permission on the directory, an
+    // existing one write permission on the file itself.
+    if (file_exists ? ::access(path.c_str(), W_OK) != 0
+                    : ::access(dir.c_str(), W_OK | X_OK) != 0) {
+      throw std::runtime_error{
+          where + (file_exists ? " is not writable"
+                               : ": directory '" + dir.string() +
+                                     "' is not writable")};
+    }
+#endif
+  }
+}
+
+} // namespace detail
+
 // Builds the config's "postprocess" writers into `result` (no output yet).
 inline void build_post_processes(nlohmann::json const& config,
                                  pipeline_result& result) {
   result.pending_post_processes.clear();
   result.post_processes_built = true;
   if (!config.contains("postprocess")) return;
-  for (auto const& spec : config.at("postprocess"))
-    result.pending_post_processes.push_back(
-        build_from_json(post_process_registry_t<>::instance(), spec));
+  std::size_t index = 0;
+  for (auto const& spec : config.at("postprocess")) {
+    // Name the entry: with several writers "missing required parameter"
+    // alone does not say which block is wrong.
+    const auto where = [&] {
+      return "postprocess[" + std::to_string(index) + "] ('" +
+             (spec.is_object() ? spec.value("type", std::string{"?"})
+                               : std::string{"?"}) +
+             "'): ";
+    };
+    try {
+      result.pending_post_processes.push_back(
+          build_from_json(post_process_registry_t<>::instance(), spec));
+    } catch (std::invalid_argument const& e) {   // keep the category
+      throw std::invalid_argument{where() + e.what()};
+    } catch (std::exception const& e) {
+      throw std::runtime_error{where() + e.what()};
+    }
+    ++index;
+  }
 }
 
-// Steps 1-7b: everything up to (and including) phase assignment.
+namespace detail {
+
+// Steps 1-7b. With `check_only` it returns after the validation part,
+// before compute(): nothing is generated.
 [[nodiscard]] inline pipeline_result
-generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
+generate_impl(nlohmann::json const& config, pipeline_options const& opts,
+              bool check_only) {
   register_all_types();
   pipeline_result out;
+
+  if (!config.is_object()) {
+    throw std::invalid_argument{
+        std::string{"the config must be a JSON object, got "} +
+        config.type_name()};
+  }
+  // Unknown top-level keys first: a misspelt section name is the mistake
+  // that silently drops a whole part of the run.
+  for (auto const& [key, value] : config.items()) {
+    if (key.starts_with('_')) continue;   // "_comment" style annotations
+    if (std::find_if(top_level_keys.begin(), top_level_keys.end(),
+                     [&](char const* k) { return key == k; }) !=
+        top_level_keys.end())
+      continue;
+    const auto hint = nearest_top_level_key(key);
+    if (opts.strict_keys) {
+      throw std::invalid_argument{
+          "unknown top-level key '" + key + "'" +
+          (hint.empty() ? std::string{} : " (did you mean '" + hint + "'?)") +
+          "; keys starting with '_' are ignored"};
+    }
+    opts.warn("rvegen: warning - unknown top-level key '" + key +
+              "' is ignored" +
+              (hint.empty() ? std::string{} : " (did you mean '" + hint + "'?)"));
+  }
+  require_section_kind(config, "distributions", false);
+  require_section_kind(config, "direction_distributions", false);
+  require_section_kind(config, "shapes", true);
+  require_section_kind(config, "postprocess", true);
+  require_section_kind(config, "generator", false);
+  require_section_kind(config, "termination", false);
+  if (!config.contains("generator")) {
+    throw std::invalid_argument{"the config has no \"generator\" section"};
+  }
 
   if (config.contains("domain_box")) {
     auto const& db = config.at("domain_box");
@@ -132,20 +299,6 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
     if (box[2] < 0.0) {
       throw std::invalid_argument(
           "domain_box z extent must be >= 0 (0 means 2D), got " + db.dump());
-    }
-  }
-  // Warn about unknown top-level keys (typos would otherwise be ignored).
-  for (auto const& [key, value] : config.items()) {
-    static constexpr std::array<char const*, 10> known{
-        "domain_box", "seed", "distributions", "direction_distributions",
-        "shapes", "generator", "termination", "postprocess", "phases",
-        "phase_assignment"};
-    if (key.starts_with('_')) continue;   // "_comment" style annotations
-    if (std::find_if(known.begin(), known.end(), [&](char const* k) {
-          return key == k;
-        }) == known.end()) {
-      opts.warn("rvegen: warning - unknown top-level key '" + key +
-                "' is ignored");
     }
   }
   // A config seed goes through the same strict integer reader as the
@@ -225,10 +378,12 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
   }
 
   // Build every post-process up front: the writers are schema-validated
-  // here, so a bad block fails before generation instead of after it.
-  // (set_phases happens at run time: `out` may still be moved.)
-  if (opts.run_postprocess) {
+  // here and their output directories checked, so a bad block fails before
+  // generation instead of after it. (set_phases happens at run time: `out`
+  // may still be moved.)
+  if (opts.run_postprocess || check_only) {
     build_post_processes(config, out);
+    check_output_paths(config);
   }
 
   // Phases and phase_assignment are parsed (validated) before generation
@@ -272,9 +427,16 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
                 "' is deterministic: \"termination\" is ignored");
     termination = std::make_unique<number_of_inclusions<double>>(std::size_t{1});
   } else {
+    if (!config.contains("termination")) {
+      throw std::invalid_argument{
+          "the config has no \"termination\" section (generator '" +
+          config.at("generator").value("type", std::string{"?"}) +
+          "' needs one)"};
+    }
     termination = build_from_json(termination_registry_t<>::instance(),
                                   config.at("termination"), out.domain_box);
   }
+  if (check_only) return out;
 
   out.shapes = generator->compute(inputs, *termination, out.domain_box,
                                   opts.progress);
@@ -301,6 +463,24 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
               " shape" + (assigned == 1 ? "" : "s"));
   }
   return out;
+}
+
+} // namespace detail
+
+// Steps 1-7b: everything up to (and including) phase assignment.
+[[nodiscard]] inline pipeline_result
+generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
+  return detail::generate_impl(config, opts, false);
+}
+
+// Validation only (#120): builds every distribution, input, writer, the
+// generator and the termination, parses phases and the phase assignment and
+// checks the output directories, exactly as a run does, then stops. Places
+// no shape and writes no file. Throws on the first problem; warnings go to
+// `opts.warn`. Writers are validated whatever `opts.run_postprocess` says.
+inline void check_config(nlohmann::json const& config,
+                         pipeline_options const& opts = {}) {
+  (void)detail::generate_impl(config, opts, true);
 }
 
 // Step 8: the config's "postprocess" entries, each owning its sink.

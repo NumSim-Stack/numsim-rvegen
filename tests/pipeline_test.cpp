@@ -121,7 +121,6 @@ void test_seed_and_warnings() {
   // Deterministic generator + shapes/termination + unknown key -> warnings.
   auto det = circles_config();
   det["generator"] = json{{"type", "voronoi_2d"}, {"n_seeds", 3}, {"seed", 1}};
-  det["bogus"] = 1;
   std::vector<std::string> warns;
   rvegen::pipeline_options o;
   o.warn = [&](std::string const& w) { warns.push_back(w); };
@@ -132,7 +131,22 @@ void test_seed_and_warnings() {
   };
   REQUIRE(has("\"shapes\" is ignored"));
   REQUIRE(has("\"termination\" is ignored"));
-  REQUIRE(has("unknown top-level key 'bogus'"));
+  // An unknown top-level key is an error by default (#120), a warning with
+  // strict_keys = false; both carry a hint when a valid key is close.
+  REQUIRE(!has("unknown top-level key"));
+  det["bogus"] = 1;
+  REQUIRE(rejected(det, o, "unknown top-level key 'bogus'; keys starting"));
+  o.strict_keys = false;
+  warns.clear();
+  (void)rvegen::generate(det, o);
+  REQUIRE(has("unknown top-level key 'bogus' is ignored"));
+  REQUIRE(!has("did you mean"));
+  det.erase("bogus");
+  det["post_process"] = json::array();
+  warns.clear();
+  (void)rvegen::generate(det, o);
+  REQUIRE(has("unknown top-level key 'post_process' is ignored (did you mean 'postprocess'?)"));
+  det.erase("post_process");
   det["generator"]["n_seedz"] = 5;
   warns.clear();
   (void)rvegen::generate(det, o);
@@ -177,6 +191,163 @@ void test_postprocess_validated_before_generation() {
   rvegen::pipeline_options off;
   off.run_postprocess = false;
   REQUIRE(rvegen::run_pipeline(cfg, off).shapes.size() == 6);
+}
+
+// #120: the whole config is validated before the first shape is placed, and
+// check_config() runs only that validation.
+void test_check_config() {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::path{"pipeline_check_dir"};
+  fs::remove_all(dir);
+  fs::create_directory(dir);
+  auto message = [](json const& cfg, bool check_only,
+                    std::vector<std::string>* info = nullptr) {
+    rvegen::pipeline_options o;
+    if (info) o.info = [info](std::string const& l) { info->push_back(l); };
+    try {
+      if (check_only) rvegen::check_config(cfg, o);
+      else (void)rvegen::run_pipeline(cfg, o);
+    } catch (std::exception const& e) { return std::string{e.what()}; }
+    return std::string{};
+  };
+  auto has = [](std::string const& text, char const* needle) {
+    return text.find(needle) != std::string::npos;
+  };
+  auto dir_empty = [&] { return fs::directory_iterator{dir} == fs::directory_iterator{}; };
+
+  // The acceptance case: three writers, the third lacks a required key.
+  // Nothing is generated and neither of the first two files appears.
+  auto three = circles_config();
+  three["postprocess"] = json::array(
+      {json{{"type", "svg"}, {"canvas_width", 200},
+            {"output_path", (dir / "a.svg").string()}},
+       json{{"type", "voxel"}, {"nx", 4}, {"ny", 4}, {"nz", 1},
+            {"output_path", (dir / "b.vox").string()}},
+       json{{"type", "svg"}, {"output_path", (dir / "c.svg").string()}}});
+  for (bool check_only : {false, true}) {
+    std::vector<std::string> info;
+    const auto what = message(three, check_only, &info);
+    REQUIRE(has(what, "postprocess[2] ('svg')"));
+    REQUIRE(has(what, "canvas_width"));
+    REQUIRE(info.empty());        // no "generated N shapes"
+    REQUIRE(dir_empty());
+  }
+
+  // A valid config: check_config() accepts it, places nothing, writes nothing.
+  three["postprocess"][2]["canvas_width"] = 100;
+  {
+    std::vector<std::string> info;
+    REQUIRE(message(three, true, &info).empty());
+    REQUIRE(info.empty());
+    REQUIRE(dir_empty());
+  }
+  // ...and the same config then runs and writes all three files.
+  REQUIRE(message(three, false).empty());
+  REQUIRE(fs::exists(dir / "a.svg") && fs::exists(dir / "b.vox") &&
+          fs::exists(dir / "c.svg"));
+  // An existing output file is fine for a re-run (it gets overwritten).
+  REQUIRE(message(three, true).empty());
+
+  // A misspelt section is rejected with the section it most likely meant.
+  auto typo = circles_config();
+  typo["post_process"] = three["postprocess"];
+  for (bool check_only : {false, true}) {
+    const auto what = message(typo, check_only);
+    REQUIRE(has(what, "unknown top-level key 'post_process' (did you mean 'postprocess'?)"));
+  }
+  for (auto const& [wrong, right] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"shape", "shapes"}, {"generators", "generator"},
+           {"distribution", "distributions"}, {"domain-box", "domain_box"},
+           {"phase_assignments", "phase_assignment"}, {"Seed", "seed"}}) {
+    auto c = circles_config();
+    c[wrong] = 1;
+    REQUIRE(has(message(c, true), ("did you mean '" + right + "'?").c_str()));
+  }
+  // Far from every key: no misleading hint. "_"-keys stay allowed.
+  auto far = circles_config();
+  far["xyzzy"] = 1;
+  REQUIRE(has(message(far, true), "unknown top-level key 'xyzzy'"));
+  REQUIRE(!has(message(far, true), "did you mean"));
+  auto note = circles_config();
+  note["_comment"] = "free text";
+  note["_units"] = json{{"length", "mm"}};
+  REQUIRE(message(note, true).empty());
+
+  // Output locations are checked before generation.
+  auto out = circles_config();
+  out["postprocess"] = json::array({json{
+      {"type", "svg"}, {"canvas_width", 200},
+      {"output_path", (dir / "missing" / "x.svg").string()}}});
+  for (bool check_only : {false, true}) {
+    std::vector<std::string> info;
+    const auto what = message(out, check_only, &info);
+    REQUIRE(has(what, "postprocess[0] ('svg')"));
+    REQUIRE(has(what, "does not exist"));
+    REQUIRE(info.empty());
+  }
+  out["postprocess"][0]["output_path"] = dir.string();          // a directory
+  REQUIRE(has(message(out, true), "is a directory, not a file"));
+  out["postprocess"][0]["output_path"] = (dir / "a.svg" / "x.svg").string();
+  REQUIRE(has(message(out, true), "is not a directory"));       // parent is a file
+#ifndef _WIN32
+  if (::geteuid() != 0) {   // root may write anywhere
+    const fs::path locked = dir / "locked";
+    fs::create_directory(locked);
+    fs::permissions(locked, fs::perms::owner_read | fs::perms::owner_exec);
+    out["postprocess"][0]["output_path"] = (locked / "x.svg").string();
+    REQUIRE(has(message(out, true), "is not writable"));
+    fs::permissions(locked, fs::perms::owner_all);
+    // A read-only existing file is caught too.
+    const fs::path ro = dir / "readonly.svg";
+    { std::ofstream f{ro}; f << "x"; }
+    fs::permissions(ro, fs::perms::owner_read);
+    out["postprocess"][0]["output_path"] = ro.string();
+    REQUIRE(has(message(out, true), "is not writable"));
+    fs::permissions(ro, fs::perms::owner_all);
+  }
+#endif
+
+  // Missing or mistyped sections are named.
+  auto c = circles_config();
+  c.erase("generator");
+  REQUIRE(has(message(c, true), "no \"generator\" section"));
+  c = circles_config();
+  c.erase("termination");
+  REQUIRE(has(message(c, true), "no \"termination\" section"));
+  c = circles_config();
+  c["shapes"] = json{{"type", "circle_input"}};                 // object, not array
+  REQUIRE(has(message(c, true), "\"shapes\" must be an array"));
+  c = circles_config();
+  c["distributions"] = json::array();
+  REQUIRE(has(message(c, true), "\"distributions\" must be an object"));
+  REQUIRE(has(message(json::array(), true), "must be a JSON object"));
+  // Every other block is built by the check as well.
+  c = circles_config();
+  c["distributions"]["x"]["type"] = "no_such_distribution";
+  REQUIRE(!message(c, true).empty());
+  c = circles_config();
+  c["shapes"][0]["radius_dist"] = "undefined_name";
+  REQUIRE(!message(c, true).empty());
+  c = circles_config();
+  c["termination"]["target"] = -1;
+  REQUIRE(!message(c, true).empty());
+  c = circles_config();
+  c["phase_assignment"] = json{{"all_inclusions", "nope"}};
+  REQUIRE(!message(c, true).empty());
+
+  // check_config validates writers even when the caller skips them at run
+  // time; generate() with run_postprocess = false still does not.
+  auto skip = circles_config();
+  skip["postprocess"] = json::array({json{{"type", "voxel"}}});
+  rvegen::pipeline_options off;
+  off.run_postprocess = false;
+  bool threw = false;
+  try { rvegen::check_config(skip, off); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw);
+  REQUIRE(rvegen::generate(skip, off).shapes.size() == 6);
+
+  fs::remove_all(dir);
 }
 
 // progress.cancel stops the run and no writer runs afterwards.
@@ -257,6 +428,7 @@ int main() {
   test_postprocess_toggle();
   test_seed_and_warnings();
   test_postprocess_validated_before_generation();
+  test_check_config();
   test_cancel_stops_pipeline();
   test_voronoi_follows_pipeline_seed();
   test_no_stdout_noise();

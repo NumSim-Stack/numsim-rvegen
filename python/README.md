@@ -109,6 +109,9 @@ print(len(res), res.summary)          # seed, n_shapes, domain_box, volume_fract
 for s in res:
     print(s.kind, s.center, s.area())
 
+# Validate without generating: raises on the first problem, writes nothing.
+rvegen.check(config)
+
 # Writers under "postprocess" run too (set postprocess=False to skip them).
 # Deterministic generators (voronoi_2d/3d, weave, tow_weave) need no
 # "shapes" / "termination" sections.
