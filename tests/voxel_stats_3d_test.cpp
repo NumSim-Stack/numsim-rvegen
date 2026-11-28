@@ -223,7 +223,11 @@ void test_vtk_cell_data_layout() {
   REQUIRE(text.find("DATASET STRUCTURED_POINTS\n") != std::string::npos);
   REQUIRE(text.find("DIMENSIONS 5 3 4\n") != std::string::npos);
   REQUIRE(text.find("ORIGIN 0 0 0\n") != std::string::npos);
-  REQUIRE(text.find("SPACING 0.5 0.5 0.33333333333333331\n") != std::string::npos);
+  // Shortest text that reads back to exactly 1/3 (format_number); the 17
+  // digit form 0.33333333333333331 is the same double.
+  REQUIRE(text.find("SPACING 0.5 0.5 0.3333333333333333\n") != std::string::npos);
+  REQUIRE(std::stod("0.3333333333333333") == 1.0 / 3.0);
+  REQUIRE(std::stod("0.33333333333333331") == 1.0 / 3.0);
   REQUIRE(text.find("CELL_DATA 24\n") != std::string::npos);
   REQUIRE(text.find("POINT_DATA") == std::string::npos);
   const auto body = vtk_body(text);

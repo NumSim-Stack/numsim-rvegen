@@ -348,6 +348,11 @@ add_executable(rvegen_shape_id_unique_test tests/shape_id_unique_test.cpp)
 target_link_libraries(rvegen_shape_id_unique_test PRIVATE rvegen_lib)
 add_test(NAME shape_id_unique_test COMMAND rvegen_shape_id_unique_test)
 
+# Shared helpers (#135): wrap_to_box, format_number, extent_of.
+add_executable(rvegen_shared_helpers_test tests/shared_helpers_test.cpp)
+target_link_libraries(rvegen_shared_helpers_test PRIVATE rvegen_lib)
+add_test(NAME shared_helpers_test COMMAND rvegen_shared_helpers_test)
+
 add_executable(rvegen_visualization_writers_test tests/visualization_writers_test.cpp)
 target_link_libraries(rvegen_visualization_writers_test PRIVATE rvegen_lib Threads::Threads)
 add_test(NAME visualization_writers_test COMMAND rvegen_visualization_writers_test)

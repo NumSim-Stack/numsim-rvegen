@@ -136,6 +136,13 @@ public:
     this->_bounding_box = std::move(box);
   }
 
+  // {lowest corner, highest corner} of the tube: the centreline's extent
+  // grown by the radius. Computed from the current geometry, so it is
+  // valid whether or not make_bounding_box() has been called.
+  [[nodiscard]] std::array<std::array<T, 3>, 2> extents() const {
+    return compute_bb_extents();
+  }
+
   [[nodiscard]] std::unique_ptr<shape_base<T>> clone() const override {
     return std::make_unique<polyline_tube<T>>(*this);
   }

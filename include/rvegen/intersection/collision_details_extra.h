@@ -80,20 +80,11 @@ template <typename T, typename F>
   return false;
 }
 
+// Bounds of the tube, from the shape itself (polyline_tube::extents).
 template <typename T>
 [[nodiscard]] inline bounds3<T> tube_bounds(polyline_tube<T> const& t) {
-  bounds3<T> b;
-  auto const& c = t.centerline();
-  if (c.empty()) return b;
-  for (int k = 0; k < 3; ++k) b.lo[k] = b.hi[k] = c[0][k];
-  for (auto const& p : c) {
-    for (int k = 0; k < 3; ++k) {
-      b.lo[k] = std::min(b.lo[k], p[k]);
-      b.hi[k] = std::max(b.hi[k], p[k]);
-    }
-  }
-  for (int k = 0; k < 3; ++k) { b.lo[k] -= t.radius(); b.hi[k] += t.radius(); }
-  return b;
+  const auto e = t.extents();
+  return bounds3<T>{e[0], e[1]};
 }
 
 // Bounds of the placed mesh (rotation, scale and translation applied),

@@ -33,6 +33,7 @@
 #include "../distributions/portable_random.h"
 #include "../postprocess/voxel_grid.h"
 #include "../shapes/shape_base.h"
+#include "../util/wrap_to_box.h"
 
 namespace rvegen {
 
@@ -119,13 +120,8 @@ two_point_correlation_2d(
       const double a = theta(engine);
       const double x1 = (double(i0) + 0.5) * dx + r * std::cos(a);
       const double y1 = (double(j0) + 0.5) * dy + r * std::sin(a);
-      // Periodic wrap into [0, L*).
-      auto wrap = [](double v, double L) {
-        v = std::fmod(v, L);
-        return v < 0 ? v + L : v;
-      };
-      const std::size_t i1 = std::min(std::size_t(wrap(x1, Lx) / dx), nx - 1);
-      const std::size_t j1 = std::min(std::size_t(wrap(y1, Ly) / dy), ny - 1);
+      const std::size_t i1 = std::min(std::size_t(wrap_to_box(x1, Lx) / dx), nx - 1);
+      const std::size_t j1 = std::min(std::size_t(wrap_to_box(y1, Ly) / dy), ny - 1);
       if (grid[j0 * nx + i0] != 0 && grid[j1 * nx + i1] != 0) ++both_in;
     }
     out.push_back({r, double(both_in) / double(samples_per_bin)});
@@ -175,11 +171,6 @@ two_point_correlation_3d(
   std::uniform_real_distribution<double> cos_theta{-1.0, 1.0};
   std::uniform_real_distribution<double> phi{0.0, 2.0 * std::numbers::pi};
 
-  // Periodic wrap into [0, L*).
-  auto wrap = [](double v, double L) {
-    v = std::fmod(v, L);
-    return v < 0 ? v + L : v;
-  };
   auto at = [&](std::size_t i, std::size_t j, std::size_t k) {
     return grid[(k * ny + j) * nx + i];
   };
@@ -197,9 +188,9 @@ two_point_correlation_3d(
       const double x1 = (double(i0) + 0.5) * dx + r * st * std::cos(a);
       const double y1 = (double(j0) + 0.5) * dy + r * st * std::sin(a);
       const double z1 = (double(k0) + 0.5) * dz + r * ct;
-      const std::size_t i1 = std::min(std::size_t(wrap(x1, Lx) / dx), nx - 1);
-      const std::size_t j1 = std::min(std::size_t(wrap(y1, Ly) / dy), ny - 1);
-      const std::size_t k1 = std::min(std::size_t(wrap(z1, Lz) / dz), nz - 1);
+      const std::size_t i1 = std::min(std::size_t(wrap_to_box(x1, Lx) / dx), nx - 1);
+      const std::size_t j1 = std::min(std::size_t(wrap_to_box(y1, Ly) / dy), ny - 1);
+      const std::size_t k1 = std::min(std::size_t(wrap_to_box(z1, Lz) / dz), nz - 1);
       if (at(i0, j0, k0) != 0 && at(i1, j1, k1) != 0) ++both_in;
     }
     out.push_back({r, double(both_in) / double(samples_per_bin)});
