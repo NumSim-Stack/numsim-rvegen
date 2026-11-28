@@ -30,6 +30,9 @@ public:
   [[nodiscard]] bool operator()(shape_vector const& /*accepted*/) const override {
     return false;
   }
+
+  [[nodiscard]] std::string kind() const override { return "until_full"; }
+  [[nodiscard]] bool has_target() const noexcept override { return false; }
 };
 
 } // namespace rvegen

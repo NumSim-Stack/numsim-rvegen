@@ -60,6 +60,21 @@ public:
 
   [[nodiscard]] bool is_met(shape_vector const& accepted,
                             bool /*count_all*/) const override {
+    return _domain_size > value_type{0} && fraction(accepted) >= _target;
+  }
+
+  [[nodiscard]] std::string kind() const override { return "volume_fraction"; }
+  [[nodiscard]] double target_value() const noexcept override {
+    return static_cast<double>(_target);
+  }
+  [[nodiscard]] double achieved_value(shape_vector const& accepted,
+                                      bool /*count_all*/) const override {
+    return static_cast<double>(fraction(accepted));
+  }
+
+  // The fraction is_met() compares with the target (0 without a domain).
+  [[nodiscard]] value_type fraction(shape_vector const& accepted) const {
+    if (!(_domain_size > value_type{0})) return value_type{0};
     value_type sum{};
     bool const have_box =
         _domain_box[0] > value_type{0} && _domain_box[1] > value_type{0};
@@ -72,7 +87,7 @@ public:
       const auto v = shape->volume();
       sum += (v > value_type{0}) ? v : shape->area();
     }
-    return _domain_size > value_type{0} && sum / _domain_size >= _target;
+    return sum / _domain_size;
   }
 
   [[nodiscard]] value_type target_fraction() const noexcept { return _target; }

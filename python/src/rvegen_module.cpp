@@ -273,6 +273,8 @@ PYBIND11_MODULE(_core, m) {
       "rvegen — Representative Volume Element generator (Python bindings: "
       "shape primitives, registry introspection, JSON-driven run(), "
       "voxelize()).";
+  // The C++ library's version; rvegen.__version__ must equal it (tested).
+  m.attr("core_version") = rvegen::version;
   rvegen::register_all_types();   // populate every registry once
 
   // Polymorphic base: lets rvegen.run() hand back shapes that pybind11
@@ -777,7 +779,7 @@ PYBIND11_MODULE(_core, m) {
   py::class_<run_result>(m, "RunResult",
       "Shapes produced by rvegen.run(): a sequence of Shape objects plus a "
       "`summary` dict (seed, n_shapes, domain_box, volume_fraction, phases, "
-      "postprocess).")
+      "postprocess, report).")
       .def_readonly("shapes", &run_result::shapes)
       .def_readonly("summary", &run_result::summary)
       .def("__len__", [](run_result const& r) { return r.shapes.size(); })
@@ -785,6 +787,11 @@ PYBIND11_MODULE(_core, m) {
       .def("__getitem__", [](run_result const& r, py::object idx) {
         return r.shapes.attr("__getitem__")(idx);
       });
+
+  // A missed termination target in a strict run. Subclass of RuntimeError,
+  // message = the report line.
+  py::register_exception<rvegen::target_not_reached>(m, "TargetNotReached",
+                                                     PyExc_RuntimeError);
 
   m.def("check",
       [](py::object const& config, std::optional<std::uint64_t> seed,
@@ -828,12 +835,14 @@ PYBIND11_MODULE(_core, m) {
   m.def("run",
       [](py::object const& config, std::optional<std::uint64_t> seed,
          bool postprocess, bool strict, py::object const& input_dir,
-         py::object const& output_dir, py::object log, bool verbose) {
+         py::object const& output_dir, py::object log, bool verbose,
+         bool strict_targets) {
         auto const cfg = load_config(config);
         rvegen::pipeline_options opts;
         opts.seed = seed;
         opts.run_postprocess = postprocess;
         opts.strict_keys = strict;
+        opts.strict_targets = strict_targets;
         set_directories(opts, cfg, input_dir, output_dir);
         log_sink sink{std::move(log)};
         sink.attach(opts, verbose);
@@ -877,6 +886,7 @@ PYBIND11_MODULE(_core, m) {
             phase_names.push_back(p->name);
         sm["phases"] = phase_names;
         sm["postprocess"] = res.post_processes_run;
+        sm["report"] = json_to_py(rvegen::report_to_json(res.report));
         for (auto& sh : res.shapes) out.shapes.append(py::cast(std::move(sh)));
         out.summary = sm;
         return out;
@@ -885,12 +895,19 @@ PYBIND11_MODULE(_core, m) {
       py::arg("postprocess") = true, py::arg("strict") = true, py::kw_only(),
       py::arg("input_dir") = py::none(), py::arg("output_dir") = py::none(),
       py::arg("log") = py::none(), py::arg("verbose") = false,
+      py::arg("strict_targets") = false,
       "Run a full rvegen pipeline. `config` is a dict (same schema as the "
       "CLI JSON) or a path to a JSON file; `seed` overrides the config "
       "seed. Writers under \"postprocess\" run unless postprocess=False. "
       "The whole config is validated before the first shape is placed; an "
       "unknown top-level key is an error unless strict=False (then a "
       "UserWarning). Returns a RunResult (sequence of shapes + summary).\n\n"
+      "Targets: a generator also returns when it runs out of max_attempts. "
+      "summary['report'] says what was reached (termination, target, "
+      "achieved, attempts, max_attempts, stop_reason, target_reached). A "
+      "missed target raises a UserWarning; with strict_targets=True (or "
+      "\"strict\": true in the config) it raises TargetNotReached and no "
+      "writer runs.\n\n"
       "Paths: a relative input path in the config (mesh_path) is resolved "
       "against input_dir; by default that is the directory of the config "
       "file, or the working directory for a dict. A relative output_path "

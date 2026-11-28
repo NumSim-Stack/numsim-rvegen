@@ -47,12 +47,18 @@ public:
 
   [[nodiscard]] bool is_met(shape_vector const& accepted,
                             bool count_all) const override {
-    if (count_all) return accepted.size() >= _target;
-    std::size_t primary_count = 0;
-    for (auto const& shape : accepted) {
-      if (shape->is_primary()) ++primary_count;
-    }
-    return primary_count >= _target;
+    return count(accepted, count_all) >= _target;
+  }
+
+  [[nodiscard]] std::string kind() const override {
+    return "number_of_inclusions";
+  }
+  [[nodiscard]] double target_value() const noexcept override {
+    return static_cast<double>(_target);
+  }
+  [[nodiscard]] double achieved_value(shape_vector const& accepted,
+                                      bool count_all) const override {
+    return static_cast<double>(count(accepted, count_all));
   }
 
   [[nodiscard]] std::size_t target() const noexcept { return _target; }
@@ -65,6 +71,18 @@ public:
   }
 
 private:
+  // Inclusions in `accepted`: every shape with count_all, else the
+  // primaries (periodic copies are not counted again).
+  [[nodiscard]] static std::size_t count(shape_vector const& accepted,
+                                         bool count_all) noexcept {
+    if (count_all) return accepted.size();
+    std::size_t primary_count = 0;
+    for (auto const& shape : accepted) {
+      if (shape->is_primary()) ++primary_count;
+    }
+    return primary_count;
+  }
+
   std::size_t _target;
 };
 

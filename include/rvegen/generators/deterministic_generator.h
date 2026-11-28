@@ -47,14 +47,20 @@ public:
           termination_base<T> const& /*termination*/,
           std::array<T, 3> const& domain_box,
           progress_options const& opts = {}) final {
-    if (opts.cancel()) return {};
+    this->clear_report();
+    if (opts.cancel()) {
+      this->record_report(stop_reason::cancelled);
+      return {};
+    }
     _cancel = opts.cancel;
     shape_vector shapes;
     try {
       shapes = build(domain_box);
     } catch (generation_cancelled const&) {
+      this->record_report(stop_reason::cancelled);
       return {};
     }
+    this->record_report(stop_reason::reached);
     progress_info info;
     info.shapes_placed = shapes.size();
     info.shapes_target = shapes.size();

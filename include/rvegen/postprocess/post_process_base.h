@@ -4,6 +4,8 @@
 #include <memory>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "../phase/phase.h"
 #include "../shapes/shape_base.h"
 
@@ -40,6 +42,13 @@ public:
   // with exactly this signature, which therefore overrides this virtual
   // implicitly. The pointer must outlive the next run().
   virtual void set_phases(phase_collection<T> const* /*phases*/) noexcept {}
+
+  // Facts about the run that the shapes do not carry: an object with
+  // "seed", "report" (the generation report) and "config" (as given). The
+  // pipeline calls this on every post-process before run(); the default
+  // ignores it (run_summary_writer writes it out). The pointer must
+  // outlive the next run().
+  virtual void set_run_info(nlohmann::json const* /*info*/) noexcept {}
 
   // Everything run() would reject that depends only on the configuration
   // and the domain box, not on the generated shapes: a missing output

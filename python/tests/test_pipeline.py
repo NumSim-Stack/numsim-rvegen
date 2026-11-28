@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import signal
 import threading
@@ -381,7 +382,6 @@ def test_periodic_copies_are_linked_to_their_primary():
         assert c.area() == p.area()
     # A shape without copies has no id; the summary counts each inclusion once.
     assert any(p.inclusion_id is None for p in primaries)
-    import math
     assert math.isclose(res.summary["volume_fraction"],
                         sum(p.area() for p in primaries), rel_tol=1e-12)
 
@@ -516,3 +516,58 @@ def test_metadata_object_and_string_forms_agree():
     assert all(s.info["batch"] == "A7" for s in a)
     with pytest.raises(ValueError, match="'metadata'"):
         run([1, 2])
+
+
+# ---- #119: generation report, strict targets ----
+
+def _underfilled():
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["generator"]["max_attempts"] = 40
+    cfg["termination"] = {"type": "volume_fraction", "target_fraction": 0.9}
+    return cfg
+
+
+def test_summary_report_reached():
+    res = rvegen.run(json.loads(json.dumps(CIRCLES)), postprocess=False)
+    rep = res.summary["report"]
+    assert rep["termination"] == CIRCLES["termination"]["type"]
+    assert rep["target_reached"] is True and rep["stop_reason"] == "reached"
+    assert rep["has_target"] is True
+    assert rep["achieved"] >= rep["target"] > 0
+    assert 0 < rep["attempts"] <= rep["max_attempts"]
+
+
+def test_missed_target_warns_and_is_reported():
+    with pytest.warns(UserWarning, match=r"volume_fraction: reached 0\.\d+ of 0\.9 "
+                                         r"after 40 attempts \(max_attempts\)"):
+        res = rvegen.run(_underfilled(), postprocess=False)
+    rep = res.summary["report"]
+    assert rep["target_reached"] is False and rep["stop_reason"] == "max_attempts"
+    assert rep["attempts"] == 40 and rep["target"] == 0.9
+    assert math.isclose(rep["achieved"], res.summary["volume_fraction"], rel_tol=1e-12)
+
+
+def test_strict_targets_raises(tmp_path):
+    cfg = _underfilled()
+    cfg["postprocess"] = [{"type": "run_summary", "output_path": "run.json"}]
+    with pytest.raises(rvegen.TargetNotReached, match=r"of 0\.9 after 40 attempts"):
+        rvegen.run(cfg, output_dir=tmp_path, strict_targets=True)
+    assert issubclass(rvegen.TargetNotReached, RuntimeError)
+    assert not (tmp_path / "run.json").exists()          # no writer ran
+    cfg["strict"] = True                                 # the config key does the same
+    with pytest.raises(rvegen.TargetNotReached):
+        rvegen.run(cfg, output_dir=tmp_path)
+    del cfg["strict"]
+
+    # Not strict: the summary file records the shortfall.
+    with pytest.warns(UserWarning):
+        res = rvegen.run(cfg, output_dir=tmp_path, seed=11)
+    summary = json.loads((tmp_path / "run.json").read_text())
+    assert summary["seed"] == 11 and summary["config"] == cfg
+    assert summary["rvegen_version"] == rvegen.__version__
+    assert summary["report"] == res.summary["report"]
+    assert summary["n_shapes"] == len(res)
+
+
+def test_versions_agree():
+    assert rvegen.__version__ == rvegen._core.core_version

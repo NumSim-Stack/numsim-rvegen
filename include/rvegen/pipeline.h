@@ -109,7 +109,32 @@ struct pipeline_options {
   // nothing. false downgrades it to a warning. Keys starting with '_'
   // ("_comment") are always allowed.
   bool strict_keys = true;
+  // A generator also returns when it runs out of attempts. By default a
+  // missed termination target is a warning; with strict_targets (or
+  // "strict": true in the config) it is an error: generate() throws
+  // target_not_reached and no post-process runs.
+  bool strict_targets = false;
 };
+
+// Thrown by generate() when the termination target was missed and the run
+// is strict (pipeline_options::strict_targets, "strict": true).
+struct target_not_reached : std::runtime_error {
+  explicit target_not_reached(generation_report r)
+      : std::runtime_error{r.summary()}, report{std::move(r)} {}
+  generation_report report;
+};
+
+// The generation report as JSON (Python summary, run_summary writer).
+[[nodiscard]] inline nlohmann::json report_to_json(generation_report const& r) {
+  return {{"termination", r.termination},
+          {"has_target", r.has_target},
+          {"target", r.target},
+          {"achieved", r.achieved},
+          {"attempts", r.attempts},
+          {"max_attempts", r.max_attempts},
+          {"stop_reason", to_string(r.reason)},
+          {"target_reached", !r.target_missed()}};
+}
 
 struct pipeline_result {
   using shape_vector = rve_generator_base<double>::shape_vector;
@@ -119,6 +144,11 @@ struct pipeline_result {
   std::uint64_t seed{42};
   std::optional<phase_collection<double>> phases;
   std::vector<std::string> post_processes_run;   // "type" of each executed step
+  // What the generator achieved against the termination target (#119).
+  generation_report report;
+  // "seed", "report", "config": handed to every post-process
+  // (post_process_base::set_run_info) by run_post_processes().
+  nlohmann::json run_info;
   // Writers built (and schema-validated) by generate() BEFORE the shapes
   // are placed, so a bad "postprocess" block fails before any work or any
   // output file; run_post_processes() executes them.
@@ -128,10 +158,10 @@ struct pipeline_result {
 
 namespace detail {
 
-inline constexpr std::array<char const*, 10> top_level_keys{
+inline constexpr std::array<char const*, 11> top_level_keys{
     "domain_box", "seed", "distributions", "direction_distributions",
     "shapes", "generator", "termination", "postprocess", "phases",
-    "phase_assignment"};
+    "phase_assignment", "strict"};
 
 // Levenshtein distance (two rows; the keys are a few characters long).
 [[nodiscard]] inline std::size_t edit_distance(std::string_view a,
@@ -453,6 +483,14 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
   if (!config.contains("generator")) {
     throw std::invalid_argument{"the config has no \"generator\" section"};
   }
+  bool strict_targets = opts.strict_targets;
+  if (auto const it = config.find("strict"); it != config.end()) {
+    if (!it->is_boolean()) {
+      throw std::invalid_argument{"\"strict\" must be true or false, got " +
+                                  it->dump()};
+    }
+    strict_targets = strict_targets || it->template get<bool>();
+  }
 
   if (config.contains("domain_box")) {
     auto const& db = config.at("domain_box");
@@ -658,13 +696,27 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
   if (opts.progress.cancel()) throw pipeline_cancelled{};
   opts.info("rvegen: generated " + std::to_string(out.shapes.size()) +
             " shape" + (out.shapes.size() == 1 ? "" : "s"));
-  // A generator also returns when it exhausts max_attempts. Detect that
-  // by evaluating the termination predicate on the result (it counts every
-  // inclusion once, whichever generator produced the shapes).
-  if (!(*termination)(out.shapes)) {
-    opts.warn("rvegen: warning — stopped at max_attempts before reaching "
-              "the termination target (" + std::to_string(out.shapes.size()) +
-              " shapes placed).");
+  // A generator also returns when it exhausts max_attempts: the report
+  // says what was reached. A generator that records none (a custom one)
+  // is measured here with the termination predicate itself.
+  if (auto const& recorded = generator->last_report()) {
+    out.report = *recorded;
+  } else if (!deterministic) {
+    out.report.termination = termination->kind();
+    out.report.has_target = termination->has_target();
+    out.report.target = termination->target_value();
+    out.report.achieved = termination->achieved_value(out.shapes, false);
+    out.report.reason = (*termination)(out.shapes) ? stop_reason::reached
+                                                   : stop_reason::max_attempts;
+  }
+  if (auto const line = out.report.summary(); !line.empty()) {
+    if (!out.report.target_missed()) {
+      opts.info("rvegen: " + line);
+    } else if (strict_targets) {
+      throw target_not_reached{out.report};
+    } else {
+      opts.warn("rvegen: warning - " + line);
+    }
   }
 
   // Shape -> phase assignment. The collection is handed to every
@@ -716,6 +768,9 @@ inline void run_post_processes(nlohmann::json const& config,
   }
   auto writers = std::move(result.pending_post_processes);
   result.pending_post_processes.clear();
+  result.run_info = {{"seed", result.seed},
+                     {"report", report_to_json(result.report)},
+                     {"config", config}};
   std::size_t n = 0;
   for (auto const& spec : config.at("postprocess")) {
     // A cancel request (Ctrl-C, a log callback that raised) also stops
@@ -723,6 +778,7 @@ inline void run_post_processes(nlohmann::json const& config,
     if (opts.progress.cancel()) throw pipeline_cancelled{};
     auto& pp = writers.at(n++);
     if (result.phases) pp->set_phases(&*result.phases);
+    pp->set_run_info(&result.run_info);
     pp->run(result.shapes, result.domain_box);
     auto type = spec.at("type").get<std::string>();
     opts.info("rvegen: post-process '" + type + "' done");

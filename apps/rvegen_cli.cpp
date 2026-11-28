@@ -42,6 +42,7 @@
 
 namespace {
 
+constexpr int exit_target = 1;   // --strict: the termination target was missed
 constexpr int exit_usage  = 64;  // EX_USAGE
 constexpr int exit_input  = 66;  // EX_NOINPUT
 constexpr int exit_config = 78;  // EX_CONFIG
@@ -73,6 +74,10 @@ void print_usage(char const* argv0) {
       << "                output directories are checked, exactly as a run\n"
       << "                does before it places the first shape. No file is\n"
       << "                written. Exit status 0 means the config is valid.\n\n"
+      << "  --strict      A missed termination target (the generator ran out of\n"
+      << "                max_attempts first) is an error: exit status 1 and no\n"
+      << "                output file, instead of a warning. \"strict\": true in\n"
+      << "                the config does the same.\n\n"
       << "  --allow-unknown-keys\n"
       << "                An unknown top-level key is an error (it is usually\n"
       << "                a misspelt section, which would be skipped); with\n"
@@ -123,6 +128,7 @@ int run(int argc, char** argv) {
   bool allow_unknown_keys = false;
   bool quiet = false;
   bool verbose = false;
+  bool strict = false;
   std::optional<std::string> output_dir;
   std::optional<std::string> input_dir;
   char const* config_path = nullptr;
@@ -180,6 +186,8 @@ int run(int argc, char** argv) {
       check_only = true;
     } else if (arg == "--allow-unknown-keys") {
       allow_unknown_keys = true;
+    } else if (arg == "--strict") {
+      strict = true;
     } else if (arg == "--quiet") {
       quiet = true;
     } else if (arg == "--verbose") {
@@ -238,6 +246,7 @@ int run(int argc, char** argv) {
     opts.debug = [](std::string const& line) { std::cout << line << '\n'; };
 
   opts.strict_keys = !allow_unknown_keys;
+  opts.strict_targets = strict;
 
   // Input files are looked up next to the config, so a config and its
   // data can be run from any directory. ("." for a bare file name: an
@@ -298,6 +307,9 @@ int run(int argc, char** argv) {
 int main(int argc, char** argv) {
   try {
     return run(argc, argv);
+  } catch (rvegen::target_not_reached const& e) {
+    std::cerr << "rvegen: error: target not reached - " << e.what() << '\n';
+    return exit_target;
   } catch (std::exception const& e) {
     std::cerr << "rvegen: error: " << e.what() << '\n';
     return exit_config;

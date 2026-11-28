@@ -114,6 +114,12 @@ for s in res:
 # translation (i, j, k) from the primary, and both share s.inclusion_id.
 inclusions = [s for s in res if s.is_primary]
 
+# What the generator reached against its termination target. A missed target
+# (the generator ran out of max_attempts) raises a UserWarning; with
+# strict_targets=True it raises rvegen.TargetNotReached and no writer runs.
+print(res.summary["report"])          # termination, target, achieved, attempts,
+                                      # max_attempts, stop_reason, target_reached
+
 # Validate without generating: raises on the first problem, writes nothing.
 rvegen.check(config)
 
