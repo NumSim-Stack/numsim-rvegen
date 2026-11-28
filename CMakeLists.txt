@@ -854,6 +854,10 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_dimension_inference_check.py
             ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME no_dimension_inference_self_test
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_dimension_inference_check.py
+            --self-test)
   add_test(NAME cli_check_rejects_underfill
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_example_check.py

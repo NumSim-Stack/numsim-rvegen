@@ -556,6 +556,7 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
   // tow_weave, voronoi_*) build their shapes from the generator params.
   rve_generator_base<double>::input_vector inputs;
   std::size_t shape_index = 0;
+  std::string dimension_mismatch;   // first "shapes" entry of the wrong dimension
   for (auto const& spec : config.value("shapes", nlohmann::json::array())) {
     // A direction distribution in a scalar slot would otherwise only fail
     // at the first new_shape(); catch it here and name the key.
@@ -581,15 +582,16 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
         block_label("shapes[" + std::to_string(shape_index) + "]", spec), opts,
         dists));
     // A planar shape in a 3D box (or a solid in a 2D one) has no meaning:
-    // its area and the box volume do not add up to a fraction.
+    // its area and the box volume do not add up to a fraction. Reported
+    // below, once it is known that the generator uses "shapes" at all.
     if (int const d = inputs.back()->dimension();
-        d != out.domain_box.dimension()) {
-      throw std::invalid_argument{
+        d != out.domain_box.dimension() && dimension_mismatch.empty()) {
+      dimension_mismatch =
           block_label("shapes[" + std::to_string(shape_index) + "]", spec) +
           "produces " + std::to_string(d) + "D shapes, but domain_box " +
           nlohmann::json(out.domain_box.extents()).dump() + " is " +
           std::to_string(out.domain_box.dimension()) +
-          "D (2D: \"domain_box\": [Lx, Ly]; 3D: [Lx, Ly, Lz])"};
+          "D (2D: \"domain_box\": [Lx, Ly]; 3D: [Lx, Ly, Lz])";
     }
     ++shape_index;
   }
@@ -665,6 +667,8 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
                 "' is deterministic: \"termination\" is ignored");
     termination = std::make_unique<number_of_inclusions<double>>(std::size_t{1});
   } else {
+    if (!dimension_mismatch.empty())
+      throw std::invalid_argument{dimension_mismatch};
     if (!config.contains("termination")) {
       throw std::invalid_argument{
           "the config has no \"termination\" section (generator '" +

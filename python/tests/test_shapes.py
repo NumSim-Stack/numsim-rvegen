@@ -207,6 +207,16 @@ def test_voronoi_generator_2d_partition_invariant():
     assert total == pytest.approx(2.0 * 1.5, abs=1e-10)
 
 
+@pytest.mark.parametrize("box", [(0.0, 1.0, 0.2), (1.0, -1.0, 0.2),
+                                 (1.0, 1.0, float("nan"))])
+def test_weave_generator_rejects_invalid_domain_box(box):
+    """A bad box is a ValueError, raised by the domain type (#122)."""
+    with pytest.raises(ValueError, match="domain_box"):
+        rvegen.WeaveGenerator(
+            domain_box=box, n_warp_yarns=2, n_weft_yarns=2,
+            yarn_radius=0.04, amplitude=0.05).build()
+
+
 def test_weave_generator_builds_expected_tube_count():
     """4 warp + 2 weft yarns → 6 PolylineTubes in the output list."""
     gen = rvegen.WeaveGenerator(

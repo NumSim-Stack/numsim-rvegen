@@ -132,6 +132,17 @@ void test_seed_and_warnings() {
   };
   REQUIRE(has("\"shapes\" is ignored"));
   REQUIRE(has("\"termination\" is ignored"));
+  // The ignored "shapes" block is not checked against the box either: 2D
+  // circles left over in a 3D Voronoi config still only warn (#122).
+  {
+    auto stale = circles_config();
+    stale["domain_box"] = json::array({1.0, 1.0, 1.0});
+    stale["generator"] = json{{"type", "voronoi_3d"}, {"n_seeds", 4},
+                              {"backend", "in_house"}};
+    warns.clear();
+    REQUIRE(!rvegen::generate(stale, o).shapes.empty());
+    REQUIRE(has("\"shapes\" is ignored"));
+  }
   // An unknown top-level key is an error by default (#120), a warning with
   // strict_keys = false; both carry a hint when a valid key is close.
   REQUIRE(!has("unknown top-level key"));
