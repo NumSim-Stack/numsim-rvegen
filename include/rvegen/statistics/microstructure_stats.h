@@ -72,8 +72,8 @@ template <typename T>
 //     isotropic structure they agree with the radial average; aligned
 //     fibres or a weave show up as profiles that differ.
 // Bin b of `nbins` covers lag lengths in [b, b + 1) * max_r / nbins, with
-// max_r half the smallest edge of the sampled box; r in the results is the
-// bin centre. A bin narrower than the voxel can hold no lag: its value is
+// max_r half the smallest edge of the box unless given; r in the results
+// is the bin centre. A bin narrower than the voxel can hold no lag: its value is
 // NaN (the profiles along an axis have lags only at multiples of the voxel
 // size, so they run empty first).
 //
@@ -120,27 +120,23 @@ template <typename T>
     std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz, std::size_t nbins = 32,
     two_point_boundary boundary = two_point_boundary::periodic,
-    phase_collection<T> const* phases = nullptr,
-    cancel_fn const* cancel = nullptr) {
+    std::type_identity_t<phase_collection<T>> const* phases = nullptr,
+    cancel_fn const* cancel = nullptr, double max_r = 0.0) {
   two_point_statistics out;
   out.boundary = boundary;
   out.nbins = nbins;
   out.grid = {nx, ny, effective_nz(domain_box, nz)};
   const std::array<double, 3> extent{double(domain_box[0]), double(domain_box[1]),
                                      domain_box.is_3d() ? double(domain_box[2]) : 0.0};
-  // Half the smallest edge among the axes that have lags at all.
-  double smallest = 0.0;
-  for (int pass = 0; pass < 2 && !(smallest > 0.0); ++pass) {
-    for (std::size_t a = 0; a < 3; ++a) {
-      if (!(extent[a] > 0.0) || (pass == 0 && out.grid[a] < 2)) continue;
-      smallest = smallest > 0.0 ? std::min(smallest, extent[a]) : extent[a];
-    }
+  if (!(max_r > 0.0)) {   // half the smallest edge of the box
+    max_r = 0.5 * std::min(extent[0], extent[1]);
+    if (domain_box.is_3d()) max_r = std::min(max_r, 0.5 * extent[2]);
   }
-  if (!(smallest > 0.0) || !std::isfinite(smallest)) {
+  if (!(max_r > 0.0) || !std::isfinite(max_r)) {
     throw std::invalid_argument{
-        "two-point statistics: the domain box has no positive finite edge"};
+        "two-point statistics: the domain box needs positive finite edges"};
   }
-  out.max_r = 0.5 * smallest;
+  out.max_r = max_r;
   const bool wrap = boundary == two_point_boundary::periodic;
   const voxel_correlator correlator{out.grid, extent, {wrap, wrap, wrap},
                                     out.max_r, nbins};
@@ -216,7 +212,11 @@ two_point_correlation_2d(
     std::size_t nx, std::size_t ny,
     std::size_t nbins = 32,
     two_point_boundary boundary = two_point_boundary::periodic) {
-  return two_point_correlations(accepted, domain_box, nx, ny, 1, nbins, boundary)
+  // The plane's own range, also for the mid-plane of a 3D box.
+  const double max_r =
+      0.5 * std::min(double(domain_box[0]), double(domain_box[1]));
+  return two_point_correlations(accepted, domain_box, nx, ny, 1, nbins,
+                                boundary, nullptr, nullptr, max_r)
       .radial();
 }
 

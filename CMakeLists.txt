@@ -370,6 +370,15 @@ add_executable(rvegen_voxel_stats_3d_test tests/voxel_stats_3d_test.cpp)
 target_link_libraries(rvegen_voxel_stats_3d_test PRIVATE rvegen_lib)
 add_test(NAME voxel_stats_3d_test COMMAND rvegen_voxel_stats_3d_test)
 
+# Exact S2 by FFT (#127): the correlator against a walk over every pair of
+# voxels, the analytic curves of one disc and one sphere, phases, the CSV
+# of the statistics post-process. The two fft_isolation sources include a
+# pocketfft of their own before and after rvegen's.
+add_executable(rvegen_two_point_fft_test tests/two_point_fft_test.cpp
+    tests/fft_isolation_first.cpp tests/fft_isolation_second.cpp)
+target_link_libraries(rvegen_two_point_fft_test PRIVATE rvegen_lib)
+add_test(NAME two_point_fft_test COMMAND rvegen_two_point_fft_test)
+
 # voronoi_2d skips the clips that cannot cut (#154): cells identical to the
 # full sequence of clips, and ordered seed lists as fast as random ones. The
 # time limit is a second guard against a return of the quadratic cost (the
