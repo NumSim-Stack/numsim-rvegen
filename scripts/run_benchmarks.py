@@ -17,6 +17,11 @@ runs every case of bench/cases.py (whole pipeline runs of the binary), each
 
 The time of a case is the fastest of its repeats: wall-clock time of the
 whole process, so reading the config, generating and writing are all in it.
+A case that takes longer than ten seconds is not repeated.
+
+Exit status: 0 all ran and nothing failed; 1 a scaling or comparison check
+failed, or was asked for and had nothing to judge; 2 a case did not run or
+the arguments were wrong.
 
 Scaling check. Absolute times depend on the machine and are too noisy on a
 shared CI runner to gate anything. How the time grows with the size is not:
@@ -27,7 +32,9 @@ for two sizes of one family the check computes
 with t the time less the start-up time of the binary (the `startup` case)
 and w the work of the run (placement attempts, or shapes generated). Work
 that is linear in the size gives 1, n log n a little more, and a pass over
-everything per inclusion gives 2.
+everything per inclusion gives 2. The check catches a quadratic step that
+dominates the larger run; one that is a small share of it stays under the
+limit (see docs/performance.md).
 """
 
 import argparse
@@ -81,12 +88,13 @@ def write_case(case, directory):
     config = json.loads(json.dumps(case["config"]))
     config["postprocess"] = list(config.get("postprocess", [])) + [
         {"type": "run_summary", "output_path": "summary.json"}]
-    (directory / "config.json").write_text(json.dumps(config, indent=1) + "\n")
+    (directory / "config.json").write_text(json.dumps(config, indent=1) + "\n", encoding="utf-8")
     for name, text in case["files"].items():
-        (directory / name).write_text(text)
+        (directory / name).write_text(text, encoding="utf-8")
 
 
 SKIPPED = "skipped: "
+REPEAT_BELOW_SECONDS = 10.0
 
 
 def has_voro_pp(rvegen, work):
@@ -97,7 +105,7 @@ def has_voro_pp(rvegen, work):
         "domain_box": [1.0, 1.0, 1.0],
         "generator": {"type": "voronoi_3d", "n_seeds": 4, "seed": 1,
                       "backend": "voro_pp"},
-        "postprocess": []}))
+        "postprocess": []}), encoding="utf-8")
     done = subprocess.run([str(rvegen), "config.json", "--quiet"],
                           cwd=directory, capture_output=True, text=True,
                           timeout=60)
@@ -117,6 +125,8 @@ def run_case(case, rvegen, work, repeat, timeout, missing=()):
                             "Voro++ (-DRVEGEN_WITH_VORO_PP=ON)")
         return result
     for _ in range(repeat):
+        if result["runs"] and max(result["runs"]) > REPEAT_BELOW_SECONDS:
+            break   # the fastest of several says nothing more at this length
         start = time.perf_counter()
         try:
             done = subprocess.run(
@@ -128,11 +138,12 @@ def run_case(case, rvegen, work, repeat, timeout, missing=()):
         seconds = time.perf_counter() - start
         if done.returncode != 0:
             tail = (done.stderr or done.stdout).strip().splitlines()[-3:]
-            result["status"] = "failed: " + " | ".join(tail)
+            result["status"] = (f"failed: exit status {done.returncode}" +
+                                "".join(" | " + line for line in tail))
             return result
         result["runs"].append(seconds)
     result["seconds"] = min(result["runs"])
-    summary = json.loads((directory / "summary.json").read_text())
+    summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
     report = summary.get("report") or {}
     result["shapes"] = summary.get("n_shapes")
     result["inclusions"] = summary.get("n_inclusions")
@@ -202,14 +213,24 @@ def compare(results, old_results, max_ratio, min_seconds):
             row["verdict"] = "not compared: skipped"
         elif r["status"] != "ok":
             row["verdict"] = "FAIL: " + r["status"]
+        elif o.get("size") != r["size"]:
+            row["verdict"] = "not compared: the case has another size now"
         else:
             row["ratio"] = r["seconds"] / o["seconds"]
             slower = (row["ratio"] > max_ratio and
                       max(r["seconds"], o["seconds"]) >= min_seconds)
             row["verdict"] = (f"FAIL: more than {max_ratio:g} times slower"
                               if slower else "ok")
+            if o.get("attempts") != r.get("attempts"):
+                row["verdict"] += (f" (attempts {o.get('attempts')} -> "
+                                   f"{r.get('attempts')}: not the same work)")
         rows.append(row)
     return rows
+
+
+def judged(rows):
+    """Whether a check came to a verdict on at least one row."""
+    return any(not row["verdict"].startswith("not ") for row in rows)
 
 
 def machine():
@@ -332,6 +353,18 @@ def self_test():
     assert rows["c"]["verdict"].startswith("FAIL"), rows
     rows = compare([fake("a", "a", 1, None, status="timeout")], old, 1.5, 0.05)
     assert rows[0]["verdict"].startswith("FAIL"), rows
+    # Another size, or another number of attempts, is not the same case.
+    rows = compare([fake("a", "a", 7, 1.0)], old, 1.5, 0.05)
+    assert rows[0]["verdict"].startswith("not compared"), rows
+    changed = fake("a", "a", 1, 1.0)
+    changed["attempts"] = 99
+    rows = compare([changed], old, 1.5, 0.05)
+    assert "not the same work" in rows[0]["verdict"], rows
+    assert not judged([]), "no rows: nothing judged"
+    assert not judged([{"verdict": "not checked: x"},
+                       {"verdict": "not compared: y"}])
+    assert judged([{"verdict": "not checked: x"}, {"verdict": "ok"}])
+    assert judged([{"verdict": "FAIL: z"}])
 
     names = [c["name"] for c in load_cases()]
     assert len(names) == len(set(names)), "case names must be unique"
@@ -344,6 +377,10 @@ def self_test():
 
 
 def main():
+    # The tables carry a micro sign; do not depend on the locale for it.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--rvegen", type=Path, help="the rvegen binary")
@@ -360,6 +397,9 @@ def main():
                              "judged (default 0.01)")
     parser.add_argument("--compare", type=Path)
     parser.add_argument("--max-ratio", type=float, default=1.5)
+    parser.add_argument("--min-compare-seconds", type=float, default=0.05,
+                        help="compare: cases faster than this in both "
+                             "measurements are not judged (default 0.05)")
     parser.add_argument("--emit", type=Path)
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--self-test", action="store_true")
@@ -368,8 +408,14 @@ def main():
     if args.self_test:
         self_test()
         return 0
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
+    try:
+        wanted = re.compile(args.filter)
+    except re.error as error:
+        parser.error(f"--filter is not a regular expression: {error}")
     cases = [c for c in load_cases()
-             if re.search(args.filter, c["name"])
+             if wanted.search(c["name"])
              and not (args.quick and c["large"])]
     if args.list:
         for case in cases:
@@ -387,7 +433,15 @@ def main():
         parser.error(f"no such binary: {rvegen}")
     if not cases:
         parser.error("no case matches")
-    old = json.loads(args.compare.read_text()) if args.compare else None
+    old = None
+    if args.compare:
+        try:
+            old = json.loads(args.compare.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            parser.error(f"--compare: cannot read {args.compare}: {error}")
+        if not isinstance(old, dict) or not isinstance(old.get("cases"), list):
+            parser.error(f"--compare: {args.compare} is not a results.json "
+                         "of this script")
 
     args.out.mkdir(parents=True, exist_ok=True)
     work = args.out / "work"
@@ -407,19 +461,21 @@ def main():
     version = ""
     summary = work / "startup" / "summary.json"
     if summary.is_file():
-        version = json.loads(summary.read_text()).get("rvegen_version", "")
+        version = json.loads(summary.read_text(encoding="utf-8")).get("rvegen_version", "")
     info = {"rvegen_version": version, "machine": machine(),
             "date": datetime.date.today().isoformat(), "repeat": args.repeat}
     scaling_rows = scaling(results, args.max_exponent, args.min_seconds)
-    compare_rows = (compare(results, old["cases"], args.max_ratio, 0.05)
-                    if old else [])
+    compare_rows = (compare(results, old["cases"], args.max_ratio,
+                            args.min_compare_seconds)
+                    if old is not None else [])
     for r in results:
         if r["runs"]:
             r["median_seconds"] = statistics.median(r["runs"])
     (args.out / "results.json").write_text(json.dumps(
-        dict(info, cases=results, scaling=scaling_rows), indent=1) + "\n")
+        dict(info, cases=results, scaling=scaling_rows), indent=1) + "\n",
+        encoding="utf-8")
     text = markdown(results, scaling_rows, compare_rows, info)
-    (args.out / "results.md").write_text(text)
+    (args.out / "results.md").write_text(text, encoding="utf-8")
     print()
     print(text)
 
@@ -427,18 +483,34 @@ def main():
               if r["status"] != "ok" and not r["status"].startswith(SKIPPED)]
     if broken:
         print("did not run: " + ", ".join(broken), file=sys.stderr)
+    if "startup" in broken:
+        print("scaling: the startup case did not run, no start-up time was "
+              "subtracted", file=sys.stderr)
     failed = False
     if args.check_scaling:
         bad = [row for row in scaling_rows if row["verdict"].startswith("FAIL")]
         for row in bad:
             print(f"scaling: {row['small']} -> {row['large']}: "
                   f"{row['verdict']}", file=sys.stderr)
-        failed = failed or bool(bad)
-    if compare_rows:
+        if not judged(scaling_rows):
+            print("scaling: no pair of sizes could be judged (the selection "
+                  "has one size per family, or every run is too short)",
+                  file=sys.stderr)
+        failed = failed or bool(bad) or not judged(scaling_rows)
+    if old is not None:
         bad = [row for row in compare_rows if row["verdict"].startswith("FAIL")]
         for row in bad:
             print(f"compare: {row['name']}: {row['verdict']}", file=sys.stderr)
-        failed = failed or bool(bad)
+        ran = {r["name"] for r in results}
+        gone = [o["name"] for o in old["cases"] if o.get("name") not in ran]
+        if gone:
+            print(f"compare: {len(gone)} case(s) of the reference were not "
+                  "run now: " + ", ".join(gone[:8]) +
+                  (" ..." if len(gone) > 8 else ""), file=sys.stderr)
+        if not judged(compare_rows):
+            print("compare: no case could be compared with the reference",
+                  file=sys.stderr)
+        failed = failed or bool(bad) or not judged(compare_rows)
     if failed:
         return 1
     return 2 if broken else 0

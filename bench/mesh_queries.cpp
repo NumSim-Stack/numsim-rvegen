@@ -4,12 +4,13 @@
 // sphere, a box and another mesh through the collision dispatcher, the
 // point query, and what a new orientation and a new mesh cost. The argument
 // is the subdivision level of the test mesh, a sphere of 20 * 4^level
-// triangles (3: 1280, 5: 20 480, 6: 81 920): with the triangle tree the
-// pair tests should grow with the logarithm of that number, not with the
-// number.
+// triangles (3: 1280, 5: 20 480, 6: 81 920): with the triangle tree a pair
+// test grows with the triangles in the patch of surface near the other
+// shape, not with the whole mesh.
 //
 // Not run by ctest. Build with Google Benchmark installed and run
-//   ./rvegen_mesh_bench
+//   ./rvegen_mesh_bench --benchmark_repetitions=5
+// (a single run varies by some ten percent).
 
 #include <array>
 #include <cmath>
@@ -191,15 +192,22 @@ void mesh_box(benchmark::State& state) {
 //   1.0   deep overlap: a crossing pair of triangles is found at once
 //   1.98  the surfaces cross in a small lens
 //   2.02  no contact, 0.02 apart: the most work, every near pair is looked at
-//   3.0   the bounding boxes do not overlap
+//   3.0   the bounding boxes do not overlap (the other mesh then sits on a
+//         coordinate axis: in a diagonal direction boxes 3 apart overlap)
 void mesh_mesh(benchmark::State& state, D distance) {
   auto& dispatch = rvegen::collision_dispatcher<D>::instance();
   const int level = static_cast<int>(state.range(0));
   const auto a = placed(level, {0, 0, 0}, 0.3);
   points p;
   std::vector<mesh> others;
-  for (std::size_t k = 0; k < 16; ++k)
-    others.push_back(placed(level, p.on_sphere(distance), p.uniform(0, 6)));
+  for (std::size_t k = 0; k < 16; ++k) {
+    std::array<D, 3> at = p.on_sphere(distance);
+    if (distance > 2.5) {
+      at = {0, 0, 0};
+      at[k % 3] = k % 2 == 0 ? distance : -distance;
+    }
+    others.push_back(placed(level, at, p.uniform(0, 6)));
+  }
   std::size_t k = 0, hits = 0;
   for (auto _ : state) {
     hits += dispatch(a, others[k++ % others.size()]) ? 1 : 0;
