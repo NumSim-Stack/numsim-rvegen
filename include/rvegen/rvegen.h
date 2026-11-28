@@ -8,8 +8,8 @@
 //   - Library types (this tree) are JSON-naive plain C++ classes.
 //   - The adapter layer (rvegen/json/, rvegen/registry/) translates JSON
 //     config + numsim-core registries into library types.
-//   - Output writers (rvegen/output/) consume the library's shape vector
-//     and emit gmsh .geo, voxel grids, VTK, etc.
+//   - Post-processes (rvegen/postprocess/) consume the library's shape
+//     vector and emit gmsh .geo, voxel grids, VTK, SVG, statistics, etc.
 //
 // Threading model:
 //   * Engine injection through distributions means rvegen has no global

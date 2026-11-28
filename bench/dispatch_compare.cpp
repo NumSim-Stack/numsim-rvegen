@@ -212,9 +212,15 @@ std::size_t pair_check_loop(Vec const& v, Dispatch&& d) {
   return hits;
 }
 
+// The benchmark argument is a shape count: benchmark hands it out as a
+// signed int64_t, the builders take std::size_t.
+static std::size_t n_shapes(benchmark::State const& s) {
+  return static_cast<std::size_t>(s.range(0));
+}
+
 // Strategy 1: monomorphic — typed circle vector, direct call.
 static void BM_monomorphic_circles(benchmark::State& s) {
-  auto v = make_homogeneous_circles(s.range(0));
+  auto v = make_homogeneous_circles(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return rvegen::collision_details(a, b);
@@ -222,13 +228,13 @@ static void BM_monomorphic_circles(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_monomorphic_circles)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Strategy 2: AABB-only via virtual bounding_box.
 static void BM_aabb_only(benchmark::State& s) {
-  auto v = make_heterogeneous_polymorphic(s.range(0));
+  auto v = make_heterogeneous_polymorphic(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return rvegen::aabb_overlap(*a->bounding_box(), *b->bounding_box());
@@ -236,14 +242,14 @@ static void BM_aabb_only(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_aabb_only)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Strategy 3: dispatcher table.
 static void BM_dispatcher_table(benchmark::State& s) {
   ensure_collision_pairs_registered();
-  auto v = make_heterogeneous_polymorphic(s.range(0));
+  auto v = make_heterogeneous_polymorphic(n_shapes(s));
   auto const& d = rvegen::collision_dispatcher<T>::instance();
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [&d](auto const& a, auto const& b) {
@@ -252,7 +258,7 @@ static void BM_dispatcher_table(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_dispatcher_table)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -260,7 +266,7 @@ BENCHMARK(BM_dispatcher_table)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kM
 // Uses the simple dispatcher() per pair — re-does the outer lookup each call.
 static void BM_two_stage(benchmark::State& s) {
   ensure_collision_pairs_registered();
-  auto v = make_heterogeneous_polymorphic(s.range(0));
+  auto v = make_heterogeneous_polymorphic(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return rvegen::collide_two_stage(*a, *b);
@@ -268,7 +274,7 @@ static void BM_two_stage(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -276,7 +282,7 @@ BENCHMARK(BM_two_stage)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosec
 // bind_lhs. This is the actual generator hot-loop pattern.
 static void BM_dispatcher_table_bound(benchmark::State& s) {
   ensure_collision_pairs_registered();
-  auto v = make_heterogeneous_polymorphic(s.range(0));
+  auto v = make_heterogeneous_polymorphic(n_shapes(s));
   auto const& d = rvegen::collision_dispatcher<T>::instance();
   for (auto _ : s) {
     std::size_t hits = 0;
@@ -289,14 +295,14 @@ static void BM_dispatcher_table_bound(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_dispatcher_table_bound)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Strategy 3d: two-stage with bound LHS — what the generators actually do.
 static void BM_two_stage_bound(benchmark::State& s) {
   ensure_collision_pairs_registered();
-  auto v = make_heterogeneous_polymorphic(s.range(0));
+  auto v = make_heterogeneous_polymorphic(n_shapes(s));
   auto const& d = rvegen::collision_dispatcher<T>::instance();
   for (auto _ : s) {
     std::size_t hits = 0;
@@ -311,13 +317,13 @@ static void BM_two_stage_bound(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_bound)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Two-stage with std::visit on a variant.
 static void BM_two_stage_visit(benchmark::State& s) {
-  auto v = make_heterogeneous_variant(s.range(0));
+  auto v = make_heterogeneous_variant(n_shapes(s));
   for (auto _ : s) {
     std::size_t hits = 0;
     for (std::size_t i = 0; i < v.size(); ++i) {
@@ -332,13 +338,13 @@ static void BM_two_stage_visit(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_visit)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Two-stage with dynamic_cast chain.
 static void BM_two_stage_dynamic_cast(benchmark::State& s) {
-  auto v = make_heterogeneous_polymorphic(s.range(0));
+  auto v = make_heterogeneous_polymorphic(n_shapes(s));
   for (auto _ : s) {
     std::size_t hits = 0;
     for (std::size_t i = 0; i < v.size(); ++i) {
@@ -351,19 +357,19 @@ static void BM_two_stage_dynamic_cast(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_dynamic_cast)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Two-stage on shape_pool — AABB + typed compile-time precise check.
 static void BM_two_stage_shape_pool(benchmark::State& s) {
-  auto p = make_heterogeneous_pool(s.range(0));
+  auto p = make_heterogeneous_pool(n_shapes(s));
   for (auto _ : s) {
     auto hits = rvegen::count_two_stage_colliding_pairs(p);
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_two_stage_shape_pool)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -374,7 +380,7 @@ BENCHMARK(BM_two_stage_shape_pool)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark
 
 // Strategy 4: std::visit.
 static void BM_std_visit(benchmark::State& s) {
-  auto v = make_heterogeneous_variant(s.range(0));
+  auto v = make_heterogeneous_variant(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return std::visit(rvegen::collide_visitor{}, a, b);
@@ -382,13 +388,13 @@ static void BM_std_visit(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_std_visit)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Strategy 5: dynamic_cast chain.
 static void BM_dynamic_cast_chain(benchmark::State& s) {
-  auto v = make_heterogeneous_polymorphic(s.range(0));
+  auto v = make_heterogeneous_polymorphic(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return dispatch_dynamic_cast(*a, *b);
@@ -396,7 +402,7 @@ static void BM_dynamic_cast_chain(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_dynamic_cast_chain)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -441,7 +447,7 @@ circle_vvec make_homogeneous_variant_circles(std::size_t n) {
 
 // AABB-only on homogeneous circles — virtual bounding_box() + AABB compare.
 static void BM_homo_aabb_only(benchmark::State& s) {
-  auto v = make_homogeneous_polymorphic_circles(s.range(0));
+  auto v = make_homogeneous_polymorphic_circles(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return rvegen::aabb_overlap(*a->bounding_box(), *b->bounding_box());
@@ -449,14 +455,14 @@ static void BM_homo_aabb_only(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_aabb_only)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Dispatcher table on homogeneous circles.
 static void BM_homo_dispatcher_table(benchmark::State& s) {
   ensure_collision_pairs_registered();
-  auto v = make_homogeneous_polymorphic_circles(s.range(0));
+  auto v = make_homogeneous_polymorphic_circles(n_shapes(s));
   auto const& d = rvegen::collision_dispatcher<T>::instance();
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [&d](auto const& a, auto const& b) {
@@ -465,14 +471,14 @@ static void BM_homo_dispatcher_table(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_dispatcher_table)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // Two-stage on homogeneous circles — most pairs reject at AABB.
 static void BM_homo_two_stage(benchmark::State& s) {
   ensure_collision_pairs_registered();
-  auto v = make_homogeneous_polymorphic_circles(s.range(0));
+  auto v = make_homogeneous_polymorphic_circles(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return rvegen::collide_two_stage(*a, *b);
@@ -480,13 +486,13 @@ static void BM_homo_two_stage(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_two_stage)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // std::visit on a 1-alternative variant — the easy case for the compiler.
 static void BM_homo_std_visit(benchmark::State& s) {
-  auto v = make_homogeneous_variant_circles(s.range(0));
+  auto v = make_homogeneous_variant_circles(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return std::visit(rvegen::collide_visitor{}, a, b);
@@ -494,13 +500,13 @@ static void BM_homo_std_visit(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_std_visit)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
 // dynamic_cast chain on homogeneous circles — first cast hits.
 static void BM_homo_dynamic_cast(benchmark::State& s) {
-  auto v = make_homogeneous_polymorphic_circles(s.range(0));
+  auto v = make_homogeneous_polymorphic_circles(n_shapes(s));
   for (auto _ : s) {
     auto hits = pair_check_loop(v, [](auto const& a, auto const& b) {
       return dispatch_dynamic_cast(*a, *b);
@@ -508,7 +514,7 @@ static void BM_homo_dynamic_cast(benchmark::State& s) {
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_dynamic_cast)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -521,13 +527,13 @@ BENCHMARK(BM_homo_dynamic_cast)->Arg(100)->Arg(1000)->Unit(benchmark::kMicroseco
 // over all pool combinations.
 // ---------------------------------------------------------------------------
 static void BM_shape_pool(benchmark::State& s) {
-  auto p = make_heterogeneous_pool(s.range(0));
+  auto p = make_heterogeneous_pool(n_shapes(s));
   for (auto _ : s) {
     auto hits = rvegen::count_colliding_pairs(p);
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_shape_pool)->Arg(10)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
@@ -548,13 +554,13 @@ circle_pool_t make_homogeneous_circle_pool(std::size_t n) {
 }
 
 static void BM_homo_shape_pool(benchmark::State& s) {
-  auto p = make_homogeneous_circle_pool(s.range(0));
+  auto p = make_homogeneous_circle_pool(n_shapes(s));
   for (auto _ : s) {
     auto hits = rvegen::count_colliding_pairs(p);
     benchmark::DoNotOptimize(hits);
   }
   s.SetItemsProcessed(s.iterations()
-                      * static_cast<std::int64_t>(s.range(0)) * (s.range(0) - 1) / 2);
+                      * static_cast<std::int64_t>(n_shapes(s)) * (s.range(0) - 1) / 2);
 }
 BENCHMARK(BM_homo_shape_pool)->Arg(100)->Arg(1000)->Unit(benchmark::kMicrosecond);
 
