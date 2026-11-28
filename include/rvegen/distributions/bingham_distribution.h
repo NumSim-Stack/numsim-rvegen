@@ -85,7 +85,6 @@
 
 #include "direction_distribution_base.h"
 #include "portable_random.h"
-#include "../schema/field_list.h"
 #include "../types.h"
 
 namespace rvegen {
@@ -140,16 +139,6 @@ public:
                        engine_type& engine)
       : bingham_distribution{vector_to_gte(mean_axis), kappa, engine} {}
 
-  using fields = field_list<
-      field<"mean_axis_x", T, true,
-            numsim_core::description_label<"x-component of the Bingham mean axis (renormalised internally)">>,
-      field<"mean_axis_y", T, true,
-            numsim_core::description_label<"y-component of the Bingham mean axis (renormalised internally)">>,
-      field<"mean_axis_z", T, true,
-            numsim_core::description_label<"z-component of the Bingham mean axis (renormalised internally)">>,
-      field<"kappa", T, true,
-            numsim_core::description_label<"Bingham concentration: κ > 0 = prolate (samples cluster on ±mean_axis), κ < 0 = oblate (samples lie near the great circle perpendicular to mean_axis), κ ≈ 0 = uniform on the sphere. Supported range [-1e10, 1e10]; values outside are rejected">>>;
-
   // Schema-driven ctor for the JSON registry path. Mean axis is
   // declared as three scalar fields rather than a vector field
   // because `parameter_handler<string, any>` doesn't carry a typed
@@ -159,10 +148,23 @@ public:
   // hygiene from their config.
   bingham_distribution(parameter_handler_t const& handler,
                        engine_type& engine)
-      : bingham_distribution(fields::extract(handler), engine) {}
+      : bingham_distribution(
+            std::array<T, 3>{handler.template get<T>("mean_axis_x"),
+                             handler.template get<T>("mean_axis_y"),
+                             handler.template get<T>("mean_axis_z")},
+            handler.template get<T>("kappa"), engine) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    return fields::schema();
+    parameter_controller_t p;
+    p.template required<T>("mean_axis_x")
+        .template add<numsim_core::description_label<"x-component of the Bingham mean axis (renormalised internally)">>();
+    p.template required<T>("mean_axis_y")
+        .template add<numsim_core::description_label<"y-component of the Bingham mean axis (renormalised internally)">>();
+    p.template required<T>("mean_axis_z")
+        .template add<numsim_core::description_label<"z-component of the Bingham mean axis (renormalised internally)">>();
+    p.template required<T>("kappa")
+        .template add<numsim_core::description_label<"Bingham concentration: κ > 0 = prolate (samples cluster on ±mean_axis), κ < 0 = oblate (samples lie near the great circle perpendicular to mean_axis), κ ≈ 0 = uniform on the sphere. Supported range [-1e10, 1e10]; values outside are rejected">>();
+    return p;
   }
 
   // Draws one unit 3-vector: x = cos(θ) (θ measured from the mean axis)
@@ -246,13 +248,6 @@ public:
   }
 
 private:
-  // Tuple-taking helper used by the schema-driven ctor. Lets us delegate
-  // through `fields::extract(handler)` without re-extracting per element.
-  bingham_distribution(std::tuple<T, T, T, T> mxk, engine_type& engine)
-      : bingham_distribution(
-            std::array<T, 3>{std::get<0>(mxk), std::get<1>(mxk),
-                             std::get<2>(mxk)},
-            std::get<3>(mxk), engine) {}
 
   static vector_type vector_to_gte(std::array<T, 3> const& a) {
     vector_type v;

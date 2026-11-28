@@ -7,19 +7,15 @@
 // angles θ reproduce ⟨cos²θ⟩ = a11, ⟨sin²θ⟩ = a22, ⟨cosθ sinθ⟩ = a12.
 //
 // Registered as "von_mises_a2". A separate registered name rather than
-// optional fields on "oriented_uniform" / "von_mises": field_list has no
-// optional-with-default fields yet (extract() throws on a missing key),
-// and two fully-required schemas keep each config self-describing and
-// schema-audited instead of needing a hand-written "exactly one of"
-// rule.
+// optional fields on "oriented_uniform" / "von_mises": two fully-required
+// schemas keep each config self-describing and schema-audited instead of
+// needing a hand-written "exactly one of" rule.
 
 #include <functional>
 #include <random>
-#include <tuple>
 
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../schema/field_list.h"
 #include "../types.h"
 #include "distribution_base.h"
 #include "orientation_tensor_fit.h"
@@ -37,20 +33,21 @@ public:
       : von_mises_a2_distribution(fit_von_mises_a2<T>(a11, a22, a12),
                                   engine) {}
 
-  using fields = field_list<
-      field<"a11", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <cos²θ>; a11 + a22 = 1">>,
-      field<"a22", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <sin²θ>; a11 + a22 = 1">>,
-      field<"a12", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <cosθ·sinθ>; a12² ≤ a11·a22">>>;
-
   von_mises_a2_distribution(parameter_handler_t const& handler,
                             engine_type& engine)
-      : von_mises_a2_distribution(fields::extract(handler), engine) {}
+      : von_mises_a2_distribution(handler.template get<T>("a11"),
+                                  handler.template get<T>("a22"),
+                                  handler.template get<T>("a12"), engine) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    return fields::schema();
+    parameter_controller_t p;
+    p.template required<T>("a11")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <cos²θ>; a11 + a22 = 1">>();
+    p.template required<T>("a22")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <sin²θ>; a11 + a22 = 1">>();
+    p.template required<T>("a12")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <cosθ·sinθ>; a12² ≤ a11·a22">>();
+    return p;
   }
 
   [[nodiscard]] T operator()() override { return _dist(); }
@@ -61,10 +58,6 @@ public:
   [[nodiscard]] T residual() const noexcept { return _fit.residual; }
 
 private:
-  von_mises_a2_distribution(std::tuple<T, T, T> a, engine_type& engine)
-      : von_mises_a2_distribution(std::get<0>(a), std::get<1>(a),
-                                  std::get<2>(a), engine) {}
-
   von_mises_a2_distribution(von_mises_a2_fit<T> fit, engine_type& engine)
       : _fit{fit}, _dist{fit.mean_angle, fit.kappa, engine} {}
 

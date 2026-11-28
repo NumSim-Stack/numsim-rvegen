@@ -27,12 +27,10 @@
 #include <random>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 
 #include <Mathematics/Vector3.h>
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../schema/field_list.h"
 #include "../types.h"
 #include "bingham_distribution.h"
 #include "direction_distribution_base.h"
@@ -55,34 +53,38 @@ public:
                           engine_type& engine, bool allow_projection = false)
       : bingham_a2_distribution(checked_fit(a2, allow_projection), engine) {}
 
-  using fields = field_list<
-      field<"a11", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <x²>; a11 + a22 + a33 must equal 1 within 1e-6. Only axisymmetric A2 (two equal eigenvalues) is reproduced exactly; see allow_projection">>,
-      field<"a22", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <y²>; a11 + a22 + a33 must equal 1 within 1e-6">>,
-      field<"a33", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <z²>; a11 + a22 + a33 must equal 1 within 1e-6">>,
-      field<"a12", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <x·y>">>,
-      field<"a13", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <x·z>">>,
-      field<"a23", T, true,
-            numsim_core::description_label<"orientation tensor A2 component <y·z>">>>;
-
   bingham_a2_distribution(parameter_handler_t const& handler,
                           engine_type& engine)
       : bingham_a2_distribution(
-            fields::extract(handler), engine,
+            orientation_tensor_3d<T>{handler.template get<T>("a11"),
+                                     handler.template get<T>("a22"),
+                                     handler.template get<T>("a33"),
+                                     handler.template get<T>("a12"),
+                                     handler.template get<T>("a13"),
+                                     handler.template get<T>("a23")},
+            engine,
             handler.contains("allow_projection")
                 ? handler.template get<bool>("allow_projection")
                 : false) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    auto s = fields::schema();
+    parameter_controller_t p;
+    p.template required<T>("a11")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <x²>; a11 + a22 + a33 must equal 1 within 1e-6. Only axisymmetric A2 (two equal eigenvalues) is reproduced exactly; see allow_projection">>();
+    p.template required<T>("a22")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <y²>; a11 + a22 + a33 must equal 1 within 1e-6">>();
+    p.template required<T>("a33")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <z²>; a11 + a22 + a33 must equal 1 within 1e-6">>();
+    p.template required<T>("a12")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <x·y>">>();
+    p.template required<T>("a13")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <x·z>">>();
+    p.template required<T>("a23")
+        .template add<numsim_core::description_label<"orientation tensor A2 component <y·z>">>();
     // Optional — default false.
-    s.template insert<bool>("allow_projection")
+    p.template insert<bool>("allow_projection")
         .template add<numsim_core::description_label<"default false: a non-axisymmetric A2 (three distinct eigenvalues; only two equal eigenvalues are reproduced exactly) is rejected when the fit residual exceeds 1e-2. true: project it onto the closest axisymmetric (Watson) tensor instead">>();
-    return s;
+    return p;
   }
 
   [[nodiscard]] std::array<T, 3> operator()() override { return _dist(); }
@@ -97,14 +99,6 @@ public:
   [[nodiscard]] T residual() const noexcept { return _fit.residual; }
 
 private:
-  bingham_a2_distribution(std::tuple<T, T, T, T, T, T> a,
-                          engine_type& engine, bool allow_projection)
-      : bingham_a2_distribution(
-            orientation_tensor_3d<T>{std::get<0>(a), std::get<1>(a),
-                                     std::get<2>(a), std::get<3>(a),
-                                     std::get<4>(a), std::get<5>(a)},
-            engine, allow_projection) {}
-
   static watson_a2_fit<T> checked_fit(orientation_tensor_3d<T> const& a2,
                                       bool allow_projection) {
     const auto fit = fit_watson_a2<T>(a2);

@@ -8,7 +8,6 @@
 #include <Mathematics/AlignedBox.h>
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../schema/field_list.h"
 #include "../types.h"
 #include "rectangle_bounding.h"
 #include "shape_base.h"
@@ -37,27 +36,28 @@ public:
     this->max = {x + hw, y + hh};
   }
 
-  using fields = field_list<
-      field<"x", T, true,
-            numsim_core::description_label<"x-coordinate of the rectangle centre">,
-            numsim_core::unit_label<"m">>,
-      field<"y", T, true,
-            numsim_core::description_label<"y-coordinate of the rectangle centre">,
-            numsim_core::unit_label<"m">>,
-      field<"width", T, true,
-            numsim_core::description_label<"rectangle extent along x (must be positive)">,
-            numsim_core::unit_label<"m">,
-            min_only<T{0}>>,
-      field<"height", T, true,
-            numsim_core::description_label<"rectangle extent along y (must be positive)">,
-            numsim_core::unit_label<"m">,
-            min_only<T{0}>>>;
-
   explicit rectangle(parameter_handler_t const& handler)
-      : rectangle(fields::extract(handler)) {}
+      : rectangle(handler.template get<T>("x"), handler.template get<T>("y"),
+                  handler.template get<T>("width"),
+                  handler.template get<T>("height")) {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    return fields::schema();
+    parameter_controller_t p;
+    p.template required<T>("x")
+        .template add<numsim_core::description_label<"x-coordinate of the rectangle centre">>()
+        .template add<numsim_core::unit_label<"m">>();
+    p.template required<T>("y")
+        .template add<numsim_core::description_label<"y-coordinate of the rectangle centre">>()
+        .template add<numsim_core::unit_label<"m">>();
+    p.template required<T>("width")
+        .template add<numsim_core::description_label<"rectangle extent along x (must be positive)">>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<min_only<T{0}>>();
+    p.template required<T>("height")
+        .template add<numsim_core::description_label<"rectangle extent along y (must be positive)">>()
+        .template add<numsim_core::unit_label<"m">>()
+        .template add<min_only<T{0}>>();
+    return p;
   }
 
   [[nodiscard]] T operator()(size_type idx) const noexcept {
@@ -106,9 +106,6 @@ public:
   }
 
 private:
-  explicit rectangle(std::tuple<T, T, T, T> v)
-      : rectangle(std::get<0>(v), std::get<1>(v), std::get<2>(v),
-                  std::get<3>(v)) {}
 };
 
 } // namespace rvegen

@@ -8,7 +8,6 @@
 #include "../intersection/aabb_grid.h"
 #include "../intersection/aabb_overlap.h"
 #include "../intersection/collision_dispatcher.h"
-#include "../schema/field_list.h"
 #include "../types.h"
 #include "rve_generator_base.h"
 
@@ -38,17 +37,16 @@ public:
   explicit only_inside_generator(std::size_t max_attempts) noexcept
       : _max_attempts{max_attempts} {}
 
-  using fields = field_list<
-      field<"max_attempts", std::size_t, true,
-            min_only<std::size_t{1}>,
-            numsim_core::description_label<"maximum placement attempts before giving up">>>;
-
   // Schema-driven ctor.
   explicit only_inside_generator(parameter_handler_t const& handler)
-      : _max_attempts{std::get<0>(fields::extract(handler))} {}
+      : _max_attempts{handler.template get<std::size_t>("max_attempts")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    return fields::schema();
+    parameter_controller_t p;
+    p.template required<std::size_t>("max_attempts")
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::description_label<"maximum placement attempts before giving up">>();
+    return p;
   }
 
   [[nodiscard]] shape_vector

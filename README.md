@@ -294,7 +294,7 @@ include/rvegen/
   io/                       STL / PLY mesh readers
   phase/                    phase tags for voxel output
   metadata/                 library info
-  schema/                   field_list schema helper
+  schema/                   schema_to_json: registry schemas as JSON
   registry/                 register_*.h per category + build_from_json helper
   json/                     parameter_visitor_nlohmann
 

@@ -356,6 +356,13 @@ add_executable(rvegen_schema_audit_test tests/schema_audit_test.cpp)
 target_link_libraries(rvegen_schema_audit_test PRIVATE rvegen_lib)
 add_test(NAME schema_audit_test COMMAND rvegen_schema_audit_test)
 
+add_executable(rvegen_schema_construct_test tests/schema_construct_test.cpp)
+target_link_libraries(rvegen_schema_construct_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME schema_construct_test COMMAND rvegen_schema_construct_test)
+
 add_executable(rvegen_voronoi_robustness_test tests/voronoi_robustness_test.cpp)
 target_link_libraries(rvegen_voronoi_robustness_test PRIVATE rvegen_lib)
 add_test(NAME voronoi_robustness_test COMMAND rvegen_voronoi_robustness_test)

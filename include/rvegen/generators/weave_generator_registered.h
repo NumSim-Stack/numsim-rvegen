@@ -17,7 +17,6 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../schema/field_list.h"
 #include "../types.h"
 #include "deterministic_generator.h"
 #include "tow_weave_generator.h"
@@ -27,32 +26,36 @@ namespace rvegen {
 
 namespace detail {
 
+// Required keys shared by both adapters.
 template <typename T>
-using weave_fields = field_list<
-    field<"n_warp_yarns", std::size_t, true, min_only<std::size_t{1}>,
-          numsim_core::description_label<"number of yarns running along +x">>,
-    field<"n_weft_yarns", std::size_t, true, min_only<std::size_t{1}>,
-          numsim_core::description_label<"number of yarns running along +y">>,
-    field<"yarn_radius", T, true, min_only<T{0}>,
-          numsim_core::description_label<"yarn (tube) radius; must be > 0">>,
-    field<"amplitude", T, true, min_only<T{0}>,
-          numsim_core::description_label<"peak z-undulation of the yarn centerlines; must exceed yarn_radius in 3D (0 for a flat 2D weave)">>>;
+[[nodiscard]] parameter_controller_t weave_required() {
+  parameter_controller_t s;
+  s.template required<std::size_t>("n_warp_yarns")
+      .template add<min_only<std::size_t{1}>>()
+      .template add<numsim_core::description_label<"number of yarns running along +x">>();
+  s.template required<std::size_t>("n_weft_yarns")
+      .template add<min_only<std::size_t{1}>>()
+      .template add<numsim_core::description_label<"number of yarns running along +y">>();
+  s.template required<T>("yarn_radius")
+      .template add<min_only<T{0}>>()
+      .template add<numsim_core::description_label<"yarn (tube) radius; must be > 0">>();
+  s.template required<T>("amplitude")
+      .template add<min_only<T{0}>>()
+      .template add<numsim_core::description_label<"peak z-undulation of the yarn centerlines; must exceed yarn_radius in 3D (0 for a flat 2D weave)">>();
+  return s;
+}
 
-// Optional knobs shared by both adapters (defaults via
-// numsim_core::set_default so the handler always carries them).
+// Optional knobs shared by both adapters (the handler always carries
+// them: optional<> stores the default).
 inline void add_weave_optionals(parameter_controller_t& s) {
-  s.template insert<std::size_t>("n_segments_per_yarn")
-      .template add<numsim_core::set_default>(std::size_t{32})
+  s.template optional<std::size_t>("n_segments_per_yarn", std::size_t{32})
       .template add<min_only<std::size_t{2}>>()
       .template add<numsim_core::description_label<"centerline samples per yarn (>= 2, default 32)">>();
-  s.template insert<std::string>("pattern")
-      .template add<numsim_core::set_default>(std::string{"plain"})
+  s.template optional<std::string>("pattern", std::string{"plain"})
       .template add<numsim_core::description_label<"interlacing pattern: plain, twill_2_2 or satin_5 (default plain)">>();
-  s.template insert<std::string>("warp_phase_name")
-      .template add<numsim_core::set_default>(std::string{})
+  s.template optional<std::string>("warp_phase_name", std::string{})
       .template add<numsim_core::description_label<"optional phase name for warp yarns">>();
-  s.template insert<std::string>("weft_phase_name")
-      .template add<numsim_core::set_default>(std::string{})
+  s.template optional<std::string>("weft_phase_name", std::string{})
       .template add<numsim_core::description_label<"optional phase name for weft yarns">>();
 }
 
@@ -67,8 +70,11 @@ inline void add_weave_optionals(parameter_controller_t& s) {
 template <typename T>
 [[nodiscard]] weave_generator<T>
 make_weave(parameter_handler_t const& h, std::array<T, 3> const& domain) {
-  auto const [nwarp, nweft, r, amp] = weave_fields<T>::extract(h);
-  weave_generator<T> w{domain, nwarp, nweft, r, amp,
+  weave_generator<T> w{domain,
+                       h.template get<std::size_t>("n_warp_yarns"),
+                       h.template get<std::size_t>("n_weft_yarns"),
+                       h.template get<T>("yarn_radius"),
+                       h.template get<T>("amplitude"),
                        h.template get<std::size_t>("n_segments_per_yarn"),
                        weave_pattern_from_name(
                            h.template get<std::string>("pattern"))};
@@ -86,7 +92,7 @@ public:
       : _handler{handler} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    auto s = detail::weave_fields<T>::schema();
+    auto s = detail::weave_required<T>();
     detail::add_weave_optionals(s);
     return s;
   }
@@ -108,14 +114,12 @@ public:
       : _handler{handler} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
-    auto s = detail::weave_fields<T>::schema();
+    auto s = detail::weave_required<T>();
     detail::add_weave_optionals(s);
-    s.template insert<std::size_t>("n_fibres_per_tow")
-        .template add<numsim_core::is_required>()
+    s.template required<std::size_t>("n_fibres_per_tow")
         .template add<min_only<std::size_t{1}>>()
         .template add<numsim_core::description_label<"fibres hex-packed into each yarn cross-section">>();
-    s.template insert<T>("fibre_radius_factor")
-        .template add<numsim_core::set_default>(T{0.2})
+    s.template optional<T>("fibre_radius_factor", T{0.2})
         .template add<numsim_core::description_label<"fibre radius as a fraction of the yarn radius, in (0, 1) (default 0.2)">>();
     return s;
   }
