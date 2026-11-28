@@ -162,17 +162,112 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# Optional Voro++ backend for voronoi_generator_3d (#70). OFF by default so
-# the library stays header-only with no extra dependency; the in-house
-# tessellator remains the default backend either way. When ON, Voro++
-# (BSD-3, pinned tag) is fetched, built as a small static library, and wired
-# in through the RVEGEN_WITH_VORO_PP compile definition. Voro++ v0.4.6 ships
-# no CMake build, hence the SOURCE_SUBDIR trick (populate only) plus our own
-# target. Only the in-tree build links it; the installed package stays
-# header-only (see docs in voronoi_backend_voropp.h).
+# Voro++ backend for voronoi_generator_3d (#70, #123). The built-in
+# tessellator is for a few hundred seeds; Voro++ (BSD-3) is roughly linear
+# in the seed count.
+#
+#   RVEGEN_WITH_VORO_PP      AUTO (default): on when an installed Voro++ is
+#                            found, off otherwise, so a plain configure needs
+#                            no network and no extra dependency.
+#                            ON: an installed Voro++, or else the pinned
+#                            sources, downloaded. OFF: never.
+#   RVEGEN_VORO_PP_PROVIDER  AUTO (default): installed if found, else the
+#                            pinned sources. SYSTEM: installed only (an error
+#                            if there is none). BUNDLED: always the pinned
+#                            sources, also with RVEGEN_WITH_VORO_PP=AUTO.
+#
+# The pinned sources are built here as a small static library, without FMA
+# contraction and with fatal errors turned into C++ exceptions (see below).
+# An installed library has neither: a Voro++ fatal error then ends the
+# process, and a library compiled with contraction can return overlapping
+# periodic weighted cells, which the volume check after every tessellation
+# reports as an error. Prefer BUNDLED where that matters (the Python build
+# defaults to it, see python/CMakeLists.txt). Voro++ v0.4.6 ships no CMake build, hence the SOURCE_SUBDIR trick
+# (populate only) plus our own target. Only the in-tree build links it; the
+# installed package stays header-only (see voronoi_backend_voropp.h).
 # ---------------------------------------------------------------------------
-option(RVEGEN_WITH_VORO_PP "Enable the Voro++ backend for voronoi_generator_3d" OFF)
-if(RVEGEN_WITH_VORO_PP)
+# A cache entry whose value a project that adds rvegen with
+# add_subdirectory() can preset with a plain set(): before CMake 3.21
+# (CMP0126) set(... CACHE ...) removes a normal variable of the same name,
+# which the option() these two replaced did not do.
+macro(rvegen_cache_string name default doc)
+  if(DEFINED ${name} AND NOT DEFINED CACHE{${name}})
+    set(_rvegen_preset "${${name}}")
+    set(${name} "${default}" CACHE STRING "${doc}")
+    set(${name} "${_rvegen_preset}")
+    unset(_rvegen_preset)
+  else()
+    set(${name} "${default}" CACHE STRING "${doc}")
+  endif()
+endmacro()
+rvegen_cache_string(RVEGEN_WITH_VORO_PP "AUTO"
+    "Voro++ backend for voronoi_generator_3d: AUTO (if installed), ON or OFF")
+set_property(CACHE RVEGEN_WITH_VORO_PP PROPERTY STRINGS AUTO ON OFF)
+rvegen_cache_string(RVEGEN_VORO_PP_PROVIDER "AUTO"
+    "Where Voro++ comes from: AUTO (installed, else pinned sources), SYSTEM or BUNDLED")
+set_property(CACHE RVEGEN_VORO_PP_PROVIDER PROPERTY STRINGS AUTO SYSTEM BUNDLED)
+
+string(TOUPPER "${RVEGEN_WITH_VORO_PP}" _rvegen_voropp_with)
+string(TOUPPER "${RVEGEN_VORO_PP_PROVIDER}" _rvegen_voropp_provider)
+if(NOT _rvegen_voropp_provider MATCHES "^(AUTO|SYSTEM|BUNDLED)$")
+  message(FATAL_ERROR
+    "RVEGEN_VORO_PP_PROVIDER must be AUTO, SYSTEM or BUNDLED, not "
+    "'${RVEGEN_VORO_PP_PROVIDER}'")
+endif()
+if(_rvegen_voropp_with STREQUAL "AUTO")
+  set(_rvegen_voropp_want auto)
+elseif(_rvegen_voropp_with MATCHES "^(ON|YES|TRUE|Y|1)$")
+  set(_rvegen_voropp_want on)
+elseif(_rvegen_voropp_with MATCHES "^(OFF|NO|FALSE|N|0)$")
+  set(_rvegen_voropp_want off)
+else()
+  message(FATAL_ERROR
+    "RVEGEN_WITH_VORO_PP must be AUTO, ON or OFF, not "
+    "'${RVEGEN_WITH_VORO_PP}'")
+endif()
+
+set(_rvegen_voropp "")   # "", system or bundled
+if(NOT _rvegen_voropp_want STREQUAL "off")
+  if(_rvegen_voropp_provider STREQUAL "BUNDLED")
+    set(_rvegen_voropp bundled)
+  else()
+    find_path(RVEGEN_VORO_PP_INCLUDE_DIR voro++.hh PATH_SUFFIXES voro++)
+    find_library(RVEGEN_VORO_PP_LIBRARY NAMES voro++)
+    if(RVEGEN_VORO_PP_INCLUDE_DIR AND RVEGEN_VORO_PP_LIBRARY)
+      set(_rvegen_voropp system)
+    elseif(RVEGEN_VORO_PP_INCLUDE_DIR OR RVEGEN_VORO_PP_LIBRARY)
+      # Half an installation is worth a line: it explains an "OFF" below.
+      message(STATUS "rvegen: installed Voro++ not usable: voro++.hh "
+                     "${RVEGEN_VORO_PP_INCLUDE_DIR}, library "
+                     "${RVEGEN_VORO_PP_LIBRARY}")
+    endif()
+    if(_rvegen_voropp)
+    elseif(_rvegen_voropp_provider STREQUAL "SYSTEM")
+      if(_rvegen_voropp_want STREQUAL "on")
+        message(FATAL_ERROR
+          "RVEGEN_VORO_PP_PROVIDER=SYSTEM, but no installed Voro++ was found "
+          "(voro++.hh and libvoro++). Set RVEGEN_VORO_PP_INCLUDE_DIR and "
+          "RVEGEN_VORO_PP_LIBRARY, or use RVEGEN_VORO_PP_PROVIDER=BUNDLED.")
+      endif()
+    elseif(_rvegen_voropp_want STREQUAL "on")
+      set(_rvegen_voropp bundled)
+    endif()
+  endif()
+endif()
+
+if(_rvegen_voropp STREQUAL "system")
+  message(STATUS "rvegen: Voro++ backend ON, installed library "
+                 "${RVEGEN_VORO_PP_LIBRARY}")
+  add_library(rvegen_voropp INTERFACE)
+  target_include_directories(rvegen_voropp SYSTEM INTERFACE
+    ${RVEGEN_VORO_PP_INCLUDE_DIR})
+  target_link_libraries(rvegen_voropp INTERFACE ${RVEGEN_VORO_PP_LIBRARY})
+  # The library was compiled without the exit shim, so this side must not
+  # apply it either (one definition of Voro++'s inline voro_fatal_error).
+  target_compile_definitions(rvegen_lib INTERFACE
+    $<BUILD_INTERFACE:RVEGEN_VORO_PP_SYSTEM=1>)
+elseif(_rvegen_voropp STREQUAL "bundled")
+  message(STATUS "rvegen: Voro++ backend ON, pinned sources")
   FetchContent_Declare(
     voropp
     GIT_REPOSITORY https://github.com/chr1shr/voro.git
@@ -195,7 +290,11 @@ if(RVEGEN_WITH_VORO_PP)
   target_include_directories(rvegen_voropp SYSTEM PUBLIC
     ${voropp_SOURCE_DIR}/src)
   set_target_properties(rvegen_voropp PROPERTIES POSITION_INDEPENDENT_CODE ON)
-  target_compile_options(rvegen_voropp PRIVATE -w)   # third-party code
+  if(MSVC)
+    target_compile_options(rvegen_voropp PRIVATE /w)   # third-party code
+  else()
+    target_compile_options(rvegen_voropp PRIVATE -w)
+  endif()
   # No FMA contraction in Voro++: its periodic weighted (container_poly)
   # tessellation returns overlapping cells when the compiler fuses a*b+c
   # (8 of 20 random cases bad with contraction, 0 of 20 without). GCC and
@@ -213,6 +312,12 @@ if(RVEGEN_WITH_VORO_PP)
     target_compile_options(rvegen_voropp PRIVATE
       -include ${CMAKE_CURRENT_SOURCE_DIR}/include/rvegen/generators/voronoi_voropp_exit_shim.h)
   endif()
+else()
+  message(STATUS "rvegen: Voro++ backend OFF (RVEGEN_WITH_VORO_PP="
+                 "${RVEGEN_WITH_VORO_PP}): voronoi_3d is limited to a few "
+                 "hundred seeds")
+endif()
+if(_rvegen_voropp)
   target_link_libraries(rvegen_lib INTERFACE $<BUILD_INTERFACE:rvegen_voropp>)
   target_compile_definitions(rvegen_lib INTERFACE
     $<BUILD_INTERFACE:RVEGEN_WITH_VORO_PP=1>)
@@ -740,6 +845,15 @@ rvegen_cli_msg_test(direction_in_scalar_slot direction_in_scalar_slot.json
     "refers to direction distribution 'd'")
 rvegen_cli_msg_test(deterministic_ignored_keys deterministic_ignored_keys.json
     "\"shapes\" is ignored.*\"termination\" is ignored")
+# 3D Voronoi backends (#123): the in-house seed limit is refused at once
+# with both ways out, the override is not combined with the grain-size fit,
+# and a run says which backend tessellated.
+rvegen_cli_msg_test(voronoi_3d_in_house_limit voronoi_3d_in_house_limit.json
+  "1000 seeds exceed the limit of 300 .bounded. for the in-house backend.*RVEGEN_WITH_VORO_PP|1000 seeds exceed the limit of 300 .bounded. for the in-house backend.*this build has it")
+rvegen_cli_msg_test(voronoi_3d_allow_slow_grain_size voronoi_3d_allow_slow_grain_size.json
+  "'allow_slow_backend' is not available with 'grain_diameter_mean'")
+rvegen_cli_msg_test(voronoi_3d_backend_note voronoi_3d_backend_note.json
+  "voronoi_3d: tessellated with (Voro[+][+]|the in-house backend .this build has no Voro[+][+])")
 rvegen_cli_msg_test(generator_unknown_key generator_unknown_key.json
     "unknown key 'n_seedz' for generator 'voronoi_2d' is ignored")
 

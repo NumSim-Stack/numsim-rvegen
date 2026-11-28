@@ -24,6 +24,8 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "cancel_poll.h"
@@ -42,12 +44,20 @@ public:
   // seed from it unless they have an explicit override of their own.
   virtual void set_pipeline_seed(std::uint64_t /*seed*/) {}
 
+  // What the last compute() has to say about how the result came about (a
+  // backend it chose, for example), one line each; the pipeline prints
+  // them after the shape count.
+  [[nodiscard]] std::vector<std::string> const& notes() const noexcept {
+    return _notes;
+  }
+
   [[nodiscard]] shape_vector
   compute(input_vector& /*inputs*/,
           termination_base<T> const& /*termination*/,
           domain<T> const& domain_box,
           progress_options const& opts = {}) final {
     this->clear_report();
+    _notes.clear();
     if (opts.cancel()) {
       this->record_report(stop_reason::cancelled);
       return {};
@@ -77,8 +87,12 @@ protected:
   // loops (poll_cancel) so a long build stays interruptible.
   [[nodiscard]] cancel_fn const* cancel() const noexcept { return &_cancel; }
 
+  // Adds a line to notes(); for build().
+  void note(std::string line) const { _notes.push_back(std::move(line)); }
+
 private:
   cancel_fn _cancel;
+  mutable std::vector<std::string> _notes;
 };
 
 } // namespace rvegen
