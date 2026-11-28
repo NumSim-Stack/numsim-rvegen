@@ -13,6 +13,14 @@ if(NOT TARGET rvegen_lib)
   # We're being invoked standalone (via scikit-build-core), so configure
   # the parent project as a subdirectory.
   project(rvegen_python LANGUAGES CXX)
+  # A Python build has the Voro++ backend unless it is switched off: without
+  # it voronoi_3d stops at a few hundred seeds (#123). ON downloads the
+  # pinned Voro++ sources when no installed Voro++ is found; pass
+  # -DRVEGEN_WITH_VORO_PP=OFF (CMAKE_ARGS) for a build without network.
+  if(NOT DEFINED RVEGEN_WITH_VORO_PP)
+    set(RVEGEN_WITH_VORO_PP ON CACHE STRING
+        "Voro++ backend for voronoi_generator_3d: AUTO (if installed), ON or OFF")
+  endif()
   add_subdirectory(.. rvegen_parent)
 endif()
 

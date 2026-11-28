@@ -11,7 +11,7 @@ licences.
 | pybind11 | compiled into the Python extension module | BSD 3-Clause |
 | Eigen | headers, found or fetched at build time | MPL-2.0, source at https://gitlab.com/libeigen/eigen |
 | Boost | headers, found at build time | Boost Software License 1.0 |
-| Voro++ | optional backend of `voronoi_generator_3d`, fetched and linked only with `RVEGEN_WITH_VORO_PP=ON` | modified BSD (LBNL) |
+| Voro++ | backend of `voronoi_generator_3d`: linked when the build finds an installed Voro++ or is configured with `RVEGEN_WITH_VORO_PP=ON` (pinned sources); part of the Python wheels | modified BSD (LBNL) |
 | numsim-core | headers, found at build time | see https://github.com/NumSim-Stack/numsim-core |
 
 gmsh is not linked or redistributed: rvegen only writes `.geo` files that
