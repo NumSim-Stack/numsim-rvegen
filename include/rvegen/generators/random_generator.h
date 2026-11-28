@@ -5,6 +5,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../intersection/aabb_grid.h"
 #include "../intersection/aabb_overlap.h"
 #include "../intersection/collision_dispatcher.h"
 #include "../schema/field_list.h"
@@ -17,7 +18,15 @@ namespace rvegen {
 // Shapes can poke outside the RVE domain. Useful as a baseline / sanity
 // generator and for non-RVE bulk-packing applications.
 //
-// Collision: direct AABB overlap against accepted shapes.
+// Collision: two-stage -- grid broad phase on AABBs, then the precise
+// collision_dispatcher on the AABB-overlapping neighbours.
+//
+// Accounting: shapes may be centred outside the box and there are no
+// periodic wrap copies, so every accepted shape is a primary. The
+// termination predicate is therefore evaluated with count_all = true
+// (see termination_base::is_met): number_of_inclusions counts every shape,
+// while volume_fraction (and the progress volume fraction) only counts
+// material in the box, by the centre-in-domain rule.
 template <typename T = double>
 class random_generator final : public rve_generator_base<T> {
 public:
@@ -53,7 +62,13 @@ public:
     std::size_t input_idx = 0;
     std::size_t last_emit = 0;
 
-    while (!termination(accepted) && attempts < _max_attempts) {
+    // Broad phase: bucket grid over the accepted AABBs (#83). The
+    // termination predicate only depends on `accepted`, so it is
+    // re-evaluated after each accept rather than on every attempt.
+    aabb_grid<value_type> grid;
+    bool done = termination.is_met(accepted, true);
+
+    while (!done && attempts < _max_attempts) {
       if (opts.cancel()) return accepted;
       ++attempts;
       auto& input = *inputs[input_idx];
@@ -66,19 +81,15 @@ public:
 
       // Two-stage check, with the dispatcher's outer lookup hoisted
       // (see only_inside_generator for the rationale).
-      bool collides = false;
       auto const bound_dispatcher =
           collision_dispatcher<value_type>::instance().bind_lhs(*candidate);
-      for (auto const& other : accepted) {
-        auto const* other_bb = other->bounding_box();
-        if (!aabb_overlap(*cand_bb, *other_bb)) continue;
-        if (bound_dispatcher(*candidate, *other)) {
-          collides = true;
-          break;
-        }
-      }
+      const bool collides =
+          grid.any_overlap(*cand_bb, [&](std::size_t i) {
+            return bound_dispatcher(*candidate, *accepted[i]);
+          });
       if (collides) continue;
 
+      grid.insert(*cand_bb);
       accepted.push_back(std::move(candidate));
 
       if (accepted.size() - last_emit >= opts.emit_every) {
@@ -87,6 +98,7 @@ public:
                           current_volume_fraction(accepted, domain_box)});
         last_emit = accepted.size();
       }
+      done = termination.is_met(accepted, true);
     }
 
     return accepted;

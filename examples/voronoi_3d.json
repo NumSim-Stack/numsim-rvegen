@@ -1,0 +1,12 @@
+{
+  "_comment": "3D Voronoi polycrystal on a unit cube, voxelised for FFT.",
+
+  "domain_box": [1.0, 1.0, 1.0],
+
+  "generator": { "type": "voronoi_3d", "n_seeds": 12, "seed": 3 },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 32, "ny": 32, "nz": 32,
+      "output_path": "voronoi_3d.vox" }
+  ]
+}

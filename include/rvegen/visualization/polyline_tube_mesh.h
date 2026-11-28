@@ -26,6 +26,7 @@
 //   * `polyline_tube_input` JSON schema (PR #21 already shipped).
 //   * `weave_generator` (#3 headline).
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -65,22 +66,23 @@ template <typename T>
 }
 
 // Rotate `v` to align `from` with `to` using Rodrigues. Both `from`
-// and `to` are unit vectors. If they are (anti-)parallel, returns `v`
-// unchanged — fine for the parallel-transport use case since the
-// frame doesn't rotate across an anti-parallel reversal (rare for
-// polyline tubes; a 180° turn would need a separate handler).
+// and `to` are unit vectors. Parallel: `v` is returned unchanged.
+// Anti-parallel (a 180-degree reversal): rotate by pi about an axis
+// perpendicular to `from`, so the frame stays orthonormal (no zero/NaN).
 template <typename T>
 [[nodiscard]] inline gte::Vector<3, T>
 rotate_to_align(gte::Vector<3, T> const& v,
                 gte::Vector<3, T> const& from,
                 gte::Vector<3, T> const& to) {
   const T cos_theta = gte::Dot(from, to);
-  // Both nearly-parallel and nearly-anti-parallel skip the rotation;
-  // the anti-parallel case is a rare degenerate that callers should
-  // avoid in centerline construction (no smooth tube can wrap a
-  // 180° corner at a single vertex anyway).
-  if (cos_theta > T{1} - T{1e-9} || cos_theta < T{-1} + T{1e-9}) {
-    return v;
+  if (cos_theta > T{1} - T{1e-9}) return v;
+  if (cos_theta < T{-1} + T{1e-9}) {
+    auto a = gte::Cross(from, pick_aux_axis(from));
+    a /= vec_len(a);
+    const T d = gte::Dot(a, v);
+    gte::Vector<3, T> r;
+    for (int k = 0; k < 3; ++k) r[k] = T{2} * d * a[k] - v[k];
+    return r;
   }
   const auto axis_raw = gte::Cross(from, to);
   const T sin_theta = vec_len(axis_raw);
@@ -109,22 +111,41 @@ to_mesh(polyline_tube<T> const& tube,
 
   const T radius = tube.radius();
   const std::size_t N = segments_per_ring;
-  const std::size_t M = centerline.size();
 
-  // Pre-compute per-segment tangents (M−1 of them). At each centerline
+  // Drop consecutive centreline points closer than a relative epsilon
+  // (zero-length segments have no tangent and would collapse the tube).
+  std::vector<gte::Vector<3, T>> pts;
+  pts.reserve(centerline.size());
+  {
+    gte::Vector<3, T> lo = centerline[0], hi = centerline[0];
+    for (auto const& p : centerline)
+      for (int k = 0; k < 3; ++k) {
+        lo[k] = std::min(lo[k], p[k]);
+        hi[k] = std::max(hi[k], p[k]);
+      }
+    const T eps = T{1e-9} * std::max(detail::vec_len(hi - lo), radius);
+    for (auto const& p : centerline) {
+      if (pts.empty() || detail::vec_len(p - pts.back()) > eps) pts.push_back(p);
+    }
+  }
+  // Fewer than two distinct points: nothing to sweep; the caller reports
+  // the empty mesh as "shape not rendered".
+  if (pts.size() < 2) return m;
+  const std::size_t M = pts.size();
+
+  // Pre-compute per-segment tangents (M-1 of them). At each centerline
   // point we use the forward edge's tangent; at the last point we
   // reuse the previous edge.
   std::vector<gte::Vector<3, T>> tangents(M);
   for (std::size_t i = 0; i + 1 < M; ++i) {
-    auto d = centerline[i + 1] - centerline[i];
-    const T len = detail::vec_len(d);
-    if (len > T{0}) d /= len;
+    auto d = pts[i + 1] - pts[i];
+    d /= detail::vec_len(d);
     tangents[i] = d;
   }
   tangents[M - 1] = tangents[M - 2];
 
-  // Initial frame at vertex 0: normal = tangent × aux (normalised),
-  // binormal = tangent × normal (right-handed).
+  // Initial frame at vertex 0: normal = tangent x aux (normalised),
+  // binormal = tangent x normal (right-handed).
   gte::Vector<3, T> normal;
   {
     const auto aux = detail::pick_aux_axis(tangents[0]);
@@ -135,35 +156,77 @@ to_mesh(polyline_tube<T> const& tube,
   }
   auto binormal = gte::Cross(tangents[0], normal);
 
-  // Reserve: M rings × N vertices, plus 2 cap-centre vertices.
+  // Reserve: M rings x N vertices, plus 2 cap-centre vertices.
   m.verts.reserve(M * N + 2);
   m.normals.reserve(M * N + 2);
   m.tris.reserve((M - 1) * 2 * N + 2 * N);   // side quads + 2 end caps
 
+  // Largest mitre scale 1/cos(theta/2); bounds the ring for very sharp bends.
+  constexpr T max_mitre = T{4};
+
   // Ring generation + frame parallel transport.
   constexpr T two_pi = T{2} * std::numbers::pi_v<T>;
   for (std::size_t i = 0; i < M; ++i) {
+    // Interior joint: mitre. The ring lies in the plane perpendicular to
+    // the bisector of the incoming/outgoing tangents, with the in-bend-plane
+    // component of each radial scaled by 1/cos(theta/2), so it sits on both
+    // adjacent cylinders. End rings are plain (perpendicular to the tangent).
+    gte::Vector<3, T> ring_n = normal, ring_b = binormal;  // ring frame
+    gte::Vector<3, T> bend_dir;                            // in-plane, scaled
+    T mitre = T{1};
+    gte::Vector<3, T> next_normal = normal, next_binormal = binormal;
     if (i > 0) {
-      // Parallel-transport the frame across the corner at vertex i:
-      // rotate normal + binormal from the i-1 tangent to the i tangent.
-      normal   = detail::rotate_to_align(normal,   tangents[i - 1], tangents[i]);
-      binormal = detail::rotate_to_align(binormal, tangents[i - 1], tangents[i]);
+      auto const& t_in  = tangents[i - 1];
+      auto const& t_out = tangents[i];
+      if (i + 1 < M) {
+        auto bis = t_in + t_out;
+        const T blen = detail::vec_len(bis);
+        if (blen > T{1e-9}) {
+          bis /= blen;
+          ring_n = detail::rotate_to_align(normal,   t_in, bis);
+          ring_b = detail::rotate_to_align(binormal, t_in, bis);
+          const T cos_half = std::max(gte::Dot(t_in, bis), T{1} / max_mitre);
+          auto diff = t_out - t_in;
+          const T dlen = detail::vec_len(diff);
+          if (dlen > T{1e-12}) {
+            bend_dir = diff / dlen;
+            mitre = T{1} / cos_half;
+          }
+          next_normal   = detail::rotate_to_align(ring_n, bis, t_out);
+          next_binormal = detail::rotate_to_align(ring_b, bis, t_out);
+        } else {  // 180-degree reversal: plain ring, frame flips by pi
+          next_normal   = detail::rotate_to_align(normal,   t_in, t_out);
+          next_binormal = detail::rotate_to_align(binormal, t_in, t_out);
+        }
+      } else {
+        ring_n = next_normal   = detail::rotate_to_align(normal,   t_in, t_out);
+        ring_b = next_binormal = detail::rotate_to_align(binormal, t_in, t_out);
+      }
     }
-    auto const& c = centerline[i];
+    auto const& c = pts[i];
     for (std::size_t k = 0; k < N; ++k) {
       const T theta = (static_cast<T>(k) / static_cast<T>(N)) * two_pi;
       const T cs = std::cos(theta);
       const T sn = std::sin(theta);
       // radial direction at this ring vertex — already unit length.
       const std::array<T, 3> radial{
-          cs * normal[0] + sn * binormal[0],
-          cs * normal[1] + sn * binormal[1],
-          cs * normal[2] + sn * binormal[2]};
-      m.verts.push_back({c[0] + radius * radial[0],
-                         c[1] + radius * radial[1],
-                         c[2] + radius * radial[2]});
+          cs * ring_n[0] + sn * ring_b[0],
+          cs * ring_n[1] + sn * ring_b[1],
+          cs * ring_n[2] + sn * ring_b[2]};
+      std::array<T, 3> off = radial;
+      if (mitre != T{1}) {
+        const T along = (mitre - T{1}) *
+            (radial[0] * bend_dir[0] + radial[1] * bend_dir[1] +
+             radial[2] * bend_dir[2]);
+        for (int q = 0; q < 3; ++q) off[q] += along * bend_dir[q];
+      }
+      m.verts.push_back({c[0] + radius * off[0],
+                         c[1] + radius * off[1],
+                         c[2] + radius * off[2]});
       m.normals.push_back(radial);
     }
+    normal = next_normal;
+    binormal = next_binormal;
   }
 
   // Side quads: between ring i (offset i*N) and ring i+1 (offset (i+1)*N).
@@ -172,16 +235,18 @@ to_mesh(polyline_tube<T> const& tube,
     const std::size_t base_b = (i + 1) * N;
     for (std::size_t k = 0; k < N; ++k) {
       const std::size_t k1 = (k + 1) % N;
-      // Two triangles per quad: (a_k, b_k, a_k1) and (b_k, b_k1, a_k1).
-      m.tris.push_back({base_a + k,  base_b + k,  base_a + k1});
-      m.tris.push_back({base_b + k,  base_b + k1, base_a + k1});
+      // Two triangles per quad, CCW seen from outside (ring runs CCW
+      // about the tangent, so (a_k, a_k1, b_k) has an outward normal):
+      // (a_k, a_k1, b_k) and (b_k, a_k1, b_k1).
+      m.tris.push_back({base_a + k,  base_a + k1, base_b + k});
+      m.tris.push_back({base_b + k,  base_a + k1, base_b + k1});
     }
   }
 
   // End caps: fan from a centre vertex at centerline[0] / centerline[M−1].
   const std::size_t cap_start = m.verts.size();
   {
-    auto const& c0 = centerline[0];
+    auto const& c0 = pts[0];
     m.verts.push_back({c0[0], c0[1], c0[2]});
     m.normals.push_back({-tangents[0][0], -tangents[0][1], -tangents[0][2]});
     for (std::size_t k = 0; k < N; ++k) {
@@ -193,7 +258,7 @@ to_mesh(polyline_tube<T> const& tube,
   }
   const std::size_t cap_end = m.verts.size();
   {
-    auto const& cN = centerline[M - 1];
+    auto const& cN = pts[M - 1];
     m.verts.push_back({cN[0], cN[1], cN[2]});
     m.normals.push_back({tangents[M - 1][0], tangents[M - 1][1], tangents[M - 1][2]});
     const std::size_t base = (M - 1) * N;

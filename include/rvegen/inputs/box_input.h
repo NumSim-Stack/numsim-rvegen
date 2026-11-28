@@ -25,19 +25,23 @@ public:
             distribution_base<value_type>& pos_z,
             distribution_base<value_type>& width,
             distribution_base<value_type>& height,
-            distribution_base<value_type>& depth) noexcept
+            distribution_base<value_type>& depth)
       : _pos_x{pos_x}, _pos_y{pos_y}, _pos_z{pos_z},
-        _width{width}, _height{height}, _depth{depth} {}
+        _width{width}, _height{height}, _depth{depth} {
+    this->require_positive_support(_width, "box_input", "width");
+    this->require_positive_support(_height, "box_input", "height");
+    this->require_positive_support(_depth, "box_input", "depth");
+  }
 
   box_input(parameter_handler_t const& handler,
             distribution_map_t<value_type> const& distributions)
       : box_input(
-            *distributions.at(handler.template get<std::string>("pos_x_dist")),
-            *distributions.at(handler.template get<std::string>("pos_y_dist")),
-            *distributions.at(handler.template get<std::string>("pos_z_dist")),
-            *distributions.at(handler.template get<std::string>("width_dist")),
-            *distributions.at(handler.template get<std::string>("height_dist")),
-            *distributions.at(handler.template get<std::string>("depth_dist"))) {
+            lookup_distribution(distributions, handler, "pos_x_dist"),
+            lookup_distribution(distributions, handler, "pos_y_dist"),
+            lookup_distribution(distributions, handler, "pos_z_dist"),
+            lookup_distribution(distributions, handler, "width_dist"),
+            lookup_distribution(distributions, handler, "height_dist"),
+            lookup_distribution(distributions, handler, "depth_dist")) {
     this->read_metadata(handler);
   }
 
@@ -68,10 +72,18 @@ public:
     return s;
   }
 
+  // Draw order: x, y, z, width, height, depth.
+  // The extent distributions are truncated to (0, inf): non-positive draws
+  // are resampled. See shape_input_base for the constructor check
+  // and the redraw backstop.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto shape = std::make_unique<box<value_type>>(
-        _pos_x(), _pos_y(), _pos_z(),
-        _width(), _height(), _depth());
+    const value_type x = _pos_x();
+    const value_type y = _pos_y();
+    const value_type z = _pos_z();
+    const value_type w = this->draw_positive(_width, "box_input", "width");
+    const value_type h = this->draw_positive(_height, "box_input", "height");
+    const value_type d = this->draw_positive(_depth, "box_input", "depth");
+    auto shape = std::make_unique<box<value_type>>(x, y, z, w, h, d);
     this->tag(*shape);
     return shape;
   }
