@@ -378,6 +378,12 @@ target_link_libraries(rvegen_voronoi_2d_neighbour_test PRIVATE rvegen_lib)
 add_test(NAME voronoi_2d_neighbour_test COMMAND rvegen_voronoi_2d_neighbour_test)
 set_tests_properties(voronoi_2d_neighbour_test PROPERTIES TIMEOUT 600)
 
+# Triangle tree of mesh inclusions (#126): pair tests, point queries and
+# rotated bounds against references that visit every triangle.
+add_executable(rvegen_mesh_acceleration_test tests/mesh_acceleration_test.cpp)
+target_link_libraries(rvegen_mesh_acceleration_test PRIVATE rvegen_lib)
+add_test(NAME mesh_acceleration_test COMMAND rvegen_mesh_acceleration_test)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
