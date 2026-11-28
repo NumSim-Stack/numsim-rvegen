@@ -10,14 +10,20 @@
 // schema, so a single run can fan out to any combination of formats —
 // .geo for FEM, .vtk / .vox for FFT, .svg / .html for visualization.
 
+#include <any>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <typeinfo>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -73,12 +79,47 @@ int run(int argc, char** argv) {
   std::array<double, 3> domain_box{1.0, 1.0, 0.0};
   if (config.contains("domain_box")) {
     auto const& db = config.at("domain_box");
-    domain_box[0] = db.at(0).get<double>();
-    domain_box[1] = db.at(1).get<double>();
-    domain_box[2] = db.size() >= 3 ? db.at(2).get<double>() : 0.0;
+    if (!db.is_array() || (db.size() != 2 && db.size() != 3)) {
+      throw std::invalid_argument(
+          "domain_box must be an array of 2 or 3 numbers, got " + db.dump());
+    }
+    for (std::size_t i = 0; i < db.size(); ++i) {
+      if (!db[i].is_number()) {
+        throw std::invalid_argument(
+            "domain_box entries must be numbers, got " + db.dump());
+      }
+      domain_box[i] = db[i].get<double>();
+      if (!std::isfinite(domain_box[i])) {
+        throw std::invalid_argument(
+            "domain_box entries must be finite, got " + db.dump());
+      }
+    }
+    if (!(domain_box[0] > 0.0) || !(domain_box[1] > 0.0)) {
+      throw std::invalid_argument(
+          "domain_box x and y extents must be > 0, got " + db.dump());
+    }
+    if (domain_box[2] < 0.0) {
+      throw std::invalid_argument(
+          "domain_box z extent must be >= 0 (0 means 2D), got " + db.dump());
+    }
   }
-  const auto seed = config.value<std::uint64_t>("seed", 42);
-  std::mt19937 engine{seed};
+
+  // The seed goes through the same strict integer reader as the schema
+  // keys (rejects negative, fractional and non-numeric values by key).
+  std::uint64_t seed = 42;
+  if (config.contains("seed")) {
+    rvegen::parameter_visitor_nlohmann seed_reader{config};
+    seed = std::any_cast<std::uint64_t>(
+        seed_reader.read("seed", typeid(std::uint64_t)));
+  }
+  // The engine is the 32-bit std::mt19937; a wider seed would be truncated
+  // silently, so reject it instead.
+  if (!std::in_range<std::uint32_t>(seed)) {
+    throw std::invalid_argument(
+        "seed must be <= 4294967295 (the engine is 32-bit), got " +
+        std::to_string(seed));
+  }
+  std::mt19937 engine(static_cast<std::uint32_t>(seed));
 
   // ---- 4. Build distributions -------------------------------------------
   rvegen::distribution_map_t<double> dists;
@@ -139,6 +180,17 @@ int run(int argc, char** argv) {
                                    progress_opts);
   std::cout << "rvegen: generated " << shapes.size() << " shape"
             << (shapes.size() == 1 ? "" : "s") << '\n';
+  // A generator also returns when it exhausts max_attempts. Detect that
+  // by evaluating the termination predicate on the result (random_generator
+  // evaluates it with count_all = true, the others with the primaries-only
+  // default).
+  const bool counts_all =
+      config.at("generator").value("type", std::string{}) == "random";
+  if (!termination->is_met(shapes, counts_all)) {
+    std::cerr << "rvegen: warning — stopped at max_attempts before reaching "
+                 "the termination target (" << shapes.size()
+              << " shapes placed).\n";
+  }
 
   // ---- 8. Post-processing steps (each owns its sink) --------------------
   if (!config.contains("postprocess")) {
