@@ -12,6 +12,14 @@ working directory `examples/` (`cd examples && rvegen mesh_inclusions_3d.json`).
 The `gmsh_geo` pictures were meshed with gmsh 4.12.1; other gmsh
 versions mesh differently, so the element counts in their titles change.
 
+## bingham_fibres
+
+[`bingham_fibres.json`](../../examples/bingham_fibres.json) · 3D 1×1×1 · polyline_tube_oriented_input · generator `random` · 15 shapes
+
+> Fibres whose axes follow a Bingham distribution (prolate, mean axis +x) via polyline_tube_oriented_input; direction distributions live in their own section.
+
+<img src="bingham_fibres-voxel.png" alt="bingham_fibres: voxel grid (.vox)" width="440">
+
 ## circles_in_unit_box
 
 [`circles_in_unit_box.json`](../../examples/circles_in_unit_box.json) · 2D 1×1 · circle_input · generator `only_inside` · 10 shapes
@@ -20,7 +28,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## circles_statistics
 
-[`circles_statistics.json`](../../examples/circles_statistics.json) · 2D 1×1 · circle_input · generator `periodic` · 161 shapes
+[`circles_statistics.json`](../../examples/circles_statistics.json) · 2D 1×1 · circle_input · generator `periodic` · 157 shapes
 
 > Dense periodic monodisperse circle pack (40 % area fraction) with the statistics post-process: two-point correlation S2(r), which starts at the area fraction and decays to its square, and the radial distribution g(r) of the centres, which shows the hard-core exclusion and the first-neighbour peak.
 
@@ -36,7 +44,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## dense_circles_svg
 
-[`dense_circles_svg.json`](../../examples/dense_circles_svg.json) · 2D 1×1 · circle_input · generator `only_inside` · 48 shapes
+[`dense_circles_svg.json`](../../examples/dense_circles_svg.json) · 2D 1×1 · circle_input · generator `only_inside` · 51 shapes
 
 > Dense 2D RVE — 30% volume fraction of mixed-radius circles in a unit box. only_inside generator + precise dispatch packs more circles than AABB-only would. SVG output for visualization.
 
@@ -44,7 +52,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## dense_spheres_3d
 
-[`dense_spheres_3d.json`](../../examples/dense_spheres_3d.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 48 shapes
+[`dense_spheres_3d.json`](../../examples/dense_spheres_3d.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 49 shapes
 
 > Dense 3D RVE — spheres in a unit cube, ~10% volume fraction. Three.js HTML output: drag to rotate, scroll to zoom in your browser.
 
@@ -52,7 +60,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## dense_spheres_svg3d
 
-[`dense_spheres_svg3d.json`](../../examples/dense_spheres_svg3d.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 48 shapes
+[`dense_spheres_svg3d.json`](../../examples/dense_spheres_svg3d.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 49 shapes
 
 > Dense 3D sphere RVE rendered as static SVG (orthographic axonometric).
 
@@ -60,7 +68,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## fe_rve_workflow
 
-[`fe_rve_workflow.json`](../../examples/fe_rve_workflow.json) · 2D 1×1 · circle_input · generator `periodic` · 33 shapes
+[`fe_rve_workflow.json`](../../examples/fe_rve_workflow.json) · 2D 1×1 · circle_input · generator `periodic` · 34 shapes
 
 > End-to-end FE-RVE workflow demo. Periodic 2D circle pack at 20% fibre fraction. Emits a gmsh .geo with every knob the FE-RVE workflow typically needs: periodic Curve directives, characteristic element size, quadratic element order, Frontal-Delaunay algorithm (6; algorithm 8 segfaults gmsh 4.12 when periodic constraints are present), and tri->quad recombination. Run gmsh on the resulting .geo and you get a periodic quad mesh ready for meshing in gmsh. Note on Physical groups: shapes carry the phase_name 'fibre' on their info blob, but the gmsh writer's JSON schema doesn't (yet) accept a phase_collection so the produced .geo doesn't emit `Physical Surface("fibre", ...)` directives — that requires attaching the collection in C++ via set_phases(&phases). The JSON-config phase-group hookup is a separate follow-up.
 
@@ -84,7 +92,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## mixed_2d_periodic_gmsh
 
-[`mixed_2d_periodic_gmsh.json`](../../examples/mixed_2d_periodic_gmsh.json) · 2D 1×1 · circle_input, ellipse_input, rectangle_input · generator `periodic` · 35 shapes
+[`mixed_2d_periodic_gmsh.json`](../../examples/mixed_2d_periodic_gmsh.json) · 2D 1×1 · circle_input, ellipse_input, rectangle_input · generator `periodic` · 39 shapes
 
 > Periodic 2D RVE mixing circles, ellipses and rectangles, written as a gmsh .geo with periodic boundary constraints. Inclusions that cross the boundary are clipped and their wrap copies appear on the opposite face.
 
@@ -101,7 +109,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## mixed_3d
 
-[`mixed_3d.json`](../../examples/mixed_3d.json) · 3D 1×1×1 · box_input, sphere_input · generator `only_inside` · 123 shapes
+[`mixed_3d.json`](../../examples/mixed_3d.json) · 3D 1×1×1 · box_input, sphere_input · generator `only_inside` · 110 shapes
 
 > Mixed 3D RVE — spheres + boxes in a unit cube, 15% volume fraction.
 
@@ -109,7 +117,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## mixed_3d_svg
 
-[`mixed_3d_svg.json`](../../examples/mixed_3d_svg.json) · 3D 1×1×1 · box_input, sphere_input · generator `only_inside` · 123 shapes
+[`mixed_3d_svg.json`](../../examples/mixed_3d_svg.json) · 3D 1×1×1 · box_input, sphere_input · generator `only_inside` · 110 shapes
 
 > Mixed 3D RVE — spheres + boxes — rendered as static SVG.
 
@@ -117,7 +125,7 @@ versions mesh differently, so the element counts in their titles change.
 
 ## periodic_circles
 
-[`periodic_circles.json`](../../examples/periodic_circles.json) · 2D 1×1 · circle_input · generator `periodic` · 15 shapes
+[`periodic_circles.json`](../../examples/periodic_circles.json) · 2D 1×1 · circle_input · generator `periodic` · 17 shapes
 
 > Periodic 2D RVE: circles wrapping across box faces, written as a ParaView-readable VTK file. Canonical config for FFT-based homogenization.
 
@@ -134,15 +142,32 @@ versions mesh differently, so the element counts in their titles change.
 
 ## periodic_spheres_gmsh_3d
 
-[`periodic_spheres_gmsh_3d.json`](../../examples/periodic_spheres_gmsh_3d.json) · 3D 1×1×1 · sphere_input · generator `periodic` · 27 shapes
+[`periodic_spheres_gmsh_3d.json`](../../examples/periodic_spheres_gmsh_3d.json) · 3D 1×1×1 · sphere_input · generator `periodic` · 36 shapes
 
 > Periodic 3D sphere pack written as a gmsh .geo with periodic surface constraints, ready for a tetrahedral FE mesh. Spheres that cross a face are clipped and their wrap copies appear on the opposite face.
 
 <img src="periodic_spheres_gmsh_3d-gmsh_geo.png" alt="periodic_spheres_gmsh_3d: gmsh mesh of the .geo" width="440">
 
+## phases_voxel
+
+[`phases_voxel.json`](../../examples/phases_voxel.json) · 2D 1×1 · circle_input, rectangle_input · generator `only_inside` · 12 shapes
+
+> Phases + phase_assignment. Circles become 'fibre' and rectangles 'filler' (by_shape_type); cells no shape covers belong to the declared matrix phase and carry its id (id 0 would mean an untagged shape). The voxel grid and the VTK file carry the phase ids, and each writes a <output>.phases.json name table next to it; materials are assigned downstream by phase name or id.
+
+<img src="phases_voxel-voxel.png" alt="phases_voxel: voxel grid (.vox)" width="440">
+<img src="phases_voxel-vtk_legacy.png" alt="phases_voxel: voxel grid (.vtk)" width="440">
+
+## plain_weave
+
+[`plain_weave.json`](../../examples/plain_weave.json) · 3D 1×1×0.25 ·  · generator `weave` · 8 shapes
+
+> Plain weave: 4 warp x 4 weft undulating yarns (deterministic; no shapes/termination needed).
+
+<img src="plain_weave-voxel.png" alt="plain_weave: voxel grid (.vox)" width="440">
+
 ## polydisperse_circles
 
-[`polydisperse_circles.json`](../../examples/polydisperse_circles.json) · 2D 1×1 · circle_input · generator `only_inside` · 48 shapes
+[`polydisperse_circles.json`](../../examples/polydisperse_circles.json) · 2D 1×1 · circle_input · generator `only_inside` · 47 shapes
 
 > Polydisperse circles with normally distributed radii (mean 0.05, standard deviation 0.01) packed inside the box, voxelised to a 128x128 grid for FFT solvers.
 
@@ -151,8 +176,33 @@ versions mesh differently, so the element counts in their titles change.
 
 ## spheres_in_cube
 
-[`spheres_in_cube.json`](../../examples/spheres_in_cube.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 26 shapes
+[`spheres_in_cube.json`](../../examples/spheres_in_cube.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 20 shapes
 
 > 3D RVE: spheres packed into a unit cube, terminated by volume fraction. The voxel writer outputs a 32^3 phase-id grid suitable for FFT homogenization.
 
 <img src="spheres_in_cube-voxel.png" alt="spheres_in_cube: voxel grid (.vox)" width="440">
+
+## tow_weave
+
+[`tow_weave.json`](../../examples/tow_weave.json) · 3D 1×1×0.25 ·  · generator `tow_weave` · 56 shapes
+
+> Tow-level weave: every yarn of a 4x4 plain weave is a hex-packed bundle of 7 fibres.
+
+<img src="tow_weave-voxel.png" alt="tow_weave: voxel grid (.vox)" width="440">
+
+## voronoi_2d
+
+[`voronoi_2d.json`](../../examples/voronoi_2d.json) · 2D 1×1 ·  · generator `voronoi_2d` · 24 shapes
+
+> 2D Voronoi polycrystal. Deterministic generator: seeds come from n_seeds + seed; the termination section is not needed.
+
+<img src="voronoi_2d-svg.png" alt="voronoi_2d: SVG" width="440">
+<img src="voronoi_2d-voxel.png" alt="voronoi_2d: voxel grid (.vox)" width="440">
+
+## voronoi_3d
+
+[`voronoi_3d.json`](../../examples/voronoi_3d.json) · 3D 1×1×1 ·  · generator `voronoi_3d` · 12 shapes
+
+> 3D Voronoi polycrystal on a unit cube, voxelised for FFT.
+
+<img src="voronoi_3d-voxel.png" alt="voronoi_3d: voxel grid (.vox)" width="440">
