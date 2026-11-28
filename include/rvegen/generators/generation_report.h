@@ -50,17 +50,27 @@ struct generation_report {
   // (max_attempts)". Empty when there is no termination to report on.
   [[nodiscard]] std::string summary() const {
     if (termination.empty()) return {};
-    auto number = [](double v) {
-      // Counts print as integers, fractions with four significant digits.
+    auto number = [](double v, int digits) {
+      // Counts print as integers, fractions with `digits` significant digits.
       if (std::isfinite(v) && v == std::floor(v) && std::abs(v) < 1e15)
         return std::format("{:.0f}", v);
-      return std::format("{:.4g}", v);
+      return std::format("{:.{}g}", v, digits);
     };
     std::string line = termination + ": ";
-    if (has_target)
-      line += "reached " + number(achieved) + " of " + number(target);
-    else
+    if (has_target) {
+      // Four significant digits, more when a miss would otherwise print
+      // like a hit ("reached 0.35 of 0.35" for 0.34996).
+      int digits = 4;
+      std::string got = number(achieved, digits), want = number(target, digits);
+      while (achieved != target && got == want && digits < 17) {
+        ++digits;
+        got = number(achieved, digits);
+        want = number(target, digits);
+      }
+      line += "reached " + got + " of " + want;
+    } else {
       line += "stopped";
+    }
     if (attempts > 0 || reason == stop_reason::no_inputs)
       line += " after " + std::to_string(attempts) + " attempt" +
               (attempts == 1 ? "" : "s");

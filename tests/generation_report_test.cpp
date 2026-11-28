@@ -237,6 +237,106 @@ void test_generator_reports() {
   check(c);
 }
 
+// A generator that records no report (and so a custom one written before
+// reports existed): the pipeline measures the result itself. One that
+// throws leaves no report of an earlier compute() behind.
+template <typename T>
+class silent_generator final : public rvegen::rve_generator_base<T> {
+public:
+  using shape_vector = typename rvegen::rve_generator_base<T>::shape_vector;
+  using input_vector = typename rvegen::rve_generator_base<T>::input_vector;
+  explicit silent_generator(rvegen::parameter_handler_t const& h)
+      : _count{h.template get<std::size_t>("count")} {}
+  [[nodiscard]] static rvegen::parameter_controller_t parameters() {
+    rvegen::parameter_controller_t p;
+    p.template required<std::size_t>("count");
+    return p;
+  }
+  [[nodiscard]] shape_vector
+  compute(input_vector& inputs, rvegen::termination_base<T> const&,
+          std::array<T, 3> const&, rvegen::progress_options const& = {}) override {
+    shape_vector out;
+    for (std::size_t i = 0; i < _count; ++i) {
+      auto s = inputs.at(0)->new_shape();
+      s->set_middle_point({T(0.1) * T(i + 1), T(0.5), T(0)});
+      out.push_back(std::move(s));
+    }
+    return out;
+  }
+
+private:
+  std::size_t _count;
+};
+
+void test_unrecorded_and_stale_reports() {
+  rvegen::register_all_types();
+  rvegen::generator_registry_t<>::instance()
+      .template register_type<silent_generator<double>>("test_silent");
+  auto cfg = config("only_inside", {{"type", "number_of_inclusions"}, {"target", 5}}, 10);
+  cfg["distributions"]["r"] = {{"type", "uniform_real"}, {"a", 0.01}, {"b", 0.02}};
+  cfg["generator"] = {{"type", "test_silent"}, {"count", 3}};
+  {
+    sinks s;
+    const auto r = rvegen::generate(cfg, s.options());
+    REQUIRE(r.shapes.size() == 3);
+    REQUIRE(r.report.termination == "number_of_inclusions");
+    REQUIRE(r.report.target == 5.0 && r.report.achieved == 3.0);
+    REQUIRE(r.report.reason == stop_reason::max_attempts && r.report.target_missed());
+    REQUIRE(r.report.attempts == 0);   // not known
+    REQUIRE(sinks::has(s.warn, "rvegen: warning - number_of_inclusions: reached 3 of 5 "
+                               "(max_attempts)"));
+    auto o = s.options();
+    o.strict_targets = true;
+    bool thrown = false;
+    try { (void)rvegen::generate(cfg, o); }
+    catch (rvegen::target_not_reached const&) { thrown = true; }
+    REQUIRE(thrown);
+  }
+  cfg["generator"]["count"] = 5;
+  {
+    sinks s;
+    const auto r = rvegen::generate(cfg, s.options());
+    REQUIRE(r.report.reason == stop_reason::reached && r.report.achieved == 5.0);
+    REQUIRE(s.warn.empty());
+    REQUIRE(sinks::has(s.info, "rvegen: number_of_inclusions: reached 5 of 5"));
+  }
+
+  // An input that throws on its third shape: the report of the earlier,
+  // successful compute() must not survive the failed one.
+  struct failing_input final : rvegen::shape_input_base<double> {
+    std::size_t made{0};
+    std::size_t fail_at{0};
+    [[nodiscard]] std::unique_ptr<rvegen::shape_base<double>> new_shape() override {
+      if (fail_at != 0 && ++made >= fail_at) throw std::runtime_error{"input failed"};
+      const double c = 0.1 + 0.07 * static_cast<double>(made % 11);
+      return std::make_unique<rvegen::circle<double>>(c, c, 0.01);
+    }
+  };
+  const std::array<double, 3> box{1.0, 1.0, 0.0};
+  rvegen::number_of_inclusions<double> two{2};
+  auto run = [&](rvegen::rve_generator_base<double>& gen) {
+    rvegen::rve_generator_base<double>::input_vector in;
+    in.push_back(std::make_unique<failing_input>());
+    auto* input = static_cast<failing_input*>(in.back().get());
+    input->fail_at = 0;
+    for (std::size_t i = 0; i < 2; ++i) ++input->made;   // distinct centres
+    (void)gen.compute(in, two, box);
+    REQUIRE(gen.last_report().has_value());
+    input->made = 0;
+    input->fail_at = 1;
+    bool thrown = false;
+    try { (void)gen.compute(in, two, box); } catch (std::runtime_error const&) { thrown = true; }
+    REQUIRE(thrown);
+    REQUIRE(!gen.last_report().has_value());
+  };
+  rvegen::only_inside_generator<double> a;
+  run(a);
+  rvegen::random_generator<double> b;
+  run(b);
+  rvegen::periodic_generator<double> c;
+  run(c);
+}
+
 void test_summary_text() {
   rvegen::generation_report r;
   REQUIRE(r.summary().empty());   // no termination: nothing to say
@@ -252,6 +352,16 @@ void test_summary_text() {
   r.attempts = 1;
   r.reason = stop_reason::reached;
   REQUIRE(r.summary() == "volume_fraction: reached 0.3502 of 0.35 after 1 attempt");
+  // A miss never prints like a hit: more digits until the two differ.
+  r.achieved = 0.34996;
+  r.attempts = 9;
+  r.reason = stop_reason::max_attempts;
+  REQUIRE(r.summary() ==
+          "volume_fraction: reached 0.34996 of 0.35 after 9 attempts (max_attempts)");
+  r.target = 1.0;
+  r.achieved = 0.9999999;
+  REQUIRE(r.summary().find("reached 0.9999999 of 1 ") != std::string::npos);
+  r.target = 0.35;
   r.termination = "number_of_inclusions";
   r.target = 2500000;
   r.achieved = 1234567;
@@ -407,6 +517,7 @@ void test_version() {
 int main() {
   test_report_matrix();
   test_generator_reports();
+  test_unrecorded_and_stale_reports();
   test_summary_text();
   test_pipeline_strict();
   test_run_summary();

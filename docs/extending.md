@@ -69,7 +69,7 @@ returning the accepted shapes. Provide a constructor from
 with `generator_registry_t<T>::instance().template register_type<...>("name")`
 and add the call to `register_all_generators()`.
 
-Before every `return` of `compute()`, call
+Call `clear_report()` first in `compute()`, and before every `return` call
 `record_report(termination, accepted, count_all, attempts, max_attempts, reason)`
 with the reason it stopped (`stop_reason::reached`, `max_attempts`,
 `cancelled`, `no_inputs`). The pipeline prints the report, warns about a missed

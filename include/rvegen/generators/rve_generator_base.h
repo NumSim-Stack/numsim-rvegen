@@ -82,6 +82,10 @@ public:
   }
 
 protected:
+  // For compute() implementations: call first, so that a compute() that
+  // ends in an exception does not leave the previous run's report behind.
+  void clear_report() noexcept { _report.reset(); }
+
   // For compute() implementations: call on every return path. `count_all`
   // is the hint the implementation gives termination::is_met.
   void record_report(termination_base<T> const& termination,

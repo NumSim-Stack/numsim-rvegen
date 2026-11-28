@@ -735,6 +735,12 @@ foreach(_case underfilled_polydisperse unreachable_spheres)
   set_tests_properties(cli_underfill_warns_${_case} PROPERTIES
     PASS_REGULAR_EXPRESSION "rvegen: warning - volume_fraction: reached 0\\.[0-9]+ of 0\\.[0-9]+ after [0-9]+ attempts \\(max_attempts\\)"
     LABELS "cli")
+  # ... and the exit status of the warning run is 0 (a PASS_REGULAR_EXPRESSION
+  # test ignores the status).
+  add_test(NAME cli_underfill_exits_zero_${_case}
+    COMMAND rvegen --quiet --output-dir ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/${_case}.json)
+  set_tests_properties(cli_underfill_exits_zero_${_case} PROPERTIES LABELS "cli")
   add_test(NAME cli_underfill_strict_fails_${_case}
     COMMAND rvegen --strict --output-dir ${CMAKE_CURRENT_BINARY_DIR}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/${_case}.json)

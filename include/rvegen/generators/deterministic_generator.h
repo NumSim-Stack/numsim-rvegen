@@ -47,6 +47,7 @@ public:
           termination_base<T> const& /*termination*/,
           std::array<T, 3> const& domain_box,
           progress_options const& opts = {}) final {
+    this->clear_report();
     if (opts.cancel()) {
       this->record_report(stop_reason::cancelled);
       return {};
