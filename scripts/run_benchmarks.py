@@ -60,7 +60,7 @@ def startup_case():
     """A run with next to nothing to do: the cost of starting the binary."""
     return {
         "name": "startup", "family": "startup", "size": 1, "work": None,
-        "large": False, "files": {},
+        "large": False, "files": {}, "requires": None,
         "config": {
             "domain_box": [1.0, 1.0],
             "seed": 1,
@@ -86,7 +86,25 @@ def write_case(case, directory):
         (directory / name).write_text(text)
 
 
-def run_case(case, rvegen, work, repeat, timeout):
+SKIPPED = "skipped: "
+
+
+def has_voro_pp(rvegen, work):
+    """Whether the binary tessellates with Voro++ (asked with four seeds)."""
+    directory = work / "probe_voro_pp"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text(json.dumps({
+        "domain_box": [1.0, 1.0, 1.0],
+        "generator": {"type": "voronoi_3d", "n_seeds": 4, "seed": 1,
+                      "backend": "voro_pp"},
+        "postprocess": []}))
+    done = subprocess.run([str(rvegen), "config.json", "--quiet"],
+                          cwd=directory, capture_output=True, text=True,
+                          timeout=60)
+    return done.returncode == 0
+
+
+def run_case(case, rvegen, work, repeat, timeout, missing=()):
     directory = work / case["name"]
     if directory.exists():
         shutil.rmtree(directory)
@@ -94,6 +112,10 @@ def run_case(case, rvegen, work, repeat, timeout):
     result = {key: case[key] for key in ("name", "family", "size", "work")}
     result.update(status="ok", seconds=None, runs=[], shapes=None,
                   inclusions=None, attempts=None, stop_reason=None)
+    if case["requires"] in missing:
+        result["status"] = (SKIPPED + "the binary was built without "
+                            "Voro++ (-DRVEGEN_WITH_VORO_PP=ON)")
+        return result
     for _ in range(repeat):
         start = time.perf_counter()
         try:
@@ -145,6 +167,8 @@ def scaling(results, max_exponent, min_seconds):
                    "large": large["name"], "exponent": None}
             if small["status"] != "ok":
                 row["verdict"] = "not checked: " + small["name"] + " did not run"
+            elif large["status"].startswith(SKIPPED):
+                row["verdict"] = "not checked: " + large["name"] + " skipped"
             elif large["status"] != "ok":
                 row["verdict"] = "FAIL: " + large["status"]
             else:
@@ -174,7 +198,9 @@ def compare(results, old_results, max_ratio, min_seconds):
             continue
         row = {"name": r["name"], "old": o["seconds"], "new": r["seconds"],
                "ratio": None}
-        if r["status"] != "ok":
+        if r["status"].startswith(SKIPPED):
+            row["verdict"] = "not compared: skipped"
+        elif r["status"] != "ok":
             row["verdict"] = "FAIL: " + r["status"]
         else:
             row["ratio"] = r["seconds"] / o["seconds"]
@@ -277,6 +303,14 @@ def self_test():
     rows = scaling([fake("a1", "a", 1000, None, status="failed: x"),
                     fake("a2", "a", 10000, 1.0)], 1.7, 0.01)
     assert rows[0]["verdict"].startswith("not checked"), rows
+    # A skipped case (a backend the binary lacks) is not a failure.
+    rows = scaling([start, fake("a1", "a", 1000, 0.11),
+                    fake("a2", "a", 10000, None, status=SKIPPED + "x")],
+                   1.7, 0.01)
+    assert rows[0]["verdict"].startswith("not checked"), rows
+    rows = compare([fake("a", "a", 1, None, status=SKIPPED + "x")],
+                   [fake("a", "a", 1, 1.0)], 1.5, 0.05)
+    assert rows[0]["verdict"].startswith("not compared"), rows
     # Attempts as the work, three sizes give two rows in order of size.
     three = [fake("b3", "b", 300, 0.9, work="attempts"),
              fake("b1", "b", 100, 0.3, work="attempts"),
@@ -305,6 +339,7 @@ def self_test():
     for case in load_cases():
         json.dumps(case["config"])
         assert case["work"] in ("attempts", "shapes", None), case["name"]
+        assert case["requires"] in ("voro_pp", None), case["name"]
     print("run_benchmarks self-test: all checks passed")
 
 
@@ -357,8 +392,13 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     work = args.out / "work"
     results = []
+    missing = set()
+    if (any(c["requires"] == "voro_pp" for c in cases)
+            and not has_voro_pp(rvegen, work)):
+        missing.add("voro_pp")
     for case in [startup_case()] + cases:
-        result = run_case(case, rvegen, work, args.repeat, args.timeout)
+        result = run_case(case, rvegen, work, args.repeat, args.timeout,
+                          missing)
         results.append(result)
         shown = (seconds_text(result["seconds"]) + " s"
                  if result["status"] == "ok" else result["status"])
@@ -383,7 +423,8 @@ def main():
     print()
     print(text)
 
-    broken = [r["name"] for r in results if r["status"] != "ok"]
+    broken = [r["name"] for r in results
+              if r["status"] != "ok" and not r["status"].startswith(SKIPPED)]
     if broken:
         print("did not run: " + ", ".join(broken), file=sys.stderr)
     failed = False

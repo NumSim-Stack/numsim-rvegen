@@ -15,6 +15,9 @@ A case is a dict:
            case its own directory
   files    {relative path: text} written next to the config before the run
   large    True for the sizes --quick leaves out
+  requires "voro_pp" for a case that needs the Voro++ backend (the built-in
+           3D tessellation is for a few dozen seeds only); the runner skips
+           it when the binary was built without
 """
 
 import math
@@ -26,9 +29,11 @@ def _uniform(a, b):
     return {"type": "uniform_real", "a": a, "b": b}
 
 
-def _case(name, family, size, work, config, files=None, large=False):
+def _case(name, family, size, work, config, files=None, large=False,
+          requires=None):
     return {"name": name, "family": family, "size": size, "work": work,
-            "config": config, "files": files or {}, "large": large}
+            "config": config, "files": files or {}, "large": large,
+            "requires": requires}
 
 
 def circles(n, fill, generator="periodic", gap=0.0, post=()):
@@ -206,12 +211,12 @@ def meshes(n, subdivisions, fill=0.10):
 
 
 def voronoi(dim, n):
-    return {
-        "domain_box": [1.0] * dim,
-        "generator": {"type": f"voronoi_{dim}d", "n_seeds": n, "seed": 1,
-                      "periodic": True},
-        "postprocess": [],
-    }
+    generator = {"type": f"voronoi_{dim}d", "n_seeds": n, "seed": 1,
+                 "periodic": True}
+    if dim == 3:
+        generator["backend"] = "voro_pp"
+    return {"domain_box": [1.0] * dim, "generator": generator,
+            "postprocess": []}
 
 
 def weave(yarns, post=()):
@@ -265,8 +270,8 @@ def cases():
         add(f"voronoi_2d_{n}", "voronoi_2d, periodic", n, "shapes",
             voronoi(2, n), large=n > 10_000)
     for n in (500, 2_000, 8_000):
-        add(f"voronoi_3d_{n}", "voronoi_3d, periodic", n, "shapes",
-            voronoi(3, n), large=n > 2_000)
+        add(f"voronoi_3d_{n}", "voronoi_3d, periodic, Voro++", n, "shapes",
+            voronoi(3, n), large=n > 2_000, requires="voro_pp")
     add("weave_twill_16", "twill weave, 16 x 16 yarns", 16, None, weave(16))
 
     # ---- writers: the whole run, generation included (compare with the
