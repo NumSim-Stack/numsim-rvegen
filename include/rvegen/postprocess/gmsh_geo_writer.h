@@ -247,7 +247,7 @@ public:
   //
   // Caller retains ownership; the pointer must outlive the next run() /
   // write() call. Passing nullptr clears the attachment.
-  void set_phases(phase_collection<value_type> const* phases) noexcept {
+  void set_phases(phase_collection<value_type> const* phases) noexcept override {
     _phases = phases;
   }
   [[nodiscard]] phase_collection<value_type> const* phases() const noexcept {

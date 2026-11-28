@@ -75,7 +75,7 @@ public:
   }
 
   // Direct json access — for writers that want to emit the whole
-  // metadata blob (e.g. as a `metadata` block in DAMASK material.config).
+  // metadata blob.
   [[nodiscard]] nlohmann::json const& json() const noexcept { return _data; }
   [[nodiscard]] nlohmann::json& json() noexcept { return _data; }
 

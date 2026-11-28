@@ -254,6 +254,15 @@ target_link_libraries(rvegen_deterministic_generators_test PRIVATE
 )
 add_test(NAME deterministic_generators_test COMMAND rvegen_deterministic_generators_test)
 
+add_executable(rvegen_phases_test tests/phases_test.cpp)
+target_link_libraries(rvegen_phases_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME phases_test COMMAND rvegen_phases_test
+    $<TARGET_FILE:rvegen>
+    ${CMAKE_CURRENT_SOURCE_DIR}/examples/phases_voxel.json)
+
 add_executable(rvegen_extra_types_smoke tests/extra_types_smoke.cpp)
 target_link_libraries(rvegen_extra_types_smoke PRIVATE
     rvegen_lib
@@ -532,6 +541,16 @@ foreach(_ex IN ITEMS voronoi_2d voronoi_3d plain_weave tow_weave bingham_fibres)
       PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes.*post-process '[a-z_]+' done"
   )
 endforeach()
+
+# JSON "phases" + "phase_assignment" written through the voxel and VTK writers (#7).
+add_test(
+    NAME cli_phases_voxel_example
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/phases_voxel.json
+)
+set_tests_properties(cli_phases_voxel_example PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "phase_assignment tagged 12 shapes.*post-process 'voxel' done.*post-process 'vtk_legacy' done"
+)
 
 # CLI validation (regression tests for the pipeline's load-time checks).
 # PASS_REGULAR_EXPRESSION overrides the exit code, so these match the message.

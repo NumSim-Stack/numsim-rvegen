@@ -15,6 +15,7 @@
 #include "post_process_base.h"
 #include "../phase/phase.h"
 #include "../types.h"
+#include "phase_table.h"
 #include "voxel_grid.h"
 
 namespace rvegen {
@@ -97,7 +98,7 @@ public:
   // 1..N from `phase_collection`) instead of the legacy 1-based shape
   // index. Caller retains ownership; pointer must outlive the next
   // run()/write() call. Pass nullptr to clear.
-  void set_phases(phase_collection<value_type> const* phases) noexcept {
+  void set_phases(phase_collection<value_type> const* phases) noexcept override {
     _phases = phases;
   }
   [[nodiscard]] phase_collection<value_type> const* phases() const noexcept {
@@ -126,6 +127,8 @@ public:
           "vtk_legacy_writer: cannot open '" + _output_path + "' for writing"};
     }
     write(out, shapes, domain_box);
+    out.close();
+    if (_phases) write_phase_table_sidecar(_output_path, *_phases);
   }
 
   // Stream-based emit, kept public for tests / embedders.
@@ -166,7 +169,11 @@ public:
     // point lattice, so each voxel occupies its true box in [0, L].
     const char* const field_name  = _phases ? "phase_id" : "shape_index";
     const char* const title_suffix = _phases
-        ? " (phase_id from phase_collection, 0 = matrix/untagged)"
+        ? (_phases->has_matrix()
+               ? " (phase_id from phase_collection; uncovered cells = matrix phase id, 0 = untagged; "
+                 "name table in <output>.phases.json)"
+               : " (phase_id from phase_collection, 0 = matrix/untagged; "
+                 "name table in <output>.phases.json)")
         : " (1-based inclusion index, wraps share their primary's id, 0 = matrix)";
 
     // SPACING is written with round-trip precision (17 significant

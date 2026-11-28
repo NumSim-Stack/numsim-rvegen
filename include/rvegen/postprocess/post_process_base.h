@@ -4,6 +4,7 @@
 #include <memory>
 #include <vector>
 
+#include "../phase/phase.h"
 #include "../shapes/shape_base.h"
 
 namespace rvegen {
@@ -31,6 +32,14 @@ public:
   post_process_base& operator=(post_process_base const&) = default;
   post_process_base& operator=(post_process_base&&) noexcept = default;
   virtual ~post_process_base() = default;
+
+  // Generic phase hook. The pipeline calls this on EVERY post-process
+  // before run(); the default ignores the collection. Writers that
+  // consume phases (voxel, gmsh_geo, vtk_legacy)
+  // already expose a `set_phases(phase_collection<T> const*) noexcept`
+  // with exactly this signature, which therefore overrides this virtual
+  // implicitly. The pointer must outlive the next run().
+  virtual void set_phases(phase_collection<T> const* /*phases*/) noexcept {}
 
   virtual void run(shape_vector const& shapes,
                    std::array<value_type, 3> const& domain_box) const = 0;

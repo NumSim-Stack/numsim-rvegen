@@ -28,7 +28,7 @@ namespace rvegen {
 //   paths, custom tags) and call `tag(*shape)` from their `new_shape()`
 //   implementations. The shape carries the metadata through clone /
 //   translate operations; output writers consume it (per-phase gmsh
-//   Physical groups, voxel grid ids, DAMASK material.config).
+//   Physical groups, voxel grid ids).
 //
 // Draw order (reproducibility):
 //   Concrete inputs draw every value into a named local, one statement
