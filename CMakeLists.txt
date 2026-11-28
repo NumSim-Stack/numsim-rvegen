@@ -802,6 +802,15 @@ rvegen_cli_msg_test(direction_in_scalar_slot direction_in_scalar_slot.json
     "refers to direction distribution 'd'")
 rvegen_cli_msg_test(deterministic_ignored_keys deterministic_ignored_keys.json
     "\"shapes\" is ignored.*\"termination\" is ignored")
+# 3D Voronoi backends (#123): the in-house seed limit is refused at once
+# with both ways out, the override is not combined with the grain-size fit,
+# and a run says which backend tessellated.
+rvegen_cli_msg_test(voronoi_3d_in_house_limit voronoi_3d_in_house_limit.json
+  "1000 seeds exceed the limit of 300 .bounded. for the in-house backend.*RVEGEN_WITH_VORO_PP|1000 seeds exceed the limit of 300 .bounded. for the in-house backend.*this build has it")
+rvegen_cli_msg_test(voronoi_3d_allow_slow_grain_size voronoi_3d_allow_slow_grain_size.json
+  "'allow_slow_backend' is not available with 'grain_diameter_mean'")
+rvegen_cli_msg_test(voronoi_3d_backend_note voronoi_3d_backend_note.json
+  "voronoi_3d: tessellated with (Voro[+][+]|the in-house backend .this build has no Voro[+][+])")
 rvegen_cli_msg_test(generator_unknown_key generator_unknown_key.json
     "unknown key 'n_seedz' for generator 'voronoi_2d' is ignored")
 

@@ -683,6 +683,28 @@ void test_paths_and_verbose_lines() {
     REQUIRE(msg.find((tmp.path / "missing").string()) != std::string::npos);
     REQUIRE(msg.find("does not exist") != std::string::npos);
   }
+  // A 3D tessellation says which backend made it (#123).
+  {
+    lines l;
+    auto o = options(l);
+    (void)rvegen::run_pipeline(json::parse(R"({
+      "domain_box": [1.0, 1.0, 1.0],
+      "generator": {"type": "voronoi_3d", "n_seeds": 6, "backend": "in_house"},
+      "postprocess": []
+    })"), o);
+    REQUIRE(lines::has(l.info, "rvegen: voronoi_3d: tessellated with the "
+                               "in-house backend"));
+    REQUIRE(!lines::has(l.info, "this build has no Voro++"));   // asked for
+    l.info.clear();
+    (void)rvegen::run_pipeline(json::parse(R"({
+      "domain_box": [1.0, 1.0, 1.0],
+      "generator": {"type": "voronoi_3d", "n_seeds": 6},
+      "postprocess": []
+    })"), o);
+    REQUIRE(lines::has(l.info, rvegen::voro_pp_available()
+                                   ? "rvegen: voronoi_3d: tessellated with Voro++"
+                                   : "this build has no Voro++"));
+  }
   // Parameters left to their default are listed per block, sorted.
   {
     lines l;
@@ -693,7 +715,8 @@ void test_paths_and_verbose_lines() {
     })"), o);
     REQUIRE(lines::has(l.debug, "rvegen: seed 42 (default)"));
     REQUIRE(lines::has(l.debug, "rvegen: generator ('voronoi_3d'): default "
-                                "used for 'backend', 'phase_name'"));
+                                "used for 'allow_slow_backend', 'backend', "
+                                "'phase_name'"));
     REQUIRE(!lines::has(l.debug, "'periodic'"));   // given, not defaulted
     o.seed = 9;
     l.debug.clear();
