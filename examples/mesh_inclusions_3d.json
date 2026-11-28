@@ -1,5 +1,5 @@
 {
-  "_comment": "Arbitrary inclusion geometry from a triangle mesh: copies of an octahedron read from data/octahedron.stl, placed without overlap and voxelised to 64^3. The mesh_path is relative to the working directory, so run it from the examples/ directory: cd examples && rvegen mesh_inclusions_3d.json.",
+  "_comment": "Arbitrary inclusion geometry from a triangle mesh: copies of an octahedron read from data/octahedron.stl, placed without overlap and voxelised to 64^3. The mesh_path is relative to this config file, so the example runs from any directory.",
 
   "domain_box": [1.0, 1.0, 1.0],
   "seed": 6,

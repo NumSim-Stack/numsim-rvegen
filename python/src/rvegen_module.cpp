@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <fstream>
 #include <limits>
@@ -95,8 +96,15 @@ py::object json_to_py(nlohmann::json const& j) {
 }
 
 // A config is a dict (JSON-style) or a path (str / os.PathLike) to a JSON file.
-nlohmann::json load_config(py::object const& cfg) {
-  if (py::isinstance<py::dict>(cfg)) return py_to_json(cfg);
+// A config and, when it was read from a file, that file's directory (empty
+// for a dict): relative input paths in the config are resolved against it.
+struct loaded_config {
+  nlohmann::json json;
+  std::filesystem::path dir;
+};
+
+loaded_config load_config(py::object const& cfg) {
+  if (py::isinstance<py::dict>(cfg)) return {py_to_json(cfg), {}};
   if (py::isinstance<py::str>(cfg) || py::hasattr(cfg, "__fspath__")) {
     auto const path =
         py::module_::import("os").attr("fspath")(cfg).cast<std::string>();
@@ -106,7 +114,9 @@ nlohmann::json load_config(py::object const& cfg) {
     try {
       nlohmann::json j;
       in >> j;
-      return j;
+      auto dir = std::filesystem::path{path}.parent_path();
+      if (dir.empty()) dir = ".";
+      return {std::move(j), std::move(dir)};
     } catch (std::exception const& e) {
       throw std::runtime_error{"rvegen.run: parse error in " + path + ": " +
                                e.what()};
@@ -166,6 +176,67 @@ auto interruptible(F&& f) {
     watch.rethrow_if_interrupted();
     throw;
   }
+}
+
+// The `log` callable of rvegen.run() / rvegen.check(): gets each line as it
+// is produced. The pipeline may run with the GIL released, so every call
+// takes it. An exception raised by the callable is parked here (it must
+// not travel through the C++ pipeline, which would read it without the
+// GIL), failed() makes the run stop at its next cancel poll, and the
+// binding rethrows it with rethrow_if_failed().
+class log_sink {
+public:
+  explicit log_sink(py::object callable) : _log{std::move(callable)} {
+    if (!_log.is_none() && PyCallable_Check(_log.ptr()) == 0)
+      throw py::type_error{"log must be a callable taking one str, or None"};
+  }
+
+  // Routes the pipeline's lines to the callable (no-op for log=None).
+  void attach(rvegen::pipeline_options& opts, bool verbose) {
+    if (_log.is_none()) return;
+    auto emit = [this](std::string const& line) {
+      if (_error) return;
+      py::gil_scoped_acquire acquire;
+      try {
+        _log(line);
+      } catch (py::error_already_set& e) {
+        _error.emplace(std::move(e));
+      }
+    };
+    opts.info = emit;
+    if (verbose) opts.debug = emit;
+  }
+  [[nodiscard]] bool failed() const noexcept { return _error.has_value(); }
+  // Call with the GIL held.
+  void rethrow_if_failed() {
+    if (_error) {
+      auto e = std::move(*_error);
+      _error.reset();
+      throw e;
+    }
+  }
+
+private:
+  py::object _log;
+  std::optional<py::error_already_set> _error;
+};
+
+// input_dir / output_dir of run() and check(): None, a str or a path-like.
+// A config read from a file resolves its input paths against that file's
+// directory unless input_dir says otherwise.
+void set_directories(rvegen::pipeline_options& opts, loaded_config const& cfg,
+                     py::object const& input_dir, py::object const& output_dir) {
+  auto to_path = [](py::object const& o) {
+    return std::filesystem::path{
+        py::module_::import("os").attr("fspath")(o).cast<std::string>()};
+  };
+  if (input_dir.is_none()) {
+    opts.input_dir = cfg.dir;
+    opts.input_cwd_fallback = !cfg.dir.empty();   // configs written before #129
+  } else {
+    opts.input_dir = to_path(input_dir);
+  }
+  if (!output_dir.is_none()) opts.output_dir = to_path(output_dir);
 }
 
 // Result of rvegen.run(): a sequence of shapes plus a summary dict.
@@ -717,52 +788,77 @@ PYBIND11_MODULE(_core, m) {
 
   m.def("check",
       [](py::object const& config, std::optional<std::uint64_t> seed,
-         bool strict) {
+         bool strict, py::object const& input_dir,
+         py::object const& output_dir, py::object log, bool verbose) {
         auto const cfg = load_config(config);
         rvegen::pipeline_options opts;
         opts.seed = seed;
         opts.strict_keys = strict;
+        set_directories(opts, cfg, input_dir, output_dir);
+        log_sink sink{std::move(log)};
+        sink.attach(opts, verbose);
         std::vector<std::string> warnings_out;
         opts.warn = [&warnings_out](std::string const& w) {
           warnings_out.push_back(w);
         };
-        rvegen::check_config(cfg, opts);
+        try {
+          rvegen::check_config(cfg.json, opts);
+        } catch (...) {
+          sink.rethrow_if_failed();   // the log callable's exception first
+          throw;
+        }
+        sink.rethrow_if_failed();
         for (auto const& w : warnings_out) {
           if (PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1) < 0)
             throw py::error_already_set();
         }
       },
       py::arg("config"), py::arg("seed") = py::none(),
-      py::arg("strict") = true,
+      py::arg("strict") = true, py::kw_only(),
+      py::arg("input_dir") = py::none(), py::arg("output_dir") = py::none(),
+      py::arg("log") = py::none(), py::arg("verbose") = false,
       "Validate a config without generating anything: every block is built, "
       "phases are parsed and the output directories of the writers are "
       "checked, exactly as run() does before it places the first shape. No "
       "file is written. Raises on the first problem, returns None when the "
       "config is valid. strict=False turns an unknown top-level key from an "
-      "error into a UserWarning.");
+      "error into a UserWarning. input_dir, output_dir, log and verbose are "
+      "those of run().");
 
   m.def("run",
       [](py::object const& config, std::optional<std::uint64_t> seed,
-         bool postprocess, bool strict) {
+         bool postprocess, bool strict, py::object const& input_dir,
+         py::object const& output_dir, py::object log, bool verbose) {
         auto const cfg = load_config(config);
         rvegen::pipeline_options opts;
         opts.seed = seed;
         opts.run_postprocess = postprocess;
         opts.strict_keys = strict;
+        set_directories(opts, cfg, input_dir, output_dir);
+        log_sink sink{std::move(log)};
+        sink.attach(opts, verbose);
         std::vector<std::string> warnings_out;   // surfaced as UserWarning below
         opts.warn = [&warnings_out](std::string const& w) {
           warnings_out.push_back(w);
         };
         interrupt_watch watch;
-        opts.progress.cancel = watch.hook();
+        // A log callable that raised stops the run like Ctrl-C does.
+        opts.progress.cancel = [poll = watch.hook(), &sink]() {
+          return sink.failed() || poll();
+        };
         rvegen::pipeline_result res;
         try {
           py::gil_scoped_release release;   // pure C++ until the result is built
-          res = rvegen::run_pipeline(cfg, opts);
+          res = rvegen::run_pipeline(cfg.json, opts);
         } catch (rvegen::pipeline_cancelled const&) {
+          sink.rethrow_if_failed();         // the log callable's exception
           watch.rethrow_if_interrupted();   // KeyboardInterrupt from Ctrl-C
           throw;
+        } catch (...) {
+          sink.rethrow_if_failed();         // not lost behind a later error
+          throw;
         }
+        sink.rethrow_if_failed();
         for (auto const& w : warnings_out) {
           // -W error turns the warning into an exception: propagate it.
           if (PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1) < 0)
@@ -786,13 +882,25 @@ PYBIND11_MODULE(_core, m) {
         return out;
       },
       py::arg("config"), py::arg("seed") = py::none(),
-      py::arg("postprocess") = true, py::arg("strict") = true,
+      py::arg("postprocess") = true, py::arg("strict") = true, py::kw_only(),
+      py::arg("input_dir") = py::none(), py::arg("output_dir") = py::none(),
+      py::arg("log") = py::none(), py::arg("verbose") = false,
       "Run a full rvegen pipeline. `config` is a dict (same schema as the "
       "CLI JSON) or a path to a JSON file; `seed` overrides the config "
       "seed. Writers under \"postprocess\" run unless postprocess=False. "
       "The whole config is validated before the first shape is placed; an "
       "unknown top-level key is an error unless strict=False (then a "
-      "UserWarning). Returns a RunResult (sequence of shapes + summary).");
+      "UserWarning). Returns a RunResult (sequence of shapes + summary).\n\n"
+      "Paths: a relative input path in the config (mesh_path) is resolved "
+      "against input_dir; by default that is the directory of the config "
+      "file, or the working directory for a dict. A relative output_path "
+      "is resolved against output_dir (default: the working directory).\n\n"
+      "Output: run() prints nothing. log, a callable taking one str "
+      "(log=print, a logger's .info), receives each progress line as it is "
+      "produced; verbose=True adds the detail lines (defaults used per "
+      "block, resolved paths, the seed). An exception raised by log stops "
+      "the run (no further writer is started) and propagates. Warnings are "
+      "always raised as UserWarning.");
 
   // ---- Voxelisation ---------------------------------------------------------
   m.def("voxelize",

@@ -95,6 +95,7 @@ public:
             lookup_distribution(d, handler, "position_z_dist"),
             read_limits(handler)) {
     apply_transform_options(handler, d);
+    this->read_metadata(handler);
   }
 
   // ---- optional orientation / scale (C++ API) ---------------------------
@@ -120,7 +121,7 @@ public:
     // present (enforced at ctor time, not by the schema layer, since
     // a "one of N" group constraint isn't expressible there).
     s.template insert<std::string>("mesh_path")
-        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias). A relative path is resolved against the process working directory, not against the JSON file">>();
+        .template add<numsim_core::description_label<"path to an STL (.stl, ASCII or binary) or PLY (.ply, ASCII or binary) file describing the mesh inclusion; format dispatched by extension (canonical; supersedes the legacy stl_path alias). A relative path is resolved against the directory of the config file (pipeline_options::input_dir; the working directory when the input is built outside the pipeline)">>();
     s.template insert<std::string>("stl_path")
         .template add<numsim_core::description_label<"deprecated alias for mesh_path; kept for back-compat with configs written before PLY support landed. Use mesh_path in new configs.">>();
     s.template insert<std::size_t>("max_triangles")
@@ -148,6 +149,10 @@ public:
         .template add<numsim_core::description_label<"for orientation 'euler_zyz': name of a distribution sampled for the second z rotation angle (radians)">>();
     s.template insert<std::string>("scale_dist")
         .template add<numsim_core::description_label<"optional: name of a distribution sampled for the uniform scale factor (> 0) of each placed mesh; default 1">>();
+    s.template insert<std::string>("phase_name")
+        .template add<numsim_core::description_label<"optional phase name stamped onto every produced shape (default: empty / unassigned)">>();
+    s.template insert<std::string>("metadata")
+        .template add<numsim_core::description_label<"optional key/value pairs merged into every produced shape's info blob: a JSON object, or the same object as a JSON-encoded string">>();
     return s;
   }
 
@@ -170,6 +175,7 @@ public:
       mesh->set_rotation_euler_zyz(a, b, g);
     }
     if (_scale_dist) mesh->set_scale((*_scale_dist)());
+    this->tag(*mesh);
     return mesh;
   }
 

@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as futures
-import copy
 import json
 import os
 import re
@@ -163,27 +162,6 @@ def find_svg_converter() -> tuple[str | None, list[str] | None]:
 # ---------------------------------------------------------------------------
 # Running a config
 # ---------------------------------------------------------------------------
-def prepare_config(cfg: dict, cfg_dir: Path) -> dict:
-    """Copy of `cfg` with outputs redirected and input paths absolutised."""
-
-    def walk(node):
-        if isinstance(node, dict):
-            out = {}
-            for k, v in node.items():
-                if isinstance(v, str) and k == "output_path":
-                    out[k] = Path(v).name
-                elif isinstance(v, str) and k.endswith("_path") and not Path(v).is_absolute():
-                    out[k] = str((cfg_dir / v).resolve())
-                else:
-                    out[k] = walk(v)
-            return out
-        if isinstance(node, list):
-            return [walk(v) for v in node]
-        return node
-
-    return walk(copy.deepcopy(cfg))
-
-
 @dataclass
 class Result:
     config: Path
@@ -256,11 +234,11 @@ def process(cfg_path: Path, slug: str, out_dir: Path, work_root: Path, tools: To
     work = work_root / stem
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
-    run_cfg = prepare_config(cfg, cfg_path.parent)
-    (work / cfg_path.name).write_text(json.dumps(run_cfg, indent=2))
-
+    # The config is run where it is: rvegen finds its inputs next to it and
+    # writes the (relative) outputs into the work directory.
     try:
-        proc = subprocess.run([str(tools.rvegen), cfg_path.name], cwd=work,
+        proc = subprocess.run([str(tools.rvegen), str(cfg_path.resolve()),
+                               "--output-dir", str(work)],
                               capture_output=True, text=True, timeout=tools.timeout)
     except subprocess.TimeoutExpired:
         res.message = f"rvegen timed out after {tools.timeout}s"
@@ -273,7 +251,7 @@ def process(cfg_path: Path, slug: str, out_dir: Path, work_root: Path, tools: To
 
     is_3d = len(cfg.get("domain_box", [])) >= 3 and float(cfg["domain_box"][2]) > 0
     used: set[str] = set()
-    for pp in run_cfg.get("postprocess", []):
+    for pp in cfg.get("postprocess", []):
         output = pp.get("output_path")
         if not output:
             continue
@@ -756,9 +734,8 @@ def write_index(results: list[Result], out_dir: Path, gmsh_version: str | None =
         "Every picture below is rendered from a config in `examples/`. Regenerate with",
         "`scripts/make_gallery.py` or `cmake --build build --target gallery`.",
         "",
-        "The gallery script resolves each config's relative input paths (`mesh_path`) against",
-        "the config's directory. Run by hand, `examples/mesh_inclusions_3d.json` needs the",
-        "working directory `examples/` (`cd examples && rvegen mesh_inclusions_3d.json`).",
+        "Each config runs from any directory: rvegen resolves relative input paths",
+        "(`mesh_path`) against the config's directory.",
         "",
     ]
     if gmsh_version:

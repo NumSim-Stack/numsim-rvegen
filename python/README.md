@@ -117,6 +117,17 @@ inclusions = [s for s in res if s.is_primary]
 # Validate without generating: raises on the first problem, writes nothing.
 rvegen.check(config)
 
+# A config file: relative input paths in it (mesh_path) are resolved against
+# the file's directory, relative output paths against output_dir (default:
+# the working directory). For a dict, input_dir says where inputs are.
+res = rvegen.run("examples/mesh_inclusions_3d.json", output_dir="results")
+
+# run() prints nothing. Pass a callable to see the progress lines as they
+# are produced; verbose=True adds the defaults used per block, the resolved
+# paths and the seed. Warnings are always raised as UserWarning.
+res = rvegen.run(config, log=print, verbose=True)
+res = rvegen.run(config, log=logging.getLogger("rvegen").info)
+
 # Writers under "postprocess" run too (set postprocess=False to skip them).
 # Deterministic generators (voronoi_2d/3d, weave, tow_weave) need no
 # "shapes" / "termination" sections.

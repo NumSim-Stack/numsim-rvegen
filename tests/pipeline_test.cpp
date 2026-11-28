@@ -443,6 +443,26 @@ void test_cancel_stops_pipeline() {
   catch (rvegen::pipeline_cancelled const&) { cancelled = true; }
   REQUIRE(cancelled);
   REQUIRE(!std::filesystem::exists("pipeline_cancel.svg"));
+
+  // A cancel request that arrives after generation (a log callback that
+  // failed on the "generated" line) stops before the next writer.
+  cfg["postprocess"].push_back(
+      {{"type", "svg"}, {"canvas_width", 200},
+       {"output_path", "pipeline_cancel_2.svg"}});
+  std::filesystem::remove("pipeline_cancel_2.svg");
+  bool stop = false;
+  rvegen::pipeline_options late;
+  late.progress.cancel = [&stop] { return stop; };
+  late.info = [&stop](std::string const& line) {
+    if (line.find("post-process 'svg' done") != std::string::npos) stop = true;
+  };
+  cancelled = false;
+  try { (void)rvegen::run_pipeline(cfg, late); }
+  catch (rvegen::pipeline_cancelled const&) { cancelled = true; }
+  REQUIRE(cancelled);
+  REQUIRE(std::filesystem::exists("pipeline_cancel.svg"));      // finished
+  REQUIRE(!std::filesystem::exists("pipeline_cancel_2.svg"));   // not started
+  std::filesystem::remove("pipeline_cancel.svg");
 }
 
 // Voronoi generators follow the pipeline seed; an explicit generator seed
@@ -488,6 +508,268 @@ void test_no_stdout_noise() {
 #endif
 }
 
+// A private directory under the system temp dir, removed when it goes out
+// of scope.
+struct temp_dir {
+  std::filesystem::path path;
+  explicit temp_dir(std::string const& stem)
+      : path{std::filesystem::temp_directory_path() /
+             (stem + "_" + std::to_string(
+#ifndef _WIN32
+                               static_cast<long long>(::getpid())
+#else
+                               0LL
+#endif
+                               ))} {
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+  }
+  ~temp_dir() {
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+  }
+};
+
+// A closed tetrahedron of edge ~0.1 as ASCII STL.
+void write_tetrahedron(std::filesystem::path const& file) {
+  const double v[4][3] = {{0, 0, 0}, {0.1, 0, 0}, {0, 0.1, 0}, {0, 0, 0.1}};
+  const int faces[4][3] = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}};
+  std::ofstream out{file};
+  out << "solid tet\n";
+  for (auto const& f : faces) {
+    out << "  facet normal 0 0 0\n    outer loop\n";
+    for (int k : f)
+      out << "      vertex " << v[k][0] << ' ' << v[k][1] << ' ' << v[k][2]
+          << "\n";
+    out << "    endloop\n  endfacet\n";
+  }
+  out << "endsolid tet\n";
+}
+
+// #129: relative input paths go by input_dir, relative output paths by
+// output_dir, and the verbose sink says what was resolved and defaulted.
+void test_paths_and_verbose_lines() {
+  namespace fs = std::filesystem;
+  temp_dir tmp{"rvegen_pipeline_paths"};
+  const fs::path cfg_dir = tmp.path / "cfg", out_dir = tmp.path / "out";
+  fs::create_directories(cfg_dir / "data");
+  fs::create_directories(out_dir);
+  write_tetrahedron(cfg_dir / "data" / "tet.stl");
+
+  const json cfg = json::parse(R"({
+    "domain_box": [1.0, 1.0, 1.0], "seed": 3,
+    "distributions": {"x": {"type": "uniform_real", "a": 0.2, "b": 0.8}},
+    "shapes": [{"type": "mesh_inclusion_input", "mesh_path": "data/tet.stl",
+                "position_x_dist": "x", "position_y_dist": "x",
+                "position_z_dist": "x",
+                "metadata": {"source_path": "rel/kept.stl"}}],
+    "generator": {"type": "only_inside", "max_attempts": 100000},
+    "termination": {"type": "number_of_inclusions", "target": 3},
+    "postprocess": [{"type": "voxel", "nx": 8, "ny": 8, "nz": 8,
+                     "output_path": "paths_test_out.vox"}]
+  })");
+  struct lines {
+    std::vector<std::string> info, warn, debug;
+    [[nodiscard]] static bool has(std::vector<std::string> const& v,
+                                  std::string const& part) {
+      for (auto const& l : v)
+        if (l.find(part) != std::string::npos) return true;
+      return false;
+    }
+  };
+  auto options = [](lines& l) {
+    rvegen::pipeline_options o;
+    o.info = [&l](std::string const& s) { l.info.push_back(s); };
+    o.warn = [&l](std::string const& s) { l.warn.push_back(s); };
+    o.debug = [&l](std::string const& s) { l.debug.push_back(s); };
+    return o;
+  };
+  auto error_of = [](auto&& f) -> std::string {
+    try {
+      f();
+    } catch (std::exception const& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const fs::path in_cwd = "paths_test_out.vox";
+  fs::remove(in_cwd);
+
+  // No directories given: paths are relative to the working directory, as
+  // they always were, so the mesh is not found.
+  {
+    lines l;
+    auto o = options(l);
+    const auto msg = error_of([&] { (void)rvegen::run_pipeline(cfg, o); });
+    REQUIRE(msg.find("data/tet.stl") != std::string::npos);
+    REQUIRE(!fs::exists(in_cwd));
+  }
+  // input_dir + output_dir.
+  {
+    lines l;
+    auto o = options(l);
+    o.input_dir = cfg_dir;
+    o.output_dir = out_dir;
+    const auto r = rvegen::run_pipeline(cfg, o);
+    REQUIRE(r.shapes.size() == 3);
+    REQUIRE(fs::exists(out_dir / "paths_test_out.vox"));
+    REQUIRE(!fs::exists(in_cwd));
+    REQUIRE(l.warn.empty());
+    REQUIRE(lines::has(l.debug, "shapes[0] ('mesh_inclusion_input'): mesh_path "
+                                "'data/tet.stl' -> '" +
+                                    (cfg_dir / "data/tet.stl").string() + "'"));
+    REQUIRE(lines::has(l.debug, "postprocess[0] ('voxel'): output_path "
+                                "'paths_test_out.vox' -> '" +
+                                    (out_dir / "paths_test_out.vox").string() +
+                                    "'"));
+    REQUIRE(lines::has(l.debug, "rvegen: seed 3 (from the config)"));
+    // Only parameters of a block are paths: a "*_path" key inside the
+    // metadata object is user data.
+    REQUIRE(r.shapes[0]->info().json().value("source_path", std::string{}) ==
+            "rel/kept.stl");
+    fs::remove(out_dir / "paths_test_out.vox");
+  }
+  // The same run, silent: nothing reaches the default sinks, and the lines
+  // do not change the result.
+  {
+    rvegen::pipeline_options o;
+    o.input_dir = cfg_dir;
+    o.output_dir = out_dir;
+    const auto r = rvegen::run_pipeline(cfg, o);
+    REQUIRE(r.shapes.size() == 3);
+    REQUIRE(fs::exists(out_dir / "paths_test_out.vox"));
+    fs::remove(out_dir / "paths_test_out.vox");
+  }
+  // An absolute path is never changed.
+  {
+    lines l;
+    auto o = options(l);
+    o.input_dir = out_dir;   // the mesh is not here
+    o.output_dir = out_dir;
+    json abs = cfg;
+    abs["shapes"][0]["mesh_path"] = (cfg_dir / "data/tet.stl").string();
+    abs["postprocess"][0]["output_path"] = (tmp.path / "abs.vox").string();
+    REQUIRE(rvegen::run_pipeline(abs, o).shapes.size() == 3);
+    REQUIRE(fs::exists(tmp.path / "abs.vox"));
+    REQUIRE(!lines::has(l.debug, "->"));
+  }
+  // check_config resolves the same way and writes nothing.
+  {
+    lines l;
+    auto o = options(l);
+    o.input_dir = cfg_dir;
+    o.output_dir = out_dir;
+    rvegen::check_config(cfg, o);
+    REQUIRE(!fs::exists(out_dir / "paths_test_out.vox"));
+    o.output_dir = tmp.path / "missing";
+    const auto msg = error_of([&] { rvegen::check_config(cfg, o); });
+    REQUIRE(msg.find("postprocess[0] ('voxel')") != std::string::npos);
+    REQUIRE(msg.find((tmp.path / "missing").string()) != std::string::npos);
+    REQUIRE(msg.find("does not exist") != std::string::npos);
+  }
+  // Parameters left to their default are listed per block, sorted.
+  {
+    lines l;
+    auto o = options(l);
+    rvegen::check_config(json::parse(R"({
+      "domain_box": [1.0, 1.0, 1.0],
+      "generator": {"type": "voronoi_3d", "n_seeds": 4, "periodic": true}
+    })"), o);
+    REQUIRE(lines::has(l.debug, "rvegen: seed 42 (default)"));
+    REQUIRE(lines::has(l.debug, "rvegen: generator ('voronoi_3d'): default "
+                                "used for 'backend', 'phase_name'"));
+    REQUIRE(!lines::has(l.debug, "'periodic'"));   // given, not defaulted
+    o.seed = 9;
+    l.debug.clear();
+    rvegen::check_config(json::parse(R"({
+      "domain_box": [1.0, 1.0, 1.0], "seed": 4,
+      "generator": {"type": "voronoi_3d", "n_seeds": 4}
+    })"), o);
+    REQUIRE(lines::has(l.debug, "rvegen: seed 9 (given by the caller)"));
+  }
+  // generate() without writers, then run_post_processes(): the output path
+  // is resolved there too.
+  {
+    lines l;
+    auto o = options(l);
+    o.input_dir = cfg_dir;
+    o.output_dir = out_dir;
+    o.run_postprocess = false;
+    auto r = rvegen::generate(cfg, o);
+    REQUIRE(!fs::exists(out_dir / "paths_test_out.vox"));
+    rvegen::run_post_processes(cfg, r, o);
+    REQUIRE(fs::exists(out_dir / "paths_test_out.vox"));
+    REQUIRE(!fs::exists(in_cwd));
+    fs::remove(out_dir / "paths_test_out.vox");
+  }
+  // A file that is only found relative to the working directory (how every
+  // path was read before) is used on request, with a warning. The file is
+  // made inside the working directory: a path with ".." steps could also
+  // resolve from input_dir.
+  {
+    const fs::path cwd_data = "paths_test_cwd_data";
+    struct remove_dir {
+      fs::path d;
+      ~remove_dir() {
+        std::error_code ec;
+        fs::remove_all(d, ec);
+      }
+    } cleanup{cwd_data};
+    fs::remove_all(cwd_data);
+    fs::create_directories(cwd_data);
+    write_tetrahedron(cwd_data / "tet.stl");
+    lines l;
+    auto o = options(l);
+    o.input_dir = cfg_dir;   // has data/tet.stl, not paths_test_cwd_data/
+    o.output_dir = out_dir;
+    json old_style = cfg;
+    old_style["shapes"][0]["mesh_path"] = "paths_test_cwd_data/tet.stl";
+    // Only on request: a caller that names the input directory gets an
+    // error for a missing file, never a look-alike from somewhere else.
+    const auto msg = error_of([&] { (void)rvegen::run_pipeline(old_style, o); });
+    REQUIRE(msg.find((cfg_dir / "paths_test_cwd_data" / "tet.stl").string()) !=
+            std::string::npos);
+    REQUIRE(l.warn.empty());
+    o.input_cwd_fallback = true;
+    REQUIRE(rvegen::run_pipeline(old_style, o).shapes.size() == 3);
+    REQUIRE(l.warn.size() == 1);
+    REQUIRE(lines::has(l.warn, "exists relative to the working directory"));
+    REQUIRE(lines::has(l.warn, "shapes[0] ('mesh_inclusion_input'): mesh_path"));
+    // With the fallback on, a file that IS in input_dir still wins.
+    l.warn.clear();
+    REQUIRE(rvegen::run_pipeline(cfg, o).shapes.size() == 3);
+    REQUIRE(l.warn.empty());
+  }
+}
+
+// #129: "metadata" as a JSON object and as a JSON-encoded string give the
+// same shapes; any other type is an error naming the key.
+void test_metadata_forms() {
+  auto with_metadata = [](json const& metadata) {
+    auto cfg = circles_config();
+    cfg["shapes"][0]["metadata"] = metadata;
+    return cfg;
+  };
+  const json object = {{"batch", "A7"}, {"angle_deg", 42.5}};
+  const auto a = rvegen::generate(with_metadata(object));
+  const auto b = rvegen::generate(with_metadata(object.dump()));
+  REQUIRE(a.shapes.size() == 6 && b.shapes.size() == 6);
+  for (std::size_t i = 0; i < a.shapes.size() && i < b.shapes.size(); ++i) {
+    REQUIRE(a.shapes[i]->info().json() == b.shapes[i]->info().json());
+    REQUIRE(a.shapes[i]->info().json().value("batch", std::string{}) == "A7");
+    REQUIRE(a.shapes[i]->get_middle_point() == b.shapes[i]->get_middle_point());
+  }
+  for (auto const& bad : {json{1, 2}, json(5), json(true)}) {
+    std::string msg;
+    try {
+      (void)rvegen::generate(with_metadata(bad));
+    } catch (std::exception const& e) {
+      msg = e.what();
+    }
+    REQUIRE(msg.find("'metadata'") != std::string::npos);
+  }
+}
+
 void test_schema_to_json() {
   rvegen::register_all_types();
   auto j = rvegen::schema_to_json(
@@ -512,6 +794,8 @@ int main() {
   test_cancel_stops_pipeline();
   test_voronoi_follows_pipeline_seed();
   test_no_stdout_noise();
+  test_paths_and_verbose_lines();
+  test_metadata_forms();
   test_schema_to_json();
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "pipeline_test OK\n";

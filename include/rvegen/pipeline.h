@@ -81,6 +81,29 @@ struct pipeline_options {
   // `warn` the stderr warnings. Both default to no-ops.
   std::function<void(std::string const&)> info = [](std::string const&) {};
   std::function<void(std::string const&)> warn = [](std::string const&) {};
+  // Detail lines for a verbose run: where the seed came from, which
+  // parameters of a block took their default, how a relative path was
+  // resolved. Default: no-op.
+  std::function<void(std::string const&)> debug = [](std::string const&) {};
+  // File paths in the config. A string parameter of a block whose key ends
+  // in "_path" names a file: "output_path" of a post-process is written,
+  // any other one ("mesh_path") is read.
+  //   * A relative INPUT path is resolved against `input_dir`. The CLI and
+  //     rvegen.run(<file>) pass the directory of the config file, so a
+  //     config and the files it refers to can be moved together and run
+  //     from anywhere.
+  //   * A relative OUTPUT path is resolved against `output_dir`.
+  // An empty directory (the default) means the working directory. Absolute
+  // paths are never changed.
+  std::filesystem::path input_dir;
+  std::filesystem::path output_dir;
+  // Transition aid for callers that used to read every path relative to
+  // the working directory (the CLI, rvegen.run(<file>)): a relative input
+  // that does not exist in `input_dir` but does exist relative to the
+  // working directory is used from there, with a warning. Off by default,
+  // and off whenever the caller named the input directory explicitly: a
+  // stale file in the working directory must not replace a missing input.
+  bool input_cwd_fallback = false;
   // An unknown top-level config key is an error: "post_process" instead of
   // "postprocess" would otherwise run the whole generation and write
   // nothing. false downgrades it to a warning. Keys starting with '_'
@@ -153,18 +176,121 @@ inline void require_section_kind(nlohmann::json const& config, char const* key,
                               v.type_name()};
 }
 
-// "postprocess[2] ('svg'): " - names one writer block in a message. Never
-// throws: the entry may be anything (a number, an object whose "type" is
-// not a string).
+// "<where> ('<type>'): " - names one block in a message. Never throws: the
+// entry may be anything (a number, an object whose "type" is not a string).
 [[nodiscard]] inline std::string
-post_process_label(nlohmann::json const& spec, std::size_t index) {
+block_label(std::string const& where, nlohmann::json const& spec) {
   std::string type = "?";
   if (spec.is_object()) {
     if (auto const it = spec.find("type");
         it != spec.end() && it->is_string())
       type = it->get<std::string>();
   }
-  return "postprocess[" + std::to_string(index) + "] ('" + type + "'): ";
+  return where + " ('" + type + "'): ";
+}
+
+// "postprocess[2] ('svg'): "
+[[nodiscard]] inline std::string
+post_process_label(nlohmann::json const& spec, std::size_t index) {
+  return block_label("postprocess[" + std::to_string(index) + "]", spec);
+}
+
+// "rvegen: <label>default used for 'a', 'b'" (the verbose line of a block).
+[[nodiscard]] inline std::string
+defaults_line(std::string const& label, std::vector<std::string> const& keys) {
+  std::string line = "rvegen: " + label + "default used for ";
+  char const* sep = "";
+  for (auto const& k : keys) {
+    line += sep;
+    line += "'" + k + "'";
+    sep = ", ";
+  }
+  return line;
+}
+
+// Resolves the "*_path" parameters of one block in place (see
+// pipeline_options::input_dir / output_dir). `log` = false: no lines.
+inline void resolve_block_paths(nlohmann::json& block, std::string const& label,
+                                bool is_post_process,
+                                pipeline_options const& opts, bool log) {
+  if (!block.is_object()) return;
+  for (auto& [key, value] : block.items()) {
+    if (!value.is_string() || !key.ends_with("_path")) continue;
+    const bool output = is_post_process && key == "output_path";
+    auto const& dir = output ? opts.output_dir : opts.input_dir;
+    if (dir.empty()) continue;
+    const auto text = value.template get<std::string>();
+    if (text.empty()) continue;   // the block's own check rejects it
+    const std::filesystem::path given{text};
+    if (given.is_absolute()) continue;
+    const auto resolved = dir / given;
+    if (!output && opts.input_cwd_fallback) {
+      // Before input_dir existed every path was relative to the working
+      // directory. Keep such a setup running, but say so.
+      std::error_code ec;
+      if (!std::filesystem::exists(resolved, ec) &&
+          std::filesystem::exists(given, ec)) {
+        if (log)
+          opts.warn("rvegen: warning - " + label + key + " '" + text +
+                    "' was not found in '" + dir.string() +
+                    "' (relative input paths are resolved against the "
+                    "directory of the config file) but exists relative to "
+                    "the working directory; using that file");
+        continue;
+      }
+    }
+    value = resolved.string();
+    if (log)
+      opts.debug("rvegen: " + label + key + " '" + text + "' -> '" +
+                 resolved.string() + "'");
+  }
+}
+
+// The config with its relative file paths resolved. Sections of the wrong
+// kind are left alone (they are rejected right after).
+[[nodiscard]] inline nlohmann::json
+resolve_paths(nlohmann::json const& config, pipeline_options const& opts,
+              bool log) {
+  nlohmann::json out = config;
+  if (!out.is_object()) return out;
+  for (char const* section : {"distributions", "direction_distributions"}) {
+    if (auto const it = out.find(section); it != out.end() && it->is_object())
+      for (auto& [name, spec] : it->items())
+        resolve_block_paths(spec,
+                            block_label(std::string{section} + "." + name, spec),
+                            false, opts, log);
+  }
+  for (char const* section : {"shapes", "postprocess"}) {
+    auto const it = out.find(section);
+    if (it == out.end() || !it->is_array()) continue;
+    const bool pp = std::string_view{section} == "postprocess";
+    std::size_t i = 0;
+    for (auto& spec : *it) {
+      resolve_block_paths(
+          spec,
+          block_label(std::string{section} + "[" + std::to_string(i) + "]", spec),
+          pp, opts, log);
+      ++i;
+    }
+  }
+  for (char const* section : {"generator", "termination"}) {
+    if (auto const it = out.find(section); it != out.end())
+      resolve_block_paths(*it, block_label(section, *it), false, opts, log);
+  }
+  return out;
+}
+
+// Builds one block and sends its "default used for ..." line to opts.debug.
+template <typename Registry, typename... Args>
+auto build_block(Registry& registry, nlohmann::json const& spec,
+                 std::string const& label, pipeline_options const& opts,
+                 Args&... extra_ctor_args) {
+  return build_from_json_reported(
+      registry, spec, [](std::string const&, std::string const&) {},
+      [&](std::string const&, std::vector<std::string> const& keys) {
+        opts.debug(defaults_line(label, keys));
+      },
+      extra_ctor_args...);
 }
 
 // Each writer's "output_path" must be writable before any shape is placed:
@@ -251,8 +377,11 @@ void with_context(std::string const& where, F&& f) {
 } // namespace detail
 
 // Builds the config's "postprocess" writers into `result` (no output yet).
+// The paths in `config` are used as they are; `opts` only receives the
+// verbose lines.
 inline void build_post_processes(nlohmann::json const& config,
-                                 pipeline_result& result) {
+                                 pipeline_result& result,
+                                 pipeline_options const& opts = {}) {
   result.pending_post_processes.clear();
   result.post_processes_built = true;
   if (!config.contains("postprocess")) return;
@@ -268,8 +397,8 @@ inline void build_post_processes(nlohmann::json const& config,
           where + "needs a \"type\" string naming the post-process"};
     }
     detail::with_context(where, [&] {
-      result.pending_post_processes.push_back(
-          build_from_json(post_process_registry_t<>::instance(), spec));
+      result.pending_post_processes.push_back(detail::build_block(
+          post_process_registry_t<>::instance(), spec, where, opts));
     });
     ++index;
   }
@@ -280,16 +409,22 @@ namespace detail {
 // Steps 1-7b. With `check_only` it returns after the validation part,
 // before compute(): nothing is generated.
 [[nodiscard]] inline pipeline_result
-generate_impl(nlohmann::json const& config, pipeline_options const& opts,
+generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
               bool check_only) {
   register_all_types();
   pipeline_result out;
 
-  if (!config.is_object()) {
+  if (!given_config.is_object()) {
     throw std::invalid_argument{
         std::string{"the config must be a JSON object, got "} +
-        config.type_name()};
+        given_config.type_name()};
   }
+  // Relative file paths -> input_dir / output_dir. Only then is the config
+  // copied; everything below reads `config`.
+  std::optional<nlohmann::json> resolved;
+  if (!opts.input_dir.empty() || !opts.output_dir.empty())
+    resolved.emplace(resolve_paths(given_config, opts, true));
+  nlohmann::json const& config = resolved ? *resolved : given_config;
   // Unknown top-level keys first: a misspelt section name is the mistake
   // that silently drops a whole part of the run.
   for (auto const& [key, value] : config.items()) {
@@ -351,12 +486,15 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
   // schema keys (rejects negative, fractional and non-numeric values by
   // key). The engine is the 32-bit std::mt19937; a wider seed would be
   // truncated silently, so reject it instead.
+  char const* seed_source = "default";
   if (opts.seed) {
     out.seed = *opts.seed;
+    seed_source = "given by the caller";
   } else if (config.contains("seed")) {
     parameter_visitor_nlohmann seed_reader{config};
     out.seed = std::any_cast<std::uint64_t>(
         seed_reader.read("seed", typeid(std::uint64_t)));
+    seed_source = "from the config";
   }
   if (!std::in_range<std::uint32_t>(out.seed)) {
     throw std::invalid_argument(
@@ -364,13 +502,16 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
         std::to_string(out.seed));
   }
   std::mt19937 engine{static_cast<std::uint32_t>(out.seed)};
+  opts.debug("rvegen: seed " + std::to_string(out.seed) + " (" + seed_source +
+             ")");
 
   // Distributions.
   distribution_map_t<double> dists;
   if (config.contains("distributions")) {
     for (auto const& [name, spec] : config.at("distributions").items()) {
-      auto dist = build_from_json(distribution_registry_t<>::instance(), spec,
-                                  engine);
+      auto dist = build_block(distribution_registry_t<>::instance(), spec,
+                              block_label("distributions." + name, spec), opts,
+                              engine);
       dists.emplace(name, std::shared_ptr<distribution_base<double>>{
                               std::move(dist)});
     }
@@ -387,8 +528,9 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
                                  "' (direction_distributions share the "
                                  "distributions name space)"};
       }
-      auto dir = build_from_json(
-          direction_distribution_registry_t<>::instance(), spec, engine);
+      auto dir = build_block(
+          direction_distribution_registry_t<>::instance(), spec,
+          block_label("direction_distributions." + name, spec), opts, engine);
       dists.emplace(
           name, std::make_shared<direction_distribution_holder<double>>(
                     std::shared_ptr<direction_distribution_base<double>>{
@@ -399,6 +541,7 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
   // Inputs. "shapes" is optional: deterministic generators (weave,
   // tow_weave, voronoi_*) build their shapes from the generator params.
   rve_generator_base<double>::input_vector inputs;
+  std::size_t shape_index = 0;
   for (auto const& spec : config.value("shapes", nlohmann::json::array())) {
     // A direction distribution in a scalar slot would otherwise only fail
     // at the first new_shape(); catch it here and name the key.
@@ -419,8 +562,11 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
         }
       }
     }
-    inputs.push_back(
-        build_from_json(input_registry_t<>::instance(), spec, dists));
+    inputs.push_back(build_block(
+        input_registry_t<>::instance(), spec,
+        block_label("shapes[" + std::to_string(shape_index) + "]", spec), opts,
+        dists));
+    ++shape_index;
   }
 
   // Build every post-process up front: the writers are schema-validated
@@ -428,7 +574,7 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
   // generation instead of after it. (set_phases happens at run time: `out`
   // may still be moved.)
   if (opts.run_postprocess || check_only) {
-    build_post_processes(config, out);
+    build_post_processes(config, out, opts);
     check_output_paths(config);
   }
 
@@ -468,11 +614,15 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
   // Generator + termination. Deterministic generators ignore the
   // termination predicate (#73), so the section is optional for them; a
   // placeholder keeps the compute() signature uniform.
-  auto generator = build_from_json_checked(
+  auto generator = build_from_json_reported(
       generator_registry_t<>::instance(), config.at("generator"),
       [&](std::string const& type, std::string const& key) {
         opts.warn("rvegen: warning - unknown key '" + key +
                   "' for generator '" + type + "' is ignored");
+      },
+      [&](std::string const&, std::vector<std::string> const& keys) {
+        opts.debug(defaults_line(
+            block_label("generator", config.at("generator")), keys));
       });
   auto* const det_gen =
       dynamic_cast<deterministic_generator<double>*>(generator.get());
@@ -496,8 +646,10 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
           config.at("generator").value("type", std::string{"?"}) +
           "' needs one)"};
     }
-    termination = build_from_json(termination_registry_t<>::instance(),
-                                  config.at("termination"), out.domain_box);
+    termination = build_block(
+        termination_registry_t<>::instance(), config.at("termination"),
+        block_label("termination", config.at("termination")), opts,
+        out.domain_box);
   }
   if (check_only) return out;
 
@@ -553,11 +705,22 @@ inline void run_post_processes(nlohmann::json const& config,
               "nothing was written.");
     return;
   }
-  if (!result.post_processes_built) build_post_processes(config, result);
+  // Built by generate() as a rule. Otherwise the paths have not been
+  // resolved yet either (no lines: generate() has reported them).
+  if (!result.post_processes_built) {
+    if (opts.input_dir.empty() && opts.output_dir.empty())
+      build_post_processes(config, result, opts);
+    else
+      build_post_processes(detail::resolve_paths(config, opts, false), result,
+                           opts);
+  }
   auto writers = std::move(result.pending_post_processes);
   result.pending_post_processes.clear();
   std::size_t n = 0;
   for (auto const& spec : config.at("postprocess")) {
+    // A cancel request (Ctrl-C, a log callback that raised) also stops
+    // between writers: no further file is started.
+    if (opts.progress.cancel()) throw pipeline_cancelled{};
     auto& pp = writers.at(n++);
     if (result.phases) pp->set_phases(&*result.phases);
     pp->run(result.shapes, result.domain_box);

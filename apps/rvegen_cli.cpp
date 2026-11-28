@@ -1,8 +1,13 @@
 // rvegen — JSON-driven RVE (Representative Volume Element) generator.
 //
 // Usage:
-//   rvegen <config.json> [--progress]
+//   rvegen [options] <config.json>
+//   rvegen --check <config.json>
 //   rvegen --list-types
+//
+// Relative input paths in the config (mesh_path, ...) are resolved against
+// the directory of the config file, relative output paths against the
+// working directory or --output-dir.
 //
 // The config file specifies (by registered name) which distributions, shape
 // inputs, generator strategy, termination predicate, and one or more
@@ -18,6 +23,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -25,6 +31,8 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <typeinfo>
 #include <utility>
 
@@ -45,7 +53,21 @@ void print_usage(char const* argv0) {
       << "       " << argv0 << " --list-types\n\n"
       << "  config.json   JSON file describing the RVE generation pipeline.\n"
       << "                Each entry under \"postprocess\" carries its own\n"
-      << "                output_path.\n\n"
+      << "                output_path. Relative input paths in it (mesh_path)\n"
+      << "                are resolved against the directory of this file (as\n"
+      << "                given; a symbolic link is not followed).\n\n"
+      << "  --output-dir DIR\n"
+      << "                Resolve relative output_path entries against DIR\n"
+      << "                (an existing directory) instead of the working\n"
+      << "                directory.\n\n"
+      << "  --input-dir DIR\n"
+      << "                Resolve relative input paths against DIR instead of\n"
+      << "                the directory of the config file.\n\n"
+      << "  --quiet       Print nothing on success. Warnings and errors still\n"
+      << "                go to stderr, and so do the lines of --progress.\n\n"
+      << "  --verbose     Also print, per config block, which parameters took\n"
+      << "                their default, how relative paths were resolved and\n"
+      << "                where the seed came from.\n\n"
       << "  --check       Validate the config and exit without generating:\n"
       << "                every block is built, phases are parsed and the\n"
       << "                output directories are checked, exactly as a run\n"
@@ -99,8 +121,42 @@ int run(int argc, char** argv) {
   bool show_progress = false;
   bool check_only = false;
   bool allow_unknown_keys = false;
+  bool quiet = false;
+  bool verbose = false;
+  std::optional<std::string> output_dir;
+  std::optional<std::string> input_dir;
   char const* config_path = nullptr;
   bool options_ended = false;   // after "--" everything is a file name
+  // "--name DIR" or "--name=DIR"; an empty or missing DIR is a usage error.
+  auto directory_option = [&](std::string const& arg, int& i,
+                              std::string_view name,
+                              std::optional<std::string>& value) -> int {
+    std::string dir;
+    if (arg.size() > name.size()) {
+      dir = arg.substr(name.size() + 1);   // after "--name="
+    } else if (i + 1 < argc && !std::string_view{argv[i + 1]}.starts_with("--")) {
+      // The next argument, unless it is an option: "--output-dir --quiet"
+      // is a forgotten directory. (A directory whose name starts with
+      // "--" can be given as "--name=DIR".)
+      dir = argv[++i];
+    }
+    if (dir.empty()) {
+      std::cerr << "rvegen: option '" << name << "' needs a directory\n\n";
+      print_usage(argv[0]);
+      return exit_usage;
+    }
+    if (value) {
+      std::cerr << "rvegen: option '" << name << "' given twice\n\n";
+      print_usage(argv[0]);
+      return exit_usage;
+    }
+    value = std::move(dir);
+    return EXIT_SUCCESS;
+  };
+  auto is_option = [](std::string const& arg, std::string_view name) {
+    return arg == name || (arg.starts_with(name) && arg.size() > name.size() &&
+                           arg[name.size()] == '=');
+  };
   for (int i = 1; i < argc; ++i) {
     const std::string arg{argv[i]};
     if (!options_ended && arg == "--") {
@@ -124,6 +180,14 @@ int run(int argc, char** argv) {
       check_only = true;
     } else if (arg == "--allow-unknown-keys") {
       allow_unknown_keys = true;
+    } else if (arg == "--quiet") {
+      quiet = true;
+    } else if (arg == "--verbose") {
+      verbose = true;
+    } else if (is_option(arg, "--output-dir")) {
+      if (int rc = directory_option(arg, i, "--output-dir", output_dir)) return rc;
+    } else if (is_option(arg, "--input-dir")) {
+      if (int rc = directory_option(arg, i, "--input-dir", input_dir)) return rc;
     } else if (arg.starts_with("--")) {
       std::cerr << "rvegen: unknown option '" << arg << "'\n\n";
       print_usage(argv[0]);
@@ -138,6 +202,11 @@ int run(int argc, char** argv) {
     }
   }
   if (config_path == nullptr) {
+    print_usage(argv[0]);
+    return exit_usage;
+  }
+  if (quiet && verbose) {
+    std::cerr << "rvegen: --quiet and --verbose exclude each other\n\n";
     print_usage(argv[0]);
     return exit_usage;
   }
@@ -162,14 +231,41 @@ int run(int argc, char** argv) {
   // assignment and post-processing all live in the library so the Python
   // bindings run exactly the same code.
   rvegen::pipeline_options opts;
-  opts.info = [](std::string const& line) { std::cout << line << '\n'; };
+  if (!quiet)
+    opts.info = [](std::string const& line) { std::cout << line << '\n'; };
   opts.warn = [](std::string const& line) { std::cerr << line << '\n'; };
+  if (verbose)
+    opts.debug = [](std::string const& line) { std::cout << line << '\n'; };
 
   opts.strict_keys = !allow_unknown_keys;
 
+  // Input files are looked up next to the config, so a config and its
+  // data can be run from any directory. ("." for a bare file name: an
+  // empty input_dir would mean "do not resolve".)
+  if (input_dir) {
+    opts.input_dir = *input_dir;
+  } else {
+    // The directory of the path as given: a symbolic link to a config is
+    // not followed, its data is looked up next to the link.
+    opts.input_dir = std::filesystem::path{config_path}.parent_path();
+    if (opts.input_dir.empty()) opts.input_dir = ".";
+    opts.input_cwd_fallback = true;   // configs written before #129
+  }
+  if (output_dir) opts.output_dir = *output_dir;
+  for (auto const* dir : {&input_dir, &output_dir}) {
+    if (!*dir) continue;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(**dir, ec)) {
+      std::cerr << "rvegen: '" << **dir << "' ("
+                << (dir == &input_dir ? "--input-dir" : "--output-dir")
+                << ") is not an existing directory\n";
+      return exit_input;
+    }
+  }
+
   if (check_only) {
     rvegen::check_config(config, opts);
-    std::cout << "rvegen: config OK: " << config_path << '\n';
+    if (!quiet) std::cout << "rvegen: config OK: " << config_path << '\n';
     return EXIT_SUCCESS;
   }
 
