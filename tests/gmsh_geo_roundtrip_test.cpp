@@ -1003,8 +1003,10 @@ void test_tessellation_near_degenerate_never_crashes() {
   int rejected = 0;
   // Lattices jittered by jit, and (negative jit = -d) a lattice with one
   // seed duplicated at distance d. A robust generator may itself reject
-  // coincident seeds (std::runtime_error "seeds i and j are coincident"):
-  // that counts as a rejection, the same as the writer's own.
+  // the input: coincident seeds (std::runtime_error "seeds i and j are
+  // coincident"), or a near-lattice set whose cells do not fill the box
+  // ("cell volumes sum to ..."). Both count as a rejection, the same as
+  // the writer's own.
   for (double jit : {1e-6, 1e-7, 1e-8, 1e-9, 1e-11, -1e-12, -1e-10}) {
     for (unsigned seed : {1u, 2u, 3u}) {
       shape_vector shapes;
@@ -1024,7 +1026,9 @@ void test_tessellation_near_degenerate_never_crashes() {
       } catch (std::runtime_error const& e) {
         threw = true;
         ++rejected;
-        REQUIRE(std::string{e.what()}.find("seeds") != std::string::npos);
+        const std::string what{e.what()};
+        REQUIRE(what.find("seeds") != std::string::npos ||
+                what.find("cell volumes sum to") != std::string::npos);
       }
       if (!threw) {
         const cleanup_on_success cleanup{"gmsh_rt_degenerate"};
