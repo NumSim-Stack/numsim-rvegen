@@ -57,7 +57,7 @@ public:
     _info = info;
   }
 
-  void validate(std::array<value_type, 3> const& /*domain_box*/) const override {
+  void validate(domain<value_type> const& /*domain_box*/) const override {
     if (_output_path.empty())
       throw std::runtime_error{"run_summary: output_path is empty"};
   }
@@ -65,10 +65,10 @@ public:
   // The summary as JSON (what run() writes).
   [[nodiscard]] nlohmann::json
   summary(shape_vector const& shapes,
-          std::array<value_type, 3> const& domain_box) const {
+          domain<value_type> const& domain_box) const {
     nlohmann::json j = nlohmann::json::object();
     j["rvegen_version"] = version;
-    j["domain_box"] = domain_box;
+    j["domain_box"] = domain_box.extents();
     j["n_shapes"] = shapes.size();
     std::size_t inclusions = 0;
     for (auto const& s : shapes)
@@ -81,7 +81,7 @@ public:
   }
 
   void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+           domain<value_type> const& domain_box) const override {
     validate(domain_box);
     std::ofstream out{_output_path};
     if (!out)

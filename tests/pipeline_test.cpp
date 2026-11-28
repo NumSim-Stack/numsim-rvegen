@@ -350,6 +350,10 @@ void test_check_config() {
   auto late = [&](json writer, std::array<double, 3> box, char const* needle) {
     auto c = circles_config();
     c["domain_box"] = box;
+    if (rvegen::domain<double>{box}.is_3d())   // a 3D box takes 3D shapes
+      c["shapes"] = json::array({json{{"type", "sphere_input"},
+                                      {"pos_x_dist", "x"}, {"pos_y_dist", "x"},
+                                      {"pos_z_dist", "x"}, {"radius_dist", "r"}}});
     c["postprocess"] = json::array(
         {json{{"type", "svg"}, {"canvas_width", 100},
               {"output_path", (dir / "first.svg").string()}},

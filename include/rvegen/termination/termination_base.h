@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "../domain.h"
 #include "../shapes/shape_base.h"
 
 namespace rvegen {

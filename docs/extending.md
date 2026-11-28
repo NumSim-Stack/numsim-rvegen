@@ -21,22 +21,42 @@ pipeline has to change for a new type.
 | `input_registry_t` (`register_inputs.h`)       | `shape_input_base<T>` | `(parameter_handler_t const&, distribution_map_t<T> const&)` |
 | `generator_registry_t` (`register_generators.h`) | `rve_generator_base<T>` | `(parameter_handler_t const&)`           |
 | `post_process_registry_t` (`register_post_processes.h`) | `post_process_base<T>` | `(parameter_handler_t const&)`    |
-| `termination_registry_t` (`register_terminations.h`) | `termination_base<T>` | `(parameter_handler_t const&, std::array<T,3> const& domain_box)` |
+| `termination_registry_t` (`register_terminations.h`) | `termination_base<T>` | `(parameter_handler_t const&, domain<T> const& domain_box)` |
 
 Distributions live in `register_distributions.h` and follow the same pattern.
+
+## The domain
+
+The RVE box is a `domain<T>` (`domain.h`): extents plus an explicit
+dimension. Ask it, never the z extent:
+
+- `box.is_2d()`, `box.is_3d()`, `box.dimension()`;
+- `box.measure()`: area in 2D, volume in 3D;
+- `box[axis]` / `box.extents()`: the extents, `Lz == 0` in 2D.
+
+Its constructor is the only place that validates the extents (finite,
+`Lx, Ly > 0`, `Lz >= 0`) and decides the dimension, so code that receives a
+`domain<T>` need not check either. It converts from and to
+`std::array<T, 3>`, so a caller may still pass `{Lx, Ly, Lz}`. For a shape,
+`shape.measure()` is its area or volume according to `shape.dimension()`.
+`tests/no_dimension_inference_check.py` (ctest `no_dimension_inference`)
+fails on a new `box[2] > 0` test.
 
 ## Adding a shape
 
 1. **Shape class** under `include/rvegen/shapes/`. Derive from
    `numsim_core::static_indexing<my_shape<T>, shape_base<T>>` (see `circle.h`)
    and implement the pure virtuals of `shape_base<T>` (`shapes/shape_base.h`):
-   `get_middle_point`, `set_middle_point`, `area`, `volume`, `max_expansion`,
+   `get_middle_point`, `set_middle_point`, `area`, `volume`, `dimension`
+   (2 for a planar shape, 3 for a solid), `max_expansion`,
    `make_bounding_box`, `is_inside`, `clone` and `shape_id`.
 2. **Input class** under `include/rvegen/inputs/`, derived from
    `shape_input_base<T>`: a schema-driven constructor
    `(parameter_handler_t const&, distribution_map_t<T> const&)` that looks the
    named distributions up in the map, calls `this->read_metadata(handler)`, a
-   static `parameters()`, and `new_shape()` which builds the shape and calls
+   static `parameters()`, `dimension()` (that of its shapes; the pipeline
+   rejects an input whose dimension differs from the domain's), and
+   `new_shape()` which builds the shape and calls
    `this->tag(*shape)` (see `inputs/circle_input.h`).
 3. **Register the input** in `registry/register_inputs.h`: add a function like
    `register_circle_input()`

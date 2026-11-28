@@ -247,6 +247,7 @@ void test_tube_rendered_via_dispatcher() {
 struct dummy_shape final : rvegen::shape_base<double> {
   double area() const override { return 0; }
   double volume() const override { return 0; }
+  int dimension() const noexcept override { return 2; }
   std::array<double, 3> max_expansion() const override { return {0, 0, 0}; }
   std::array<double, 3> get_middle_point() const override { return {0, 0, 0}; }
   void set_middle_point(std::array<double, 3>) override {}
@@ -292,7 +293,13 @@ void test_unrenderable_shape_warns_once() {
 void test_degenerate_domain_and_thin_zoom() {
   shapes_t shapes;
   std::ostringstream os;
-  rvegen::three_js_writer<double>{}.write(os, shapes, {0, 0, 0});
+  // A zero box cannot be built any more (the domain type rejects it); the
+  // smallest thing a writer can meet is a tiny one.
+  bool rejected = false;
+  try { rvegen::three_js_writer<double>{}.write(os, shapes, {0, 0, 0}); }
+  catch (std::invalid_argument const&) { rejected = true; }
+  REQUIRE(rejected && os.str().empty());
+  rvegen::three_js_writer<double>{}.write(os, shapes, {1e-12, 1e-12, 0});
   const auto z = os.str();
   REQUIRE(z.find("nan") == std::string::npos && z.find("inf") == std::string::npos);
   REQUIRE(js_number(z, "distance") > 0 && js_number(z, "near") > 0);

@@ -32,8 +32,10 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
+#include "../domain.h"
 #include "../intersection/aabb_overlap.h"
 #include "shape_base.h"
 
@@ -71,7 +73,7 @@ inclusion_id(shape_base<T> const& shape) {
 template <typename T>
 [[nodiscard]] inline bool
 is_counted_in_rve(shape_base<T> const& shape,
-                  std::array<T, 3> const& domain_box) noexcept {
+                  std::type_identity_t<domain<T>> const& domain_box) noexcept {
   if (!shape.is_primary()) return false;
   if (shape.inclusion_id().has_value()) return true;
   return is_centre_in_domain(shape.get_middle_point(), domain_box);
@@ -80,7 +82,7 @@ is_counted_in_rve(shape_base<T> const& shape,
 template <typename T>
 [[nodiscard]] std::vector<std::unique_ptr<shape_base<T>>>
 generate_periodic_wraps(shape_base<T>& primary,
-                         std::array<T, 3> const& domain_box) {
+                         std::type_identity_t<domain<T>> const& domain_box) {
   std::vector<std::unique_ptr<shape_base<T>>> wraps;
   auto const* bb = primary.bounding_box();
   // A shape without a computed bounding box (e.g. generator-built Voronoi
@@ -100,8 +102,7 @@ generate_periodic_wraps(shape_base<T>& primary,
   // Both can apply when the bb sticks out of both faces.
   std::array<std::array<int, 3>, 3> shift_opts{};
   std::array<std::size_t, 3> n_opts{1, 1, 1};
-  bool const is_3d = domain_box[2] > T{0};
-  for (int axis = 0; axis < (is_3d ? 3 : 2); ++axis) {
+  for (int axis = 0; axis < domain_box.dimension(); ++axis) {
     if (bb->bottom_point()[axis] < T{0}) {
       shift_opts[axis][n_opts[axis]++] = +1;
     }

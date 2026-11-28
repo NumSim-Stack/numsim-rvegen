@@ -288,6 +288,11 @@ PYBIND11_MODULE(_core, m) {
       })
       .def("area", &rvegen::shape_base<double>::area)
       .def("volume", &rvegen::shape_base<double>::volume)
+      .def_property_readonly("dimension",
+          &rvegen::shape_base<double>::dimension,
+          "2 for a planar shape, 3 for a solid.")
+      .def("measure", &rvegen::shape_base<double>::measure,
+           "area() of a 2D shape, volume() of a 3D shape.")
       .def("is_inside",
            [](rvegen::shape_base<double> const& s, double x, double y, double z) {
              return s.is_inside({x, y, z});
@@ -778,7 +783,7 @@ PYBIND11_MODULE(_core, m) {
   // ---- Pipeline ----------------------------------------------------------
   py::class_<run_result>(m, "RunResult",
       "Shapes produced by rvegen.run(): a sequence of Shape objects plus a "
-      "`summary` dict (seed, n_shapes, domain_box, volume_fraction, phases, "
+      "`summary` dict (seed, n_shapes, domain_box, dimension, volume_fraction, phases, "
       "postprocess, report).")
       .def_readonly("shapes", &run_result::shapes)
       .def_readonly("summary", &run_result::summary)
@@ -877,7 +882,8 @@ PYBIND11_MODULE(_core, m) {
         py::dict sm;
         sm["seed"] = res.seed;
         sm["n_shapes"] = res.shapes.size();
-        sm["domain_box"] = res.domain_box;
+        sm["domain_box"] = res.domain_box.extents();
+        sm["dimension"] = res.domain_box.dimension();
         sm["volume_fraction"] =
             rvegen::current_volume_fraction<double>(res.shapes, res.domain_box);
         std::vector<std::string> phase_names;
@@ -922,16 +928,16 @@ PYBIND11_MODULE(_core, m) {
   // ---- Voxelisation ---------------------------------------------------------
   m.def("voxelize",
       [](std::vector<rvegen::shape_base<double> const*> const& shapes,
-         std::array<double, 3> domain, std::size_t nx, std::size_t ny,
+         std::array<double, 3> extents, std::size_t nx, std::size_t ny,
          std::size_t nz) {
         if (nx == 0 || ny == 0 || nz == 0)
           throw py::value_error("rvegen.voxelize: nx, ny and nz must be >= 1");
-        for (double d : domain)
-          if (!std::isfinite(d))
-            throw py::value_error("rvegen.voxelize: domain must be finite");
-        if (!(domain[0] > 0.0) || !(domain[1] > 0.0) || domain[2] < 0.0)
-          throw py::value_error(
-              "rvegen.voxelize: domain needs x > 0, y > 0 and z >= 0");
+        rvegen::domain<double> domain;
+        try {
+          domain = rvegen::domain<double>{extents};
+        } catch (std::invalid_argument const& e) {
+          throw py::value_error(std::string{"rvegen.voxelize: "} + e.what());
+        }
         constexpr auto lim = std::numeric_limits<std::size_t>::max() / 4;
         if (nx > lim / ny || nx * ny > lim / nz)
           throw py::value_error("rvegen.voxelize: grid size overflows");

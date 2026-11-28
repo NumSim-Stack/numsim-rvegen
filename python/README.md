@@ -96,7 +96,7 @@ import rvegen
 
 # Same JSON schema as the CLI; pass a dict or a path to a JSON file.
 config = {
-    "domain_box": [1.0, 1.0, 0.0],
+    "domain_box": [1.0, 1.0],          # 2D; [Lx, Ly, Lz] is 3D
     "distributions": {"x": {"type": "uniform_real", "a": 0.1, "b": 0.9},
                       "r": {"type": "uniform_real", "a": 0.03, "b": 0.05}},
     "shapes": [{"type": "circle_input", "pos_x_dist": "x",
@@ -105,7 +105,7 @@ config = {
     "termination": {"type": "number_of_inclusions", "target": 50},
 }
 res = rvegen.run(config, seed=2026)   # RunResult: sequence of shapes + summary
-print(len(res), res.summary)          # seed, n_shapes, domain_box, volume_fraction, ...
+print(len(res), res.summary)          # seed, n_shapes, domain_box, dimension, volume_fraction, ...
 for s in res:
     print(s.kind, s.center, s.area())
 

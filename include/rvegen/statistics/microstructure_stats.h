@@ -18,7 +18,7 @@
 // The *_2d variants are planar: on a 3D domain, two_point_correlation_2d
 // gives the S2 of the mid-plane cross-section and radial_distribution_2d
 // uses xy-projected distances. Use the *_3d variants (or
-// statistics_post_process, which dispatches on domain_box[2] > 0) for 3D.
+// statistics_post_process, which dispatches on the domain dimension) for 3D.
 
 #include <algorithm>
 #include <array>
@@ -28,8 +28,10 @@
 #include <memory>
 #include <numbers>
 #include <random>
+#include <type_traits>
 #include <vector>
 
+#include "../domain.h"
 #include "../distributions/portable_random.h"
 #include "../postprocess/voxel_grid.h"
 #include "../generators/rve_generator_base.h"
@@ -49,7 +51,7 @@ namespace rvegen {
 template <typename T>
 [[nodiscard]] double volume_fraction_in_domain(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
-    std::array<T, 3> const& domain_box) noexcept {
+    std::type_identity_t<domain<T>> const& domain_box) noexcept {
   return current_volume_fraction<T>(accepted, domain_box);
 }
 
@@ -74,7 +76,7 @@ template <typename T>
 [[nodiscard]] std::vector<s2_sample>
 two_point_correlation_2d(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
-    std::array<T, 3> const& domain_box,
+    std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nx, std::size_t ny,
     std::size_t nbins = 32,
     std::size_t samples_per_bin = 4'000,
@@ -132,7 +134,7 @@ template <typename T>
 [[nodiscard]] std::vector<s2_sample>
 two_point_correlation_3d(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
-    std::array<T, 3> const& domain_box,
+    std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz,
     std::size_t nbins = 32,
     std::size_t samples_per_bin = 4'000,
@@ -201,7 +203,7 @@ template <typename T>
 [[nodiscard]] std::vector<rdf_sample>
 radial_distribution_2d(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
-    std::array<T, 3> const& domain_box,
+    std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nbins = 32) {
   // Collect one centre per inclusion (no periodic copies).
   std::vector<std::array<double, 2>> centres;
@@ -273,15 +275,13 @@ template <typename T>
 [[nodiscard]] std::vector<rdf_sample>
 radial_distribution_3d(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
-    std::array<T, 3> const& domain_box,
+    std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nbins = 32) {
   std::vector<std::array<double, 3>> centres;
   centres.reserve(accepted.size());
   for (auto const& shape : accepted) {
     if (!shape) continue;
-    if (!(domain_box[0] > T{0}) || !(domain_box[1] > T{0}) ||
-        !(domain_box[2] > T{0}))
-      break;   // not a 3D box: no centres
+    if (!domain_box.is_3d()) break;   // not a 3D box: no centres
     if (!is_counted_in_rve(*shape, domain_box)) continue;
     const auto c = shape->get_middle_point();
     centres.push_back({double(wrap_to_box(c[0], domain_box[0])),

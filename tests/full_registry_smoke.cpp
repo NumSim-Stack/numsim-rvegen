@@ -173,7 +173,7 @@ void test_unknown_type_in_each_registry_throws() {
   std::mt19937 engine;
   rvegen::distribution_map_t<double> empty_map;
   rvegen::parameter_handler_t empty_handler;
-  std::array<double, 3> empty_box{0.0, 0.0, 0.0};
+  rvegen::domain<double> empty_box{};   // the unit square
 
   bool threw = false;
   try { rvegen::distribution_registry_t<>::instance().create("nope", empty_handler, engine); }

@@ -65,6 +65,7 @@ public:
 
   // shape_base contract.
   [[nodiscard]] T area() const override { return T{0}; }
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
   [[nodiscard]] T volume() const override {
     return T{4} / T{3} * std::numbers::pi_v<T>
          * this->radius * this->radius * this->radius;

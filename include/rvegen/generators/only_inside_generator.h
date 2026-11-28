@@ -52,7 +52,7 @@ public:
   [[nodiscard]] shape_vector
   compute(input_vector& inputs,
           termination_base<T> const& termination,
-          std::array<value_type, 3> const& domain_box,
+          domain<value_type> const& domain_box,
           progress_options const& opts = {}) override {
     this->clear_report();
     shape_vector accepted;

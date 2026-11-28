@@ -12,8 +12,10 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <string>
+#include <type_traits>
 #include <vector>
 
+#include "../domain.h"
 #include "../generators/cancel_poll.h"
 #include "../phase/phase.h"
 #include "../shapes/periodic_wraps.h"
@@ -62,13 +64,13 @@ template <typename T>
 [[nodiscard]] std::vector<phase_id>
 sample_voxel_grid_with_ids(
     std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
-    std::array<T, 3> const& domain_box,
+    std::type_identity_t<domain<T>> const& domain_box,
     std::size_t nx, std::size_t ny, std::size_t nz,
     std::vector<phase_id> const& shape_to_id,
     phase_id fill = 0, cancel_fn const* cancel = nullptr) {
   // Key z on "is the domain 3D", not on nz > 1: a 3D domain sampled with
   // nz = 1 must hit the mid-plane z = Lz/2, not the bottom face z = 0.
-  const bool is_3d = domain_box[2] > T{0};
+  const bool is_3d = domain_box.is_3d();
   const std::size_t nz_eff = is_3d ? nz : 1;
   std::vector<phase_id> grid(checked_voxel_count(nx, ny, nz_eff), fill);
 
@@ -147,14 +149,14 @@ sample_voxel_grid_with_ids(
 // other shapes, the other shapes are numbered after the largest grain
 // value, so the two numberings never collide.
 //
-// 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz_eff = 1)
+// 2D RVEs collapse to a single z-slice (nz_eff = 1)
 // at z = 0. 3D RVEs sample voxel centres along z as well, so nz = 1 gives
 // the mid-plane slice z = Lz/2.
 // Returns the flat array in (k, j, i) order — k is the slowest-varying axis.
 template <typename T>
 [[nodiscard]] std::vector<phase_id>
 sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
-                  std::array<T, 3> const& domain_box,
+                  std::type_identity_t<domain<T>> const& domain_box,
                   std::size_t nx, std::size_t ny, std::size_t nz,
                   cancel_fn const* cancel = nullptr) {
   std::vector<phase_id> shape_to_id(shapes.size());
@@ -205,7 +207,7 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
 template <typename T>
 [[nodiscard]] std::vector<phase_id>
 sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
-                  std::array<T, 3> const& domain_box,
+                  std::type_identity_t<domain<T>> const& domain_box,
                   std::size_t nx, std::size_t ny, std::size_t nz,
                   phase_collection<T> const& phases,
                   bool strict = false, cancel_fn const* cancel = nullptr) {
@@ -242,8 +244,8 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
 // Effective z-dimension of the grid given the domain (collapses to 1 in 2D).
 template <typename T>
 [[nodiscard]] constexpr std::size_t
-effective_nz(std::array<T, 3> const& domain_box, std::size_t nz) noexcept {
-  return (domain_box[2] > T{0}) ? nz : std::size_t{1};
+effective_nz(domain<T> const& domain_box, std::size_t nz) noexcept {
+  return domain_box.is_3d() ? nz : std::size_t{1};
 }
 
 } // namespace rvegen

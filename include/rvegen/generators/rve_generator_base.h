@@ -5,9 +5,11 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "../domain.h"
 #include "../inputs/shape_input_base.h"
 #include "../intersection/aabb_overlap.h"
 #include "../shapes/periodic_wraps.h"
@@ -70,7 +72,7 @@ public:
   [[nodiscard]] virtual shape_vector
   compute(input_vector& inputs,
           termination_base<T> const& termination,
-          std::array<value_type, 3> const& domain_box,
+          domain<value_type> const& domain_box,
           progress_options const& opts = {}) = 0;
 
   // What the last compute() achieved against its termination (#119).
@@ -122,10 +124,9 @@ private:
 template <typename T>
 [[nodiscard]] inline double current_volume_fraction(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
-    std::array<T, 3> const& domain_box,
+    std::type_identity_t<domain<T>> const& domain_box,
     bool count_all = false) noexcept {
-  const bool is_3d = domain_box[2] > T{0};
-  const double dom_extent = is_3d
+  const double dom_extent = domain_box.is_3d()
       ? static_cast<double>(domain_box[0]) *
         static_cast<double>(domain_box[1]) *
         static_cast<double>(domain_box[2])
@@ -137,8 +138,7 @@ template <typename T>
   for (auto const& shape : accepted) {
     if (!shape) continue;
     if (!count_all && !is_counted_in_rve(*shape, domain_box)) continue;
-    const auto v = shape->volume();
-    sum += static_cast<double>((v > T{0}) ? v : shape->area());
+    sum += static_cast<double>(shape->measure());
   }
   return sum / dom_extent;
 }

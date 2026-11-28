@@ -84,6 +84,8 @@ public:
     return s;
   }
 
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
+
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     auto shape = _inner.new_shape();
     this->tag(*shape);

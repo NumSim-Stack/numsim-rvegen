@@ -140,7 +140,7 @@ struct pipeline_result {
   using shape_vector = rve_generator_base<double>::shape_vector;
 
   shape_vector shapes;
-  std::array<double, 3> domain_box{1.0, 1.0, 0.0};
+  domain<double> domain_box{};   // default: the unit square
   std::uint64_t seed{42};
   std::optional<phase_collection<double>> phases;
   std::vector<std::string> post_processes_run;   // "type" of each executed step
@@ -492,34 +492,10 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
     strict_targets = strict_targets || it->template get<bool>();
   }
 
-  if (config.contains("domain_box")) {
-    auto const& db = config.at("domain_box");
-    auto& box = out.domain_box;
-    if (!db.is_array() || (db.size() != 2 && db.size() != 3)) {
-      throw std::invalid_argument(
-          "domain_box must be an array of 2 or 3 numbers, got " + db.dump());
-    }
-    box[2] = 0.0;
-    for (std::size_t i = 0; i < db.size(); ++i) {
-      if (!db[i].is_number()) {
-        throw std::invalid_argument(
-            "domain_box entries must be numbers, got " + db.dump());
-      }
-      box[i] = db[i].get<double>();
-      if (!std::isfinite(box[i])) {
-        throw std::invalid_argument(
-            "domain_box entries must be finite, got " + db.dump());
-      }
-    }
-    if (!(box[0] > 0.0) || !(box[1] > 0.0)) {
-      throw std::invalid_argument(
-          "domain_box x and y extents must be > 0, got " + db.dump());
-    }
-    if (box[2] < 0.0) {
-      throw std::invalid_argument(
-          "domain_box z extent must be >= 0 (0 means 2D), got " + db.dump());
-    }
-  }
+  // The one place where the dimension is decided: [Lx, Ly] is 2D,
+  // [Lx, Ly, Lz] is 3D ([Lx, Ly, 0] is the older spelling of 2D).
+  if (config.contains("domain_box"))
+    out.domain_box = domain<double>::from_json(config.at("domain_box"));
   // A config seed goes through the same strict integer reader as the
   // schema keys (rejects negative, fractional and non-numeric values by
   // key). The engine is the 32-bit std::mt19937; a wider seed would be
@@ -604,6 +580,17 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
         input_registry_t<>::instance(), spec,
         block_label("shapes[" + std::to_string(shape_index) + "]", spec), opts,
         dists));
+    // A planar shape in a 3D box (or a solid in a 2D one) has no meaning:
+    // its area and the box volume do not add up to a fraction.
+    if (int const d = inputs.back()->dimension();
+        d != out.domain_box.dimension()) {
+      throw std::invalid_argument{
+          block_label("shapes[" + std::to_string(shape_index) + "]", spec) +
+          "produces " + std::to_string(d) + "D shapes, but domain_box " +
+          nlohmann::json(out.domain_box.extents()).dump() + " is " +
+          std::to_string(out.domain_box.dimension()) +
+          "D (2D: \"domain_box\": [Lx, Ly]; 3D: [Lx, Ly, Lz])"};
+    }
     ++shape_index;
   }
 

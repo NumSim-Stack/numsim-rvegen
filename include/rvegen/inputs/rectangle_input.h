@@ -64,6 +64,8 @@ public:
   // The width and height distributions are truncated to (0, inf): non-positive draws
   // are resampled. See shape_input_base for the constructor check
   // and the redraw backstop.
+  [[nodiscard]] int dimension() const noexcept override { return 2; }
+
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type x = _pos_x();
     const value_type y = _pos_y();

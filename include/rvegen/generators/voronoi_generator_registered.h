@@ -77,7 +77,7 @@ inline void add_voronoi_fields(parameter_controller_t& s) {
 template <typename T>
 [[nodiscard]] std::vector<T>
 voronoi_seed_coords(parameter_handler_t const& h, std::size_t dim,
-                    std::array<T, 3> const& box,
+                    domain<T> const& box,
                     std::uint64_t pipeline_seed) {
   std::vector<T> flat;
   if (h.contains("seeds")) {
@@ -133,10 +133,10 @@ public:
 
 protected:
   [[nodiscard]] typename deterministic_generator<T>::shape_vector
-  build(std::array<T, 3> const& box) const override {
-    if (box[2] != T{0})
+  build(domain<T> const& box) const override {
+    if (!box.is_2d())
       throw std::runtime_error{
-          "voronoi_2d: needs a 2D domain (domain_box z == 0)"};
+          "voronoi_2d: needs a 2D domain (domain_box [Lx, Ly])"};
     auto const flat = detail::voronoi_seed_coords<T>(_handler, 2, box, _pipeline_seed);
     std::vector<std::array<T, 2>> seeds;
     for (std::size_t i = 0; i + 1 < flat.size(); i += 2)
@@ -192,10 +192,10 @@ public:
 
 protected:
   [[nodiscard]] typename deterministic_generator<T>::shape_vector
-  build(std::array<T, 3> const& box) const override {
-    if (box[2] <= T{0})
+  build(domain<T> const& box) const override {
+    if (!box.is_3d())
       throw std::runtime_error{
-          "voronoi_3d: needs a 3D domain (domain_box z > 0)"};
+          "voronoi_3d: needs a 3D domain (domain_box [Lx, Ly, Lz])"};
     const auto backend = detail::voronoi_backend_from_name(
         _handler.template get<std::string>("backend"));
     const bool periodic = _handler.template get<bool>("periodic");
@@ -225,7 +225,7 @@ protected:
 
 private:
   // Seeds + Laguerre weights for the requested lognormal grain diameters.
-  void grain_size_seeds(std::array<T, 3> const& box, voronoi_backend backend,
+  void grain_size_seeds(domain<T> const& box, voronoi_backend backend,
                         bool periodic, std::vector<std::array<T, 3>>& seeds,
                         std::vector<T>& weights) const {
     const bool has_list =
