@@ -12,8 +12,15 @@
 //   Sutherland-Hodgman half-plane clipping. Each cell starts as
 //   the bounding rectangle and is clipped against the perpendicular
 //   bisector of the seed against every other seed (keeping the
-//   "closer-to-our-seed" side). ~80 lines, no external dependency,
-//   robust to all non-degenerate inputs.
+//   "closer-to-our-seed" side). No external dependency, robust to all
+//   non-degenerate inputs.
+//
+// Cost (#154): the seeds that cannot cut a cell are found with a grid and
+// skipped (see build()), so N seeds cost about N log N whatever the order
+// of the list: 10^5 seeds take a few seconds. The exception is a seed set
+// in which a great many seeds are at the same distance from one point (all
+// seeds on one circle): the cells then meet in that point, every seed may
+// cut every cell, and the cost is the square of N again.
 //
 //   The 3D counterpart lives in voronoi_generator_3d.h.
 //
@@ -50,6 +57,9 @@
 //     non-degenerate).
 //   * Coincident seeds (closer than 1e-9 of the domain size) and seeds
 //     outside the domain are rejected with std::runtime_error.
+//   * The cells do not depend on the platform, and the order of the seed
+//     list only decides which cell is which: the bisectors are applied in
+//     a fixed pseudo-random order (clip_order()), not in list order.
 //   * Edge-on-bisector intersections are handled by the half-plane
 //     test `dist ≤ 0`: a point exactly on the bisector lands on BOTH
 //     sides' boundary and is kept in both cells.
@@ -60,6 +70,8 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <numeric>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -127,22 +139,39 @@ public:
     return _seeds.size();
   }
 
+  // The order in which the seeds clip a cell: a fixed pseudo-random
+  // permutation of the seed list (entry r is the index of the r-th seed to
+  // clip). Not the list order, because a list that is sorted or runs row by
+  // row through a lattice makes every later seed cut a sliver off every
+  // cell, which costs the square of the number of seeds whatever is skipped
+  // (#154). The permutation depends on the number of seeds only and is the
+  // same on every platform (std::shuffle is not).
+  [[nodiscard]] static std::vector<std::size_t> clip_order(std::size_t n) {
+    std::vector<std::size_t> order(n);
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    std::mt19937_64 engine{0x9e3779b97f4a7c15ull};
+    for (std::size_t k = n; k > 1; --k) {
+      std::swap(order[k - 1], order[static_cast<std::size_t>(engine() % k)]);
+    }
+    return order;
+  }
+
   // Build all cells. Cell `i` corresponds to seed `i`. CCW vertex
   // order in each cell. For one seed, the cell is the full bounding
   // rectangle.
   //
   // A cell is its start rectangle clipped by the bisector of every other
-  // seed (and, periodic, of its eight images), in the order of the seed
-  // list. Doing exactly that costs the square of the number of seeds
-  // (#154), although nearly all of those clips cut nothing: after the first
+  // seed (and, periodic, of its eight images), the seeds taken in
+  // clip_order(). Doing exactly that costs the square of the number of
+  // seeds, although nearly all of those clips cut nothing: after the first
   // few seeds the cell is small, and only seeds near it can cut it. So the
   // clips that cannot cut are not computed:
-  //   * the first `direct_seeds` seeds are clipped one by one;
-  //   * the remaining seeds are taken in index ranges that double in size
-  //     ("levels"). Before a level, the region in which a seed could still
-  //     cut the cell is computed (seeds_that_may_cut); the seeds of the
-  //     level in that region come from a grid over the level, are sorted
-  //     back into list order and clipped; the others are skipped.
+  //   * the first `direct_seeds` seeds of the order are clipped one by one;
+  //   * the remaining seeds are taken in ranges of the order that double in
+  //     size ("levels"). Before a level, the region in which a seed could
+  //     still cut the cell is computed (seeds_that_may_cut); the seeds of
+  //     the level in that region come from a grid over the level, are put
+  //     back into clip order and clipped; the others are skipped.
   // A clip that cuts nothing still rotates the vertex list by one and
   // merges vertices closer than the tolerance, so the skipped clips are
   // applied as that (skip_clips). The cells are therefore the ones the full
@@ -157,7 +186,10 @@ public:
     const std::size_t images = _periodic ? 9 : 1;
     const T merge_tol =
         std::numeric_limits<T>::epsilon() * T{16} * std::min(_Lx, _Ly);
-    const auto levels = make_levels();
+    const auto order = clip_order(n);
+    std::vector<std::size_t> rank(n);   // place of a seed in the order
+    for (std::size_t r = 0; r < n; ++r) rank[order[r]] = r;
+    const auto levels = make_levels(order);
     std::vector<std::size_t> candidates;
     polygon_type scratch;
     std::vector<disc> discs;
@@ -173,10 +205,11 @@ public:
                 {p_i[0] - _Lx / 2, p_i[1] + _Ly / 2}};
       }
       const T w_i = _weights.empty() ? T{0} : _weights[i];
-      // Position of a clip in the full sequence: seed index times the
-      // number of images plus the image ((sx + 1) * 3 + (sy + 1), 0 when not
-      // periodic). The seed itself (image 0, 0) is not a clip.
-      const std::size_t self = i * images + (_periodic ? 4 : 0);
+      // Position of a clip in the full sequence: place of the seed in the
+      // order times the number of images plus the image ((sx + 1) * 3 +
+      // (sy + 1), 0 when not periodic). The seed itself (image 0, 0) is not
+      // a clip.
+      const std::size_t self = rank[i] * images + (_periodic ? 4 : 0);
       std::size_t done = 0;   // clips of the full sequence dealt with
       auto clip_at = [&](std::size_t position) {
         if (position == self || cell.size() < 3) return;
@@ -184,7 +217,7 @@ public:
         skip_clips(cell, index - done, merge_tol, scratch);
         done = index;
         if (cell.size() < 3) return;
-        const std::size_t j = position / images;
+        const std::size_t j = order[position / images];
         const int image = static_cast<int>(position % images);
         const int sx = _periodic ? image / 3 - 1 : 0;
         const int sy = _periodic ? image % 3 - 1 : 0;
@@ -238,67 +271,123 @@ private:
   // Seeds clipped one by one before the levels start.
   static constexpr std::size_t direct_seeds = 16;
 
-  // The seeds with index in [first, last), binned on a grid over the box
-  // (cell of a seed: its coordinates divided by the cell size, rounded
-  // down, the last cell also holding seeds on the far edge).
+  // Relative rounding margin of the search for seeds that may cut.
+  static constexpr T search_margin = std::max(
+      static_cast<T>(1e-9), T{256} * std::numeric_limits<T>::epsilon());
+
+  // The seeds at the places [first, last) of the clip order, binned on a
+  // grid over their own bounding box (so seeds bunched in a corner or on a
+  // line still spread over the grid). Grid cell of a seed: its offset from
+  // the corner of that box divided by the cell size, rounded down, the last
+  // cell also holding the seeds on the far edge.
   struct level {
     std::size_t first{0};
     std::size_t last{0};
     std::size_t nx{1};
     std::size_t ny{1};
+    T x0{0};
+    T y0{0};
     T hx{1};
     T hy{1};
     T max_weight{0};
-    std::vector<std::size_t> start;   // per grid cell, into `seeds`
-    std::vector<std::size_t> seeds;   // seed indices, grouped by grid cell
+    std::vector<std::size_t> start;   // per grid cell, into `places`/`at`
+    std::vector<std::size_t> places;  // places in the clip order, by grid cell
+    std::vector<point_type> at;       // the seeds at those places
+    std::vector<T> row_lo;            // per grid row: least y of its seeds
+    std::vector<T> row_hi;            //               largest y (lo > hi: none)
   };
 
-  [[nodiscard]] static std::size_t grid_index(T x, T h, std::size_t n) {
-    const T q = std::floor(x / h);
+  // Monotone in x, which is what makes a range of grid cells computed from
+  // two bounds contain the cell of every seed between the bounds.
+  [[nodiscard]] static std::size_t grid_index(T x, T origin, T h,
+                                              std::size_t n) {
+    const T q = std::floor((x - origin) / h);
     if (!(q > T{0})) return 0;
-    return std::min(static_cast<std::size_t>(q), n - 1);
+    if (q >= static_cast<T>(n)) return n - 1;
+    return static_cast<std::size_t>(q);
   }
 
-  [[nodiscard]] std::vector<level> make_levels() const {
+  [[nodiscard]] std::vector<level> make_levels(
+      std::vector<std::size_t> const& order) const {
     std::vector<level> levels;
     const std::size_t n = _seeds.size();
     for (std::size_t first = direct_seeds; first < n; first *= 2) {
       level lv;
       lv.first = first;
       lv.last = std::min(n, 2 * first);
-      const T count = static_cast<T>(lv.last - lv.first);
-      // About two seeds per grid cell, cells about square.
-      const T cells = std::max(T{1}, count / T{2});
-      lv.nx = static_cast<std::size_t>(std::clamp(
-          std::round(std::sqrt(cells * _Lx / _Ly)), T{1}, T{4096}));
-      lv.ny = static_cast<std::size_t>(std::clamp(
-          std::round(std::sqrt(cells * _Ly / _Lx)), T{1}, T{4096}));
-      lv.hx = _Lx / static_cast<T>(lv.nx);
-      lv.hy = _Ly / static_cast<T>(lv.ny);
-      auto cell_of = [&](std::size_t j) {
-        return grid_index(_seeds[j][1], lv.hy, lv.ny) * lv.nx +
-               grid_index(_seeds[j][0], lv.hx, lv.nx);
+      const std::size_t count = lv.last - lv.first;
+      T x1 = std::numeric_limits<T>::lowest(), y1 = x1;
+      lv.x0 = lv.y0 = std::numeric_limits<T>::max();
+      for (std::size_t r = lv.first; r < lv.last; ++r) {
+        auto const& q = _seeds[order[r]];
+        lv.x0 = std::min(lv.x0, q[0]);
+        x1 = std::max(x1, q[0]);
+        lv.y0 = std::min(lv.y0, q[1]);
+        y1 = std::max(y1, q[1]);
+      }
+      // About two seeds per grid cell, cells about square; one row or
+      // column when the seeds lie on a line.
+      const T wx = x1 - lv.x0;
+      const T wy = y1 - lv.y0;
+      const std::size_t cells = std::max<std::size_t>(1, count / 2);
+      const T cells_t = static_cast<T>(cells);
+      if (wx > T{0} && wy > T{0}) {
+        lv.nx = static_cast<std::size_t>(std::clamp(
+            std::round(std::sqrt(cells_t * (wx / wy))), T{1}, cells_t));
+        lv.ny = std::max<std::size_t>(1, cells / lv.nx);
+      } else if (wx > T{0}) {
+        lv.nx = cells;
+      } else if (wy > T{0}) {
+        lv.ny = cells;
+      }
+      lv.hx = wx > T{0} ? wx / static_cast<T>(lv.nx) : T{1};
+      lv.hy = wy > T{0} ? wy / static_cast<T>(lv.ny) : T{1};
+      auto row_of = [&](point_type const& q) {
+        return grid_index(q[1], lv.y0, lv.hy, lv.ny);
+      };
+      auto cell_of = [&](point_type const& q) {
+        return row_of(q) * lv.nx + grid_index(q[0], lv.x0, lv.hx, lv.nx);
       };
       lv.start.assign(lv.nx * lv.ny + 1, 0);
-      for (std::size_t j = lv.first; j < lv.last; ++j) ++lv.start[cell_of(j) + 1];
+      lv.row_lo.assign(lv.ny, std::numeric_limits<T>::max());
+      lv.row_hi.assign(lv.ny, std::numeric_limits<T>::lowest());
+      for (std::size_t r = lv.first; r < lv.last; ++r) {
+        auto const& q = _seeds[order[r]];
+        ++lv.start[cell_of(q) + 1];
+        const std::size_t row = row_of(q);
+        lv.row_lo[row] = std::min(lv.row_lo[row], q[1]);
+        lv.row_hi[row] = std::max(lv.row_hi[row], q[1]);
+      }
       for (std::size_t c = 0; c + 1 < lv.start.size(); ++c)
         lv.start[c + 1] += lv.start[c];
-      lv.seeds.resize(lv.last - lv.first);
+      lv.places.resize(count);
+      lv.at.resize(count);
       auto next = lv.start;
-      for (std::size_t j = lv.first; j < lv.last; ++j)
-        lv.seeds[next[cell_of(j)]++] = j;
+      for (std::size_t r = lv.first; r < lv.last; ++r) {
+        auto const& q = _seeds[order[r]];
+        const std::size_t slot = next[cell_of(q)]++;
+        lv.places[slot] = r;
+        lv.at[slot] = q;
+      }
       if (!_weights.empty()) {
-        lv.max_weight = *std::max_element(
-            _weights.begin() + static_cast<std::ptrdiff_t>(lv.first),
-            _weights.begin() + static_cast<std::ptrdiff_t>(lv.last));
+        lv.max_weight = std::numeric_limits<T>::lowest();
+        for (std::size_t r = lv.first; r < lv.last; ++r)
+          lv.max_weight = std::max(lv.max_weight, _weights[order[r]]);
       }
       levels.push_back(std::move(lv));
     }
     return levels;
   }
 
-  // Appends the positions (seed index * images + image) of all seeds of
-  // the level, images included, that may cut `cell` or any part of it.
+  // A disc with the square of its radius.
+  struct disc {
+    point_type centre;
+    T radius2;
+  };
+
+  // Appends the positions (place in the clip order * images + image) of all
+  // seeds of the level, images included, that may cut `cell` or any part
+  // of it.
   //
   // A seed q with weight w_q cuts the cell of p with weight w_p exactly when
   // some point x of the cell is nearer to q in the power distance:
@@ -307,80 +396,80 @@ private:
   // point outside the cell: it is enough to look at the vertices of the
   // cell as it is now. For a vertex v that leaves q inside the disc around
   // v with radius^2 |v-p|^2 - w_p + w_q, at most the radius^2 below with
-  // the largest weight of the level. The discs are widened by a rounding
-  // margin; the box around them is looked up in the grid, one row and
-  // column more on each side because a seed and its shifted image need not
-  // round into the same grid cell, and a seed found there is kept when it
-  // lies in one of the discs.
-  struct disc {
-    point_type centre;
-    T radius2;
-  };
-
+  // the largest weight of the level, plus a rounding margin relative to
+  // every term and to the box.
+  //
+  // The grid of the level is walked row by row: a row holds seeds between
+  // two known heights, which leaves each disc a stretch in x, and the cells
+  // from the leftmost to the rightmost stretch are visited. A seed found
+  // there is kept when it lies in one of the discs. For an image the discs
+  // are moved the other way instead of the seeds.
   void seeds_that_may_cut(level const& lv, polygon_type const& cell,
                           point_type const& p, T w_p,
                           std::vector<disc>& discs,
                           std::vector<std::size_t>& out) const {
-    T lo_x = std::numeric_limits<T>::max(), lo_y = lo_x;
-    T hi_x = std::numeric_limits<T>::lowest(), hi_y = hi_x;
     discs.clear();
-    const T slack = T{1e-9} * std::max(_Lx, _Ly);
+    const T box = std::max(_Lx, _Ly);
+    T reach = T{0};   // largest radius
     for (auto const& v : cell) {
       const T dx = v[0] - p[0];
       const T dy = v[1] - p[1];
-      const T r2 = dx * dx + dy * dy - w_p + lv.max_weight;
+      const T d2 = dx * dx + dy * dy;
+      const T r2 = d2 - w_p + lv.max_weight +
+                   search_margin * (d2 + std::abs(w_p) +
+                                    std::abs(lv.max_weight) + box * box);
       if (!(r2 > T{0})) continue;
-      const T r = std::sqrt(r2) * (T{1} + T{1e-9}) + slack;
-      lo_x = std::min(lo_x, v[0] - r);
-      hi_x = std::max(hi_x, v[0] + r);
-      lo_y = std::min(lo_y, v[1] - r);
-      hi_y = std::max(hi_y, v[1] + r);
-      discs.push_back({v, r * r});
+      discs.push_back({v, r2});
+      reach = std::max(reach, std::sqrt(r2));
     }
     if (discs.empty()) return;
-    // Grid rows and columns of the box, in the numbering that continues
-    // across the periods: column c + s * nx is column c of the image
-    // shifted by s periods. Only the images -1, 0, 1 exist.
-    auto range = [this](T lo, T hi, T h, std::size_t n) {
-      const auto count = static_cast<long long>(n);
-      const long long least = _periodic ? -count : 0;
-      const long long most = _periodic ? 2 * count - 1 : count - 1;
-      const T a = std::floor(lo / h) - T{1};
-      const T b = std::floor(hi / h) + T{1};
-      const long long first = a <= static_cast<T>(least)
-                                  ? least
-                                  : static_cast<long long>(std::min(
-                                        a, static_cast<T>(most + 1)));
-      const long long last = b >= static_cast<T>(most)
-                                 ? most
-                                 : static_cast<long long>(std::max(
-                                       b, static_cast<T>(least - 1)));
-      return std::pair<long long, long long>{first, last};
-    };
-    const auto [x0, x1] = range(lo_x, hi_x, lv.hx, lv.nx);
-    const auto [y0, y1] = range(lo_y, hi_y, lv.hy, lv.ny);
-    const auto nx = static_cast<long long>(lv.nx);
-    const auto ny = static_cast<long long>(lv.ny);
+    reach *= T{1} + search_margin;
     const std::size_t images = _periodic ? 9 : 1;
-    for (long long iy = y0; iy <= y1; ++iy) {
-      const long long sy = iy < 0 ? -1 : (iy >= ny ? 1 : 0);
-      const long long cy = iy - sy * ny;
-      for (long long ix = x0; ix <= x1; ++ix) {
-        const long long sx = ix < 0 ? -1 : (ix >= nx ? 1 : 0);
-        const long long cx = ix - sx * nx;
-        const auto c = static_cast<std::size_t>(cy * nx + cx);
+    const int range = _periodic ? 1 : 0;
+    for (int sx = -range; sx <= range; ++sx) {
+      for (int sy = -range; sy <= range; ++sy) {
+        const T shift_x = static_cast<T>(sx) * _Lx;
+        const T shift_y = static_cast<T>(sy) * _Ly;
+        // Rows the moved discs reach.
+        T lo_y = std::numeric_limits<T>::max();
+        T hi_y = std::numeric_limits<T>::lowest();
+        for (auto const& d : discs) {
+          lo_y = std::min(lo_y, d.centre[1] - shift_y - reach);
+          hi_y = std::max(hi_y, d.centre[1] - shift_y + reach);
+        }
+        const std::size_t row0 = grid_index(lo_y, lv.y0, lv.hy, lv.ny);
+        const std::size_t row1 = grid_index(hi_y, lv.y0, lv.hy, lv.ny);
         const std::size_t image =
             _periodic ? static_cast<std::size_t>((sx + 1) * 3 + (sy + 1)) : 0;
-        for (std::size_t k = lv.start[c]; k < lv.start[c + 1]; ++k) {
-          const std::size_t j = lv.seeds[k];
-          const T qx = _seeds[j][0] + static_cast<T>(sx) * _Lx;
-          const T qy = _seeds[j][1] + static_cast<T>(sy) * _Ly;
+        for (std::size_t row = row0; row <= row1; ++row) {
+          if (lv.row_lo[row] > lv.row_hi[row]) continue;   // no seeds
+          T lo_x = std::numeric_limits<T>::max();
+          T hi_x = std::numeric_limits<T>::lowest();
           for (auto const& d : discs) {
-            const T dx = qx - d.centre[0];
-            const T dy = qy - d.centre[1];
-            if (dx * dx + dy * dy <= d.radius2) {
-              out.push_back(j * images + image);
-              break;
+            const T cy = d.centre[1] - shift_y;
+            const T off = std::max({T{0}, lv.row_lo[row] - cy,
+                                    cy - lv.row_hi[row]});
+            const T h2 = d.radius2 - off * off;
+            if (!(h2 >= T{0})) continue;
+            const T half = std::sqrt(h2) * (T{1} + search_margin);
+            const T cx = d.centre[0] - shift_x;
+            lo_x = std::min(lo_x, cx - half);
+            hi_x = std::max(hi_x, cx + half);
+          }
+          if (lo_x > hi_x) continue;
+          const std::size_t col0 = grid_index(lo_x, lv.x0, lv.hx, lv.nx);
+          const std::size_t col1 = grid_index(hi_x, lv.x0, lv.hx, lv.nx);
+          const std::size_t k1 = lv.start[row * lv.nx + col1 + 1];
+          for (std::size_t k = lv.start[row * lv.nx + col0]; k < k1; ++k) {
+            const T qx = lv.at[k][0] + shift_x;
+            const T qy = lv.at[k][1] + shift_y;
+            for (auto const& d : discs) {
+              const T dx = qx - d.centre[0];
+              const T dy = qy - d.centre[1];
+              if (dx * dx + dy * dy <= d.radius2) {
+                out.push_back(lv.places[k] * images + image);
+                break;
+              }
             }
           }
         }
