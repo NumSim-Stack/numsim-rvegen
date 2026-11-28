@@ -72,17 +72,57 @@ double polyline_z_at(std::vector<vec3> const& cl, int axis, double t) {
   throw std::logic_error{"coordinate outside the polyline"};
 }
 
-// Minimum GTE segment–segment distance between two polylines, the
-// second translated by `shift`.
+// Axis-aligned box of a point set, and the distance between two such boxes
+// (0 when they overlap): a lower bound of the distance between anything
+// inside them.
+struct aabb {
+  vec3 lo, hi;
+  void add(vec3 const& p) {
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], p[k]);
+      hi[k] = std::max(hi[k], p[k]);
+    }
+  }
+};
+aabb box_of(vec3 const& p, vec3 const& q) {
+  aabb r{p, p};
+  r.add(q);
+  return r;
+}
+double box_gap(aabb const& a, aabb const& b) {
+  double sq = 0.0;
+  for (int k = 0; k < 3; ++k) {
+    const double g = std::max({0.0, a.lo[k] - b.hi[k], b.lo[k] - a.hi[k]});
+    sq += g * g;
+  }
+  return std::sqrt(sq);
+}
+
+// min(distance between polyline a and polyline b + shift, cap), by GTE
+// segment–segment distances. A segment (or segment pair) whose box is
+// farther from the other side's box than the running minimum cannot lower
+// it and is skipped, so the result is the exact minimum; `cap` lets a caller
+// that minimises over many polyline pairs pass its running minimum in.
 double polyline_distance(std::vector<vec3> const& a, std::vector<vec3> const& b,
-                         vec3 const& shift = vec3{0.0, 0.0, 0.0}) {
+                         vec3 const& shift = vec3{0.0, 0.0, 0.0},
+                         double cap = std::numeric_limits<double>::infinity()) {
+  if (a.size() < 2 || b.size() < 2) return cap;
+  std::vector<vec3> bs(b.size());
+  aabb b_all{b[0] + shift, b[0] + shift};
+  for (std::size_t j = 0; j < b.size(); ++j) {
+    bs[j] = b[j] + shift;
+    b_all.add(bs[j]);
+  }
   gte::DCPQuery<double, gte::Segment3<double>, gte::Segment3<double>> query;
-  double best = std::numeric_limits<double>::infinity();
+  double best = cap;
   for (std::size_t i = 1; i < a.size(); ++i) {
+    const aabb box_a = box_of(a[i - 1], a[i]);
+    if (box_gap(box_a, b_all) > best) continue;
     const gte::Segment3<double> sa{a[i - 1], a[i]};
-    for (std::size_t j = 1; j < b.size(); ++j) {
-      const gte::Segment3<double> sb{b[j - 1] + shift, b[j] + shift};
-      best = std::min(best, query(sa, sb).distance);
+    for (std::size_t j = 1; j < bs.size(); ++j) {
+      if (box_gap(box_a, box_of(bs[j - 1], bs[j])) > best) continue;
+      best = std::min(best,
+                      query(sa, gte::Segment3<double>{bs[j - 1], bs[j]}).distance);
     }
   }
   return best;
@@ -450,9 +490,10 @@ double check_tow_cross(rvegen::weave_generator<double> const& base,
               > 3.0 * r_yarn) continue;
           for (std::size_t a = 0; a < n_fibres; ++a) {
             for (std::size_t b = 0; b < n_fibres; ++b) {
-              best = std::min(best, polyline_distance(
+              best = polyline_distance(
                   as_tube(fibres[ya * n_fibres + a]).centerline(),
-                  as_tube(fibres[yb * n_fibres + b]).centerline(), shift));
+                  as_tube(fibres[yb * n_fibres + b]).centerline(), shift,
+                  best);
             }
           }
         }
