@@ -27,12 +27,14 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <numsim-core/input_parameter_controller.h>
 
 #include "../types.h"
 #include "deterministic_generator.h"
+#include "grain_size_control.h"
 #include "voronoi_generator_2d.h"
 #include "voronoi_generator_3d.h"
 
@@ -165,6 +167,20 @@ public:
     s.template insert<std::string>("backend")
         .template add<numsim_core::set_default>(std::string{"auto"})
         .template add<numsim_core::description_label<"tessellation backend: auto, in_house or voro_pp (default auto: Voro++ when built with it)">>();
+    // Grain-size control (grain_size_control.h): giving the mean diameter
+    // replaces n_seeds / seeds.
+    s.template insert<T>("grain_diameter_mean")
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::description_label<"optional mean equivalent grain diameter. When given, seeds and Laguerre weights are generated so the cell volumes follow a lognormal diameter distribution; the grain count follows from the box volume, and n_seeds / seeds must not be given">>();
+    s.template optional<T>("grain_diameter_sigma", T{0.3})
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::description_label<"standard deviation of ln(diameter) for grain-size control (default 0.3; convergence is expected up to about 0.8)">>();
+    s.template optional<T>("grain_size_tolerance", T{0.01})
+        .template add<min_only<T{0}>>()
+        .template add<numsim_core::description_label<"largest allowed relative error of a cell volume against its target in grain-size control (default 0.01); the run fails if it is not reached">>();
+    s.template optional<std::size_t>("grain_size_max_iterations", std::size_t{1000})
+        .template add<min_only<std::size_t{1}>>()
+        .template add<numsim_core::description_label<"weight iterations per attempt in grain-size control (default 1000)">>();
     return s;
   }
 
@@ -178,22 +194,77 @@ protected:
     if (box[2] <= T{0})
       throw std::runtime_error{
           "voronoi_3d: needs a 3D domain (domain_box z > 0)"};
-    auto const flat = detail::voronoi_seed_coords<T>(_handler, 3, box, _pipeline_seed);
+    const auto backend = detail::voronoi_backend_from_name(
+        _handler.template get<std::string>("backend"));
+    const bool periodic = _handler.template get<bool>("periodic");
     std::vector<std::array<T, 3>> seeds;
-    for (std::size_t i = 0; i + 2 < flat.size(); i += 3)
-      seeds.push_back({flat[i], flat[i + 1], flat[i + 2]});
+    std::vector<T> weights;
+    if (_handler.contains("grain_diameter_mean")) {
+      grain_size_seeds(box, backend, periodic, seeds, weights);
+    } else {
+      auto const flat =
+          detail::voronoi_seed_coords<T>(_handler, 3, box, _pipeline_seed);
+      for (std::size_t i = 0; i + 2 < flat.size(); i += 3)
+        seeds.push_back({flat[i], flat[i + 1], flat[i + 2]});
+    }
     auto shapes = voronoi_to_shapes<T>(
-        voronoi_generator_3d<T>{
-            box[0], box[1], box[2], std::move(seeds),
-            detail::voronoi_backend_from_name(
-                _handler.template get<std::string>("backend")),
-            _handler.template get<bool>("periodic")},
+        voronoi_generator_3d<T>{box[0], box[1], box[2], std::move(seeds),
+                                backend, periodic, std::move(weights)},
         this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;
   }
 
 private:
+  // Seeds + Laguerre weights for the requested lognormal grain diameters.
+  void grain_size_seeds(std::array<T, 3> const& box, voronoi_backend backend,
+                        bool periodic, std::vector<std::array<T, 3>>& seeds,
+                        std::vector<T>& weights) const {
+    const bool has_list =
+        _handler.contains("seeds") &&
+        !_handler.template get<std::vector<double>>("seeds").empty();
+    if (has_list || _handler.template get<std::size_t>("n_seeds") != 0) {
+      throw std::runtime_error{
+          "voronoi_3d: 'grain_diameter_mean' sets the grain count from the "
+          "box volume; remove 'n_seeds' / 'seeds'"};
+    }
+    // Same seeding rule as the plain mode; the engine is the 32-bit
+    // mt19937 the grain-size code is written for, so reject wider seeds.
+    const std::uint64_t seed = _handler.contains("seed")
+                                   ? _handler.template get<std::uint64_t>("seed")
+                                   : _pipeline_seed;
+    if (!std::in_range<std::uint32_t>(seed)) {
+      throw std::runtime_error{
+          "voronoi_3d: 'seed' must be <= 4294967295 with grain-size control"};
+    }
+    std::mt19937 engine{static_cast<std::uint32_t>(seed)};
+    progress_options opts;
+    if (auto const* cancel = this->cancel(); cancel && *cancel) {
+      opts.cancel = *cancel;
+    }
+    const T tolerance = _handler.template get<T>("grain_size_tolerance");
+    auto r = lognormal_grain_seeds_3d<T>(
+        box[0], box[1], box[2],
+        _handler.template get<T>("grain_diameter_mean"),
+        _handler.template get<T>("grain_diameter_sigma"), engine, backend,
+        periodic, tolerance,
+        _handler.template get<std::size_t>("grain_size_max_iterations"), 2,
+        opts);
+    if (r.cancelled) throw generation_cancelled{};
+    if (!r.converged) {
+      throw std::runtime_error{
+          "voronoi_3d: grain-size control did not reach the tolerance (" +
+          std::to_string(r.seeds.size()) + " grains, largest relative volume "
+          "error " + std::to_string(r.max_rel_volume_error) + " > " +
+          std::to_string(tolerance) + ", " + std::to_string(r.empty_cells) +
+          " empty cells). Use a smaller grain_diameter_sigma, a larger "
+          "grain_size_tolerance or grain_size_max_iterations, or a box that "
+          "holds more grains"};
+    }
+    seeds = std::move(r.seeds);
+    weights = std::move(r.weights);
+  }
+
   parameter_handler_t _handler;
   std::uint64_t _pipeline_seed{1};
 };

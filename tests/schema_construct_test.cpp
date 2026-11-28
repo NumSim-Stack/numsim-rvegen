@@ -19,7 +19,8 @@
 //
 // A few types need values a range hint cannot express; `adjust` sets them
 // per type (orientation tensors with trace 1, weave yarn geometry that
-// fits the box, a voronoi seed count).
+// fits the box, a voronoi seed count); voronoi_3d is run a second time in
+// grain-size mode, which reads its own keys.
 //
 // Covered: every type in the distribution, direction_distribution, generator,
 // termination, input and post_process registries, plus the shapes circle,
@@ -170,6 +171,8 @@ void adjust(json& cfg, std::string const& type) {
     if (type == "tow_weave") cfg["n_fibres_per_tow"] = 3;
   } else if (type == "voronoi_2d" || type == "voronoi_3d") {
     cfg["n_seeds"] = 6;   // defaults to 0 = "use the explicit seeds list"
+    // Grain-size control replaces n_seeds; it gets its own run below.
+    cfg.erase("grain_diameter_mean");
   }
 }
 
@@ -274,6 +277,17 @@ int main() {
           throw std::runtime_error("no shapes built");
       });
     }
+    // voronoi_3d in grain-size mode reads a different set of keys.
+    attempt("generator(compute)", "voronoi_3d[grain_size]", [&] {
+      auto cfg = make_config(reg.schema("voronoi_3d"), "voronoi_3d");
+      cfg.erase("n_seeds");
+      cfg["grain_diameter_mean"] = 0.5;
+      auto gen = rvegen::build_from_json(reg, cfg);
+      rvegen::rve_generator_base<double>::input_vector none;
+      rvegen::number_of_inclusions<double> one{1};
+      if (gen->compute(none, one, {1.0, 1.0, 1.0}).empty())
+        throw std::runtime_error("no shapes built");
+    });
   }
   std::array<double, 3> const box{1.0, 1.0, 1.0};
   run_registry(rvegen::termination_registry_t<>::instance(), "termination",

@@ -1,6 +1,8 @@
 // Registry coverage for the deterministic generators (weave, tow_weave,
 // voronoi_2d, voronoi_3d) and the direction-aware tube input (#84, #73).
 
+#include <cmath>
+#include <map>
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -171,6 +173,94 @@ void test_voronoi_periodic_and_backend_keys() {
   threw = false;
   try { run_gen(bad, {1.0, 1.0, 1.0}); } catch (std::exception const&) { threw = true; }
   REQUIRE(threw == !rvegen::voro_pp_available());
+}
+
+// Grain-size control from JSON (#8): "grain_diameter_mean" makes voronoi_3d
+// generate seeds + Laguerre weights for a lognormal diameter distribution.
+// Returns the equivalent diameter of every grain (one entry per grain_id).
+std::vector<double> grain_diameters(gen_t::shape_vector const& shapes) {
+  std::map<std::size_t, double> volume;
+  for (auto const& s : shapes) {
+    volume[s->info().template get<std::size_t>("grain_id")] = s->volume();
+  }
+  std::vector<double> d;
+  for (auto const& [id, v] : volume) d.push_back(rvegen::equivalent_diameter(v));
+  return d;
+}
+
+std::vector<double> check_lognormal_grains(
+    json const& spec, double L, double mean, double sigma,
+    std::size_t min_grains, double mean_tol, double sigma_tol) {
+  const auto shapes = run_gen(spec, {L, L, L});
+  const auto d = grain_diameters(shapes);
+  REQUIRE(d.size() >= min_grains);
+  // Grains tile the box.
+  constexpr double pi = 3.14159265358979323846;
+  double v_sum = 0.0, m = 0.0, m2 = 0.0;
+  for (double x : d) {
+    v_sum += pi / 6.0 * x * x * x;
+    m += std::log(x);
+  }
+  REQUIRE(std::abs(v_sum - L * L * L) < 1e-6 * L * L * L);
+  m /= static_cast<double>(d.size());
+  for (double x : d) m2 += (std::log(x) - m) * (std::log(x) - m);
+  const double s_ln = std::sqrt(m2 / static_cast<double>(d.size() - 1));
+  // ln D ~ N(mu, sigma) with mu = ln(mean) - sigma^2 / 2.
+  const double mu = std::log(mean) - sigma * sigma / 2.0;
+  std::cout << "grains: N=" << d.size() << " mean lnD=" << m << " (target "
+            << mu << ") std lnD=" << s_ln << " (target " << sigma << ")\n";
+  REQUIRE(std::abs(m - mu) < mean_tol);
+  REQUIRE(std::abs(s_ln - sigma) < sigma_tol);
+  return d;
+}
+
+void test_voronoi_grain_size_keys() {
+  json spec = {{"type", "voronoi_3d"}, {"grain_diameter_mean", 1.0},
+               {"grain_diameter_sigma", 0.4}, {"periodic", true},
+               {"seed", 1}, {"backend", "in_house"}};
+  // A handful of grains with the built-in backend (its cost grows steeply
+  // with the count): they must tile the box; 8 draws say nothing about a
+  // distribution, so the bounds only reject a plain, unweighted result
+  // being returned for a far-off request.
+  const std::array<double, 3> small{1.9, 1.9, 1.9};
+  const auto a = check_lognormal_grains(spec, 1.9, 1.0, 0.4, 5, 0.5, 0.35);
+  if (rvegen::voro_pp_available()) {
+    // Acceptance of #8: 100+ grains reproduce the requested distribution.
+    json big = spec;
+    big["backend"] = "voro_pp";
+    (void)check_lognormal_grains(big, 5.5, 1.0, 0.4, 100, 0.08, 0.06);
+  }
+
+  // Same seed -> same grains; another seed -> different ones.
+  REQUIRE(grain_diameters(run_gen(spec, small)) == a);
+  json other = spec;
+  other["seed"] = 2;
+  REQUIRE(grain_diameters(run_gen(other, small)) != a);
+
+  auto message = [](json const& sp, std::array<double, 3> box) {
+    try { (void)run_gen(sp, box); }
+    catch (std::exception const& e) { return std::string{e.what()}; }
+    return std::string{};
+  };
+  // The grain count follows from the box: n_seeds / seeds contradict it.
+  json both = spec;
+  both["n_seeds"] = 10;
+  REQUIRE(message(both, small).find("remove 'n_seeds'") != std::string::npos);
+  both.erase("n_seeds");
+  both["seeds"] = {0.5, 0.5, 0.5};
+  REQUIRE(message(both, small).find("remove 'n_seeds'") != std::string::npos);
+  // A box too small for two grains of the requested size.
+  REQUIRE(message(spec, {1.0, 1.0, 1.0}).find("at least 2") != std::string::npos);
+  // A tolerance that is not reached fails loudly instead of returning
+  // grains of the wrong size.
+  json strict = spec;
+  strict["grain_size_tolerance"] = 1e-10;
+  strict["grain_size_max_iterations"] = 3;
+  REQUIRE(message(strict, small).find("did not reach the tolerance") !=
+          std::string::npos);
+  // Without the key the plain mode is unchanged (no weights).
+  json plain = {{"type", "voronoi_3d"}, {"n_seeds", 6}, {"seed", 3}};
+  REQUIRE(run_gen(plain, {1.0, 1.0, 1.0}).size() == 6);
 }
 
 void test_oriented_input() {
@@ -378,6 +468,7 @@ int main() {
   test_voronoi_2d();
   test_voronoi_3d();
   test_voronoi_periodic_and_backend_keys();
+  test_voronoi_grain_size_keys();
   test_oriented_input();
   test_voronoi_pipeline_seed();
   test_unknown_distribution_name();
