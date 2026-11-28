@@ -89,20 +89,34 @@ void test_postprocess_toggle() {
 }
 
 void test_seed_and_warnings() {
+  // Seeds the 32-bit engine would truncate, or that are not non-negative
+  // integers, are rejected with the key named (std::invalid_argument, as
+  // for every other mistyped config value).
+  auto rejected = [](nlohmann::json const& cfg, rvegen::pipeline_options const& o,
+                     char const* needle) {
+    try { (void)rvegen::generate(cfg, o); }
+    catch (std::invalid_argument const& e) {
+      return std::string{e.what()}.find(needle) != std::string::npos;
+    }
+    return false;
+  };
   auto cfg = circles_config();
   cfg["seed"] = 4294967296ULL;            // would silently truncate in mt19937
-  bool threw = false;
-  try { (void)rvegen::generate(cfg); } catch (std::runtime_error const&) { threw = true; }
-  REQUIRE(threw);
+  REQUIRE(rejected(cfg, {}, "seed must be <= 4294967295"));
   cfg["seed"] = -3;
-  threw = false;
-  try { (void)rvegen::generate(cfg); } catch (std::runtime_error const&) { threw = true; }
-  REQUIRE(threw);
+  REQUIRE(rejected(cfg, {}, "'seed'"));
+  cfg["seed"] = 1.5;
+  REQUIRE(rejected(cfg, {}, "'seed'"));
   rvegen::pipeline_options big;
   big.seed = 1ULL << 40;                  // override path is checked too
-  threw = false;
-  try { (void)rvegen::generate(circles_config(), big); } catch (std::runtime_error const&) { threw = true; }
-  REQUIRE(threw);
+  REQUIRE(rejected(circles_config(), big, "seed must be <= 4294967295"));
+  // domain_box is validated before anything is built.
+  for (auto const& bad : {json::array({0, 1}), json::array({1, 1, -1}),
+                          json::array({1}), json::array({1, "a"})}) {
+    auto c = circles_config();
+    c["domain_box"] = bad;
+    REQUIRE(rejected(c, {}, "domain_box"));
+  }
 
   // Deterministic generator + shapes/termination + unknown key -> warnings.
   auto det = circles_config();

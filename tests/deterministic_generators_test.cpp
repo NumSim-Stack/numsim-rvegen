@@ -55,7 +55,7 @@ void test_registered() {
 
 void test_weave() {
   json spec = {{"type", "weave"}, {"n_warp_yarns", 4}, {"n_weft_yarns", 2},
-               {"yarn_radius", 0.05}, {"amplitude", 0.04},
+               {"yarn_radius", 0.05}, {"amplitude", 0.06},
                {"warp_phase_name", "warp"}, {"weft_phase_name", "weft"}};
   auto shapes = run_gen(spec, {1.0, 1.0, 0.4});
   REQUIRE(shapes.size() == 6);   // 4 warp + 2 weft
@@ -63,6 +63,21 @@ void test_weave() {
   REQUIRE(shapes[3]->phase_name() == "warp");
   REQUIRE(shapes[4]->phase_name() == "weft");
   REQUIRE(shapes.back()->phase_name() == "weft");
+
+  // "pattern" reaches the generator: twill 2/2 needs multiples of 4 yarns,
+  // so 4 x 2 is accepted as plain and rejected as twill; 4 x 4 twill builds.
+  json twill = {{"type", "weave"}, {"n_warp_yarns", 4}, {"n_weft_yarns", 4},
+                {"yarn_radius", 0.05}, {"amplitude", 0.06},
+                {"pattern", "twill_2_2"}};
+  REQUIRE(run_gen(twill, {1.0, 1.0, 0.4}).size() == 8);
+  for (auto const& bad : {json{{"n_weft_yarns", 2}}, json{{"pattern", "basket"}}}) {
+    json spec2 = twill;
+    spec2.update(bad);
+    bool rejected = false;
+    try { run_gen(spec2, {1.0, 1.0, 0.4}); }
+    catch (std::exception const&) { rejected = true; }
+    REQUIRE(rejected);
+  }
 
   // Invalid params surface as exceptions (schema range / ctor check).
   bool threw = false;
@@ -74,7 +89,7 @@ void test_weave() {
 
 void test_tow_weave() {
   json spec = {{"type", "tow_weave"}, {"n_warp_yarns", 2}, {"n_weft_yarns", 2},
-               {"yarn_radius", 0.08}, {"amplitude", 0.05},
+               {"yarn_radius", 0.08}, {"amplitude", 0.09},
                {"n_fibres_per_tow", 7}};
   auto shapes = run_gen(spec, {1.0, 1.0, 0.4});
   REQUIRE(shapes.size() == 4 * 7);
@@ -118,6 +133,44 @@ void test_voronoi_3d() {
   bool threw = false;
   try { run_gen(spec, {1, 1, 0}); } catch (std::exception const&) { threw = true; }
   REQUIRE(threw);
+}
+
+// "periodic" and "backend" reach the tessellators: a periodic run owns every
+// voxel of the box (wrap pieces included) with one value per grain.
+void test_voronoi_periodic_and_backend_keys() {
+  for (int dim : {2, 3}) {
+    json spec = {{"type", dim == 2 ? "voronoi_2d" : "voronoi_3d"},
+                 {"n_seeds", 8}, {"seed", 2}, {"periodic", true}};
+    const std::array<double, 3> box{1.0, 1.0, dim == 2 ? 0.0 : 1.0};
+    auto shapes = run_gen(spec, box);
+    REQUIRE(shapes.size() > 8);   // 8 grains plus their wrap pieces
+    const std::size_t n = 24;
+    const auto grid =
+        rvegen::sample_voxel_grid(shapes, box, n, n, dim == 2 ? 1 : n);
+    std::vector<bool> seen(9, false);
+    bool covered = true;
+    for (auto v : grid) {
+      covered = covered && v >= 1 && v <= 8;
+      if (v <= 8) seen[v] = true;
+    }
+    REQUIRE(covered);
+    for (std::size_t g = 1; g <= 8; ++g) REQUIRE(seen[g]);
+  }
+  json base = {{"type", "voronoi_3d"}, {"n_seeds", 6}, {"seed", 3}};
+  for (char const* backend : {"auto", "in_house"}) {
+    json spec = base;
+    spec["backend"] = backend;
+    REQUIRE(run_gen(spec, {1.0, 1.0, 1.0}).size() == 6);
+  }
+  json bad = base;
+  bad["backend"] = "qhull";
+  bool threw = false;
+  try { run_gen(bad, {1.0, 1.0, 1.0}); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw);
+  bad["backend"] = "voro_pp";
+  threw = false;
+  try { run_gen(bad, {1.0, 1.0, 1.0}); } catch (std::exception const&) { threw = true; }
+  REQUIRE(threw == !rvegen::voro_pp_available());
 }
 
 void test_oriented_input() {
@@ -243,7 +296,7 @@ void test_voxel_writer_round_trip() {
   {
     auto shapes = run_gen({{"type", "weave"}, {"n_warp_yarns", 4},
                            {"n_weft_yarns", 2}, {"yarn_radius", 0.05},
-                           {"amplitude", 0.04}}, {1.0, 1.0, 0.4});
+                           {"amplitude", 0.06}}, {1.0, 1.0, 0.4});
     rvegen::voxel_writer<double> w{24, 24, 12};
     REQUIRE(count_ids(w, shapes, {1.0, 1.0, 0.4}, nullptr) > 0);
     std::stringstream out;
@@ -253,7 +306,7 @@ void test_voxel_writer_round_trip() {
   {
     auto shapes = run_gen({{"type", "tow_weave"}, {"n_warp_yarns", 2},
                            {"n_weft_yarns", 2}, {"yarn_radius", 0.08},
-                           {"amplitude", 0.05}, {"n_fibres_per_tow", 7}},
+                           {"amplitude", 0.09}, {"n_fibres_per_tow", 7}},
                           {1.0, 1.0, 0.4});
     rvegen::voxel_writer<double> w{32, 32, 16};
     REQUIRE(count_ids(w, shapes, {1.0, 1.0, 0.4}, nullptr) > 0);
@@ -293,15 +346,17 @@ void test_cancel_during_build() {
   auto v2 = run_cancel({{"type", "voronoi_2d"}, {"n_seeds", 300}, {"seed", 1}},
                        {1.0, 1.0, 0.0}, 5, polls);
   REQUIRE(v2.empty() && polls == 6);   // stopped at the 6th poll, not after 300 cells
-  auto v3 = run_cancel({{"type", "voronoi_3d"}, {"n_seeds", 40}, {"seed", 1}},
+  // in_house: polled per cell (Voro++ only before its single call).
+  auto v3 = run_cancel({{"type", "voronoi_3d"}, {"n_seeds", 40}, {"seed", 1},
+                        {"backend", "in_house"}},
                        {1.0, 1.0, 1.0}, 3, polls);
   REQUIRE(v3.empty() && polls == 4);
   auto w = run_cancel({{"type", "weave"}, {"n_warp_yarns", 20}, {"n_weft_yarns", 20},
-                       {"yarn_radius", 0.01}, {"amplitude", 0.0}},
+                       {"yarn_radius", 0.01}, {"amplitude", 0.012}},
                       {1.0, 1.0, 0.4}, 4, polls);
   REQUIRE(w.empty() && polls == 5);
   auto tw = run_cancel({{"type", "tow_weave"}, {"n_warp_yarns", 4}, {"n_weft_yarns", 4},
-                        {"yarn_radius", 0.05}, {"amplitude", 0.0},
+                        {"yarn_radius", 0.05}, {"amplitude", 0.06},
                         {"n_fibres_per_tow", 3}}, {1.0, 1.0, 0.4}, 10, polls);
   REQUIRE(tw.empty());
   // Not cancelled: full result.
@@ -322,6 +377,7 @@ int main() {
   test_tow_weave();
   test_voronoi_2d();
   test_voronoi_3d();
+  test_voronoi_periodic_and_backend_keys();
   test_oriented_input();
   test_voronoi_pipeline_seed();
   test_unknown_distribution_name();

@@ -65,6 +65,24 @@ jobs:
         working-directory: numsim-rvegen/rvegen
         run: ctest --test-dir build --output-on-failure
 
+      # Optional Voro++ backend for voronoi_generator_3d (#70). A second
+      # out-of-tree configure with RVEGEN_WITH_VORO_PP=ON (fetches the
+      # pinned Voro++ tag) so the default build above stays dependency-free.
+      - name: Configure rvegen with Voro++ backend
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CXX: g++-14
+          CC: gcc-14
+        run: cmake -G Ninja -B build-voropp -DCMAKE_BUILD_TYPE=Release -DRVEGEN_WITH_VORO_PP=ON
+
+      - name: Build rvegen with Voro++ backend
+        working-directory: numsim-rvegen/rvegen
+        run: cmake --build build-voropp --parallel
+
+      - name: Test rvegen with Voro++ backend
+        working-directory: numsim-rvegen/rvegen
+        run: ctest --test-dir build-voropp --output-on-failure
+
       # Install + smoke-consume: verifies the CMake export works
       # end-to-end. A separate consumer project does
       # find_package(rvegen CONFIG REQUIRED) and links via

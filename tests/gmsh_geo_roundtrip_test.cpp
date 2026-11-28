@@ -59,8 +59,12 @@ struct mesh {
 
 double tri_area(std::array<double, 3> const& a, std::array<double, 3> const& b,
                 std::array<double, 3> const& c) {
-  return 0.5 * std::abs((b[0] - a[0]) * (c[1] - a[1]) -
-                        (c[0] - a[0]) * (b[1] - a[1]));
+  const double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+  const double v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+  const double x = u[1] * v[2] - u[2] * v[1];
+  const double y = u[2] * v[0] - u[0] * v[2];
+  const double z = u[0] * v[1] - u[1] * v[0];
+  return 0.5 * std::sqrt(x * x + y * y + z * z);
 }
 
 double tet_volume(std::array<double, 3> const& a, std::array<double, 3> const& b,
@@ -774,7 +778,10 @@ void test_periodic_images_missing_the_cell() {
     const auto shapes = make_shapes(std::move(v));
     rvegen::gmsh_geo_writer<double> writer{};
     const auto txt = script_of(writer, shapes, {1.0, 1.0, 0.0});
-    REQUIRE(txt.find("!= 1") != std::string::npos);  // guarded result list
+    // A polygon is pre-clipped to the domain in C++: one that misses the
+    // box is skipped outright; any other shape keeps the guarded list.
+    REQUIRE(txt.find("!= 1") != std::string::npos ||
+            txt.find("polygon skipped") != std::string::npos);
     // Not periodic: the polygon-only shape exercises the guard on its own.
     const std::string stem = "gmsh_rt_missing_polygon";
     const cleanup_on_success cleanup{stem};
@@ -857,6 +864,334 @@ void test_writer_rejects_bad_input() {
   if (threw) std::remove(path.c_str());
 }
 
+// ---- tessellations (#8) ---------------------------------------------------
+
+// Seeds with a minimum pairwise distance (keeps the tessellation clear of
+// the precision problems of near-degenerate cells).
+template <std::size_t D>
+std::vector<std::array<double, D>> separated_seeds(std::size_t n, box_t const& box,
+                                                   double min_dist, unsigned rng) {
+  std::mt19937 eng{rng};
+  std::vector<std::array<double, D>> out;
+  while (out.size() < n) {
+    std::array<double, D> p{};
+    for (std::size_t k = 0; k < D; ++k) {
+      p[k] = std::uniform_real_distribution<double>{0.05 * box[k], 0.95 * box[k]}(eng);
+    }
+    bool ok = true;
+    for (auto const& q : out) {
+      double d2 = 0.0;
+      for (std::size_t k = 0; k < D; ++k) d2 += (p[k] - q[k]) * (p[k] - q[k]);
+      if (d2 < min_dist * min_dist) { ok = false; break; }
+    }
+    if (ok) out.push_back(p);
+  }
+  return out;
+}
+
+// No two nodes may coincide: duplicates would mean the shared faces were
+// meshed twice, i.e. the mesh is not conforming.
+void check_no_duplicate_nodes(mesh const& m, double scale = 1.0) {
+  std::set<std::array<long long, 3>> seen;
+  std::size_t dup = 0;
+  for (std::size_t i = 1; i < m.nodes.size(); ++i) {
+    std::array<long long, 3> k{};
+    for (int a = 0; a < 3; ++a) k[a] = std::llround(m.nodes[i][a] / (scale * 1e-8));
+    if (!seen.insert(k).second) ++dup;
+  }
+  if (dup != 0) std::cerr << dup << " duplicate nodes\n";
+  REQUIRE(dup == 0);
+}
+
+void check_tessellation(shape_vector const& shapes, box_t const& box,
+                        std::string const& stem, double h, double tol) {
+  const cleanup_on_success cleanup{stem};
+  rvegen::gmsh_geo_writer<double> writer{};
+  writer.set_tessellation(true);
+  writer.set_characteristic_length_max(h);
+  const auto m = write_and_mesh(writer, shapes, box, stem);
+  if (!m.ok) return;
+  check_inside_domain(m, box);
+  check_no_duplicate_nodes(m, std::max({box[0], box[1], box[2]}));
+  const bool is_3d = box[2] > 0.0;
+  const double domain = is_3d ? box[0] * box[1] * box[2] : box[0] * box[1];
+  double sum = 0.0;
+  for (std::size_t i = 0; i < shapes.size(); ++i) {
+    const double expect = is_3d ? shapes[i]->volume() : shapes[i]->area();
+    const double got = measure_of(m, "grain_" + std::to_string(i));
+    // Planar faces: the mesh reproduces the polyhedron exactly.
+    if (!(std::abs(got - expect) <= tol * domain)) {
+      std::cerr << stem << ": grain " << i << " measure " << got << " expected "
+                << expect << "\n";
+      ++failures;
+    }
+    sum += got;
+  }
+  REQUIRE(std::abs(sum - domain) < 1e-9 * domain);
+  std::cout << stem << ": " << shapes.size() << " grains, nodes " << m.nodes.size() - 1 << ", sum " << sum << " / " << domain << "\n";
+  if (is_3d) {
+    // Boundary physical surface = the box surface.
+    const double surf = 2.0 * (box[0] * box[1] + box[1] * box[2] + box[0] * box[2]);
+    const double got = measure_of(m, "boundary");
+    REQUIRE(std::abs(got - surf) < 1e-9 * surf);
+  }
+}
+
+void test_tessellation_3d() {
+  const box_t box{1.0, 1.2, 0.9};
+  rvegen::voronoi_generator_3d<double> gen{
+      box[0], box[1], box[2], separated_seeds<3>(20, box, 0.2, 3)};
+  auto shapes = gen.build();
+  REQUIRE(shapes.size() == 20);
+  check_tessellation(shapes, box, "gmsh_rt_tess_3d", 0.15, 1e-9);
+}
+
+void test_tessellation_2d() {
+  const box_t box{1.0, 0.8, 0.0};
+  rvegen::voronoi_generator_2d<double> gen{
+      box[0], box[1], separated_seeds<2>(30, box, 0.09, 4)};
+  auto shapes = rvegen::voronoi_to_shapes(gen);
+  REQUIRE(shapes.size() == 30);
+  check_tessellation(shapes, box, "gmsh_rt_tess_2d", 0.05, 1e-9);
+}
+
+void test_tessellation_rejects_mixing() {
+  const box_t box{1.0, 1.0, 1.0};
+  rvegen::voronoi_generator_3d<double> gen{
+      1.0, 1.0, 1.0, separated_seeds<3>(4, box, 0.2, 1)};
+  auto shapes = gen.build();
+  shapes.emplace_back(std::make_unique<rvegen::sphere<double>>(0.5, 0.5, 0.5, 0.1));
+  rvegen::gmsh_geo_writer<double> writer{};
+  std::ostringstream buf;
+  bool threw = false;
+  try { writer.write(buf, shapes, box); } catch (std::runtime_error const&) { threw = true; }
+  REQUIRE(threw);
+  REQUIRE(buf.str().empty());
+}
+
+std::vector<std::array<double, 3>> jittered_lattice(int n, double jit, unsigned seed) {
+  std::mt19937 g{seed};
+  std::uniform_real_distribution<double> u{-1.0, 1.0};
+  std::vector<std::array<double, 3>> s;
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j)
+      for (int k = 0; k < n; ++k)
+        s.push_back({(i + 0.5 + jit * u(g)) / n, (j + 0.5 + jit * u(g)) / n,
+                     (k + 0.5 + jit * u(g)) / n});
+  return s;
+}
+
+// Lattice cells meet in 8-fold degenerate vertices; jittering the seeds
+// turns them into tiny edges / faces. Above the merge tolerance the mesh
+// is regular, just below it the features are collapsed.
+void test_tessellation_jittered_lattice() {
+  const box_t box{1.0, 1.0, 1.0};
+  for (double jit : {1e-3, 1e-4, 3e-6}) {
+    rvegen::voronoi_generator_3d<double> gen{1.0, 1.0, 1.0,
+                                            jittered_lattice(3, jit, 1)};
+    auto shapes = gen.build();
+    REQUIRE(shapes.size() == 27);
+    check_tessellation(shapes, box, "gmsh_rt_tess_jitter", 0.3, 1e-4);
+  }
+}
+
+// Features far below what gmsh can handle used to be written as-is and made
+// gmsh segfault (rc 139) or fail with PLC errors. Now the writer must either
+// emit geometry that gmsh meshes or reject the cells with a clear error.
+void test_tessellation_near_degenerate_never_crashes() {
+  const box_t box{1.0, 1.0, 1.0};
+  int rejected = 0;
+  // Lattices jittered by jit, and (negative jit = -d) a lattice with one
+  // seed duplicated at distance d. A robust generator may itself reject
+  // the input: coincident seeds (std::runtime_error "seeds i and j are
+  // coincident"), or a near-lattice set whose cells do not fill the box
+  // ("cell volumes sum to ..."). Both count as a rejection, the same as
+  // the writer's own.
+  for (double jit : {1e-6, 1e-7, 1e-8, 1e-9, 1e-11, -1e-12, -1e-10}) {
+    for (unsigned seed : {1u, 2u, 3u}) {
+      shape_vector shapes;
+      rvegen::gmsh_geo_writer<double> writer{};
+      writer.set_characteristic_length_max(0.3);
+      bool threw = false;
+      try {
+        auto seeds = jittered_lattice(2, jit > 0.0 ? jit : 0.0, seed);
+        if (jit < 0.0) {
+          seeds.push_back(seeds[3]);
+          seeds.back()[0] += -jit;
+        }
+        rvegen::voronoi_generator_3d<double> gen{1.0, 1.0, 1.0, std::move(seeds)};
+        shapes = gen.build();
+        std::ostringstream buf;
+        writer.write(buf, shapes, box);
+      } catch (std::runtime_error const& e) {
+        threw = true;
+        ++rejected;
+        const std::string what{e.what()};
+        REQUIRE(what.find("seeds") != std::string::npos ||
+                what.find("cell volumes sum to") != std::string::npos);
+      }
+      if (!threw) {
+        const cleanup_on_success cleanup{"gmsh_rt_degenerate"};
+        const auto m = write_and_mesh(writer, shapes, box, "gmsh_rt_degenerate");
+        // Merged features move vertices by <= 1e-5 of the box.
+        if (m.ok) {
+          double vol = 0.0;
+          for (std::size_t i = 0; i < shapes.size(); ++i) {
+            vol += std::max(0.0, measure_of(m, "grain_" + std::to_string(i)));
+          }
+          REQUIRE(std::abs(vol - 1.0) < 1e-4);
+        }
+      }
+    }
+  }
+  REQUIRE(rejected > 0);  // the degenerate inputs are not silently passed on
+}
+
+std::vector<gte::Vector<3, double>> cube_vertices(double x0, double x1, double y0,
+                                                  double y1, double z0, double z1) {
+  std::vector<gte::Vector<3, double>> v;
+  for (int k = 0; k < 2; ++k)
+    for (int j = 0; j < 2; ++j)
+      for (int i = 0; i < 2; ++i) {
+        gte::Vector<3, double> p;
+        p[0] = i ? x1 : x0;
+        p[1] = j ? y1 : y0;
+        p[2] = k ? z1 : z0;
+        v.push_back(p);
+      }
+  return v;
+}
+
+std::unique_ptr<rvegen::shape_base<double>> cube_cell(double x0, double x1, double y0,
+                                                      double y1, double z0, double z1) {
+  return std::make_unique<rvegen::voronoi_cell<double>>(
+      cube_vertices(x0, x1, y0, y1, z0, z1),
+      std::vector<std::vector<std::size_t>>{{0, 2, 3, 1}, {0, 4, 6, 2}, {1, 3, 7, 5},
+                                            {0, 1, 5, 4}, {2, 6, 7, 3}, {4, 5, 7, 6}});
+}
+
+// Cells of a unit-box tessellation scaled by L (the generator is built at
+// unit scale so this test does not depend on how it copes with tiny boxes).
+shape_vector scaled_cells(shape_vector const& shapes, double L) {
+  shape_vector out;
+  for (auto const& sh : shapes) {
+    if (auto const* c = dynamic_cast<rvegen::voronoi_cell<double> const*>(sh.get())) {
+      auto v = c->vertices();
+      for (auto& p : v) { p[0] *= L; p[1] *= L; p[2] *= L; }
+      out.push_back(std::make_unique<rvegen::voronoi_cell<double>>(std::move(v), c->faces()));
+    } else if (auto const* q = dynamic_cast<rvegen::convex_polygon<double> const*>(sh.get())) {
+      auto v = q->vertices();
+      for (auto& p : v) { p[0] *= L; p[1] *= L; }
+      out.push_back(std::make_unique<rvegen::convex_polygon<double>>(std::move(v)));
+    }
+  }
+  return out;
+}
+
+// Tessellations of boxes that are tiny / huge in absolute units: written
+// box-relative, saved in absolute units, grains tile the box.
+void test_tessellation_scale_independence() {
+  for (double L : {1e-5, 1e5}) {
+    {
+      const box_t unit{1.0, 1.2, 0.9};
+      rvegen::voronoi_generator_3d<double> gen{
+          unit[0], unit[1], unit[2], separated_seeds<3>(12, unit, 0.25, 3)};
+      auto base = gen.build();
+      REQUIRE(base.size() == 12);
+      auto shapes = scaled_cells(base, L);
+      const box_t box{L * unit[0], L * unit[1], L * unit[2]};
+      check_tessellation(shapes, box, "gmsh_rt_tess_scale3d_" + std::to_string(L),
+                         0.15 * L, 1e-9);
+    }
+    {
+      const box_t unit{1.0, 0.8, 0.0};
+      rvegen::voronoi_generator_2d<double> gen{
+          unit[0], unit[1], separated_seeds<2>(15, unit, 0.15, 4)};
+      auto base = rvegen::voronoi_to_shapes(gen);
+      REQUIRE(base.size() == 15);
+      auto shapes = scaled_cells(base, L);
+      const box_t box{L * unit[0], L * unit[1], 0.0};
+      check_tessellation(shapes, box, "gmsh_rt_tess_scale2d_" + std::to_string(L),
+                         0.08 * L, 1e-9);
+    }
+  }
+}
+
+void test_tessellation_duplicate_seeds_and_holes() {
+  const box_t box{1.0, 1.0, 1.0};
+  rvegen::gmsh_geo_writer<double> writer{};
+  {  // coincident seeds: rejected by the generator or, failing that, by the writer
+    std::string msg;
+    try {
+      rvegen::voronoi_generator_3d<double> gen{
+          1.0, 1.0, 1.0,
+          {{0.3, 0.3, 0.3}, {0.3, 0.3, 0.3}, {0.7, 0.7, 0.7}}};
+      auto shapes = gen.build();
+      std::ostringstream buf;
+      writer.write(buf, shapes, box);
+    } catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(!msg.empty());
+    REQUIRE(msg.find("seeds") != std::string::npos);
+  }
+  // The writer's own checks, fed hand-built cells so they stay covered
+  // whether or not the generator already refuses such seeds.
+  {  // three identical cells: the same faces claimed three times
+    shape_vector shapes;
+    for (int i = 0; i < 3; ++i) shapes.push_back(cube_cell(0, 1, 0, 1, 0, 1));
+    std::string msg;
+    try { std::ostringstream buf; writer.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(msg.find("more than two cells") != std::string::npos);
+    REQUIRE(msg.find("seeds") != std::string::npos);
+  }
+  {  // a cell that collapses below the merge tolerance (coincident seeds)
+    shape_vector shapes;
+    shapes.push_back(cube_cell(0, 1, 0, 1, 0, 1));
+    shapes.push_back(cube_cell(0.5, 0.5 + 1e-8, 0.5, 0.5 + 1e-8, 0.5, 0.5 + 1e-8));
+    std::string msg;
+    try { std::ostringstream buf; writer.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(msg.find("collapsed") != std::string::npos);
+    REQUIRE(msg.find("seeds") != std::string::npos);
+  }
+  {  // a cell with a face missing is not a closed polyhedron
+    auto open = std::make_unique<rvegen::voronoi_cell<double>>(
+        cube_vertices(0, 1, 0, 1, 0, 1),
+        std::vector<std::vector<std::size_t>>{
+            {0, 2, 3, 1}, {0, 4, 6, 2}, {1, 3, 7, 5}, {0, 1, 5, 4}, {2, 6, 7, 3}});
+    shape_vector shapes;
+    shapes.push_back(std::move(open));
+    std::string msg;
+    try { std::ostringstream buf; writer.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(msg.find("not a closed polyhedron") != std::string::npos);
+  }
+  {  // phases would be silently ignored: rejected
+    rvegen::voronoi_generator_3d<double> gen{
+        1.0, 1.0, 1.0, {{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}}};
+    auto shapes = gen.build();
+    rvegen::phase_collection<double> phases;
+    phases.add("a");
+    rvegen::gmsh_geo_writer<double> pw{};
+    pw.set_phases(&phases);
+    std::string msg;
+    try { std::ostringstream buf; pw.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(msg.find("phases are not supported") != std::string::npos);
+  }
+  {  // a missing neighbour leaves an interior face owned by one cell
+    rvegen::voronoi_generator_3d<double> gen{
+        1.0, 1.0, 1.0, {{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}}};
+    auto shapes = gen.build();
+    REQUIRE(shapes.size() == 2);
+    shapes.pop_back();
+    std::string msg;
+    try { std::ostringstream buf; writer.write(buf, shapes, box); }
+    catch (std::runtime_error const& e) { msg = e.what(); }
+    REQUIRE(msg.find("not watertight") != std::string::npos);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -877,6 +1212,13 @@ int main() {
   test_clip_error_guard_text();
   test_periodic_tangent();
   test_writer_rejects_bad_input();
+  test_tessellation_3d();
+  test_tessellation_2d();
+  test_tessellation_rejects_mixing();
+  test_tessellation_jittered_lattice();
+  test_tessellation_scale_independence();
+  test_tessellation_near_degenerate_never_crashes();
+  test_tessellation_duplicate_seeds_and_holes();
   if (failures == 0) {
     std::cout << "gmsh_geo_roundtrip_test: PASS\n";
     return 0;

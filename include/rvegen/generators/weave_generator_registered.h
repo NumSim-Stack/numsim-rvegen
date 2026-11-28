@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstddef>
+#include <stdexcept>
 #include <string>
 
 #include <numsim-core/input_parameter_controller.h>
@@ -35,7 +36,7 @@ using weave_fields = field_list<
     field<"yarn_radius", T, true, min_only<T{0}>,
           numsim_core::description_label<"yarn (tube) radius; must be > 0">>,
     field<"amplitude", T, true, min_only<T{0}>,
-          numsim_core::description_label<"peak z-undulation of the yarn centerlines (0 for flat / 2D)">>>;
+          numsim_core::description_label<"peak z-undulation of the yarn centerlines; must exceed yarn_radius in 3D (0 for a flat 2D weave)">>>;
 
 // Optional knobs shared by both adapters (defaults via
 // numsim_core::set_default so the handler always carries them).
@@ -44,6 +45,9 @@ inline void add_weave_optionals(parameter_controller_t& s) {
       .template add<numsim_core::set_default>(std::size_t{32})
       .template add<min_only<std::size_t{2}>>()
       .template add<numsim_core::description_label<"centerline samples per yarn (>= 2, default 32)">>();
+  s.template insert<std::string>("pattern")
+      .template add<numsim_core::set_default>(std::string{"plain"})
+      .template add<numsim_core::description_label<"interlacing pattern: plain, twill_2_2 or satin_5 (default plain)">>();
   s.template insert<std::string>("warp_phase_name")
       .template add<numsim_core::set_default>(std::string{})
       .template add<numsim_core::description_label<"optional phase name for warp yarns">>();
@@ -52,12 +56,22 @@ inline void add_weave_optionals(parameter_controller_t& s) {
       .template add<numsim_core::description_label<"optional phase name for weft yarns">>();
 }
 
+[[nodiscard]] inline weave_pattern weave_pattern_from_name(std::string const& name) {
+  if (name == "plain") return weave_pattern::plain;
+  if (name == "twill_2_2") return weave_pattern::twill_2_2;
+  if (name == "satin_5") return weave_pattern::satin_5;
+  throw std::runtime_error{"weave: unknown pattern '" + name +
+                           "' (expected 'plain', 'twill_2_2' or 'satin_5')"};
+}
+
 template <typename T>
 [[nodiscard]] weave_generator<T>
 make_weave(parameter_handler_t const& h, std::array<T, 3> const& domain) {
   auto const [nwarp, nweft, r, amp] = weave_fields<T>::extract(h);
   weave_generator<T> w{domain, nwarp, nweft, r, amp,
-                       h.template get<std::size_t>("n_segments_per_yarn")};
+                       h.template get<std::size_t>("n_segments_per_yarn"),
+                       weave_pattern_from_name(
+                           h.template get<std::string>("pattern"))};
   w.set_warp_phase_name(h.template get<std::string>("warp_phase_name"));
   w.set_weft_phase_name(h.template get<std::string>("weft_phase_name"));
   return w;

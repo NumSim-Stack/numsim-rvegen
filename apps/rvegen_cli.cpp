@@ -10,7 +10,10 @@
 // schema, so a single run can fan out to any combination of formats —
 // .geo for FEM, .vtk / .vox for FFT, .svg / .html for visualization.
 
+#include <any>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
@@ -20,6 +23,8 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <typeinfo>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 

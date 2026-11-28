@@ -54,6 +54,21 @@ inline void add_voronoi_fields(parameter_controller_t& s) {
   s.template insert<std::string>("phase_name")
       .template add<numsim_core::set_default>(std::string{})
       .template add<numsim_core::description_label<"optional phase name stamped on every cell">>();
+  s.template insert<bool>("periodic")
+      .template add<numsim_core::set_default>(false)
+      .template add<numsim_core::description_label<"periodic tessellation: cells crossing a face are emitted with their wrapped copies (default false)">>();
+}
+
+// "auto" picks Voro++ when this build has it, otherwise the in-house
+// tessellator (which refuses large seed counts, see voronoi_generator_3d.h).
+[[nodiscard]] inline voronoi_backend voronoi_backend_from_name(std::string const& name) {
+  if (name == "auto")
+    return voro_pp_available() ? voronoi_backend::voro_pp
+                               : voronoi_backend::in_house;
+  if (name == "in_house") return voronoi_backend::in_house;
+  if (name == "voro_pp") return voronoi_backend::voro_pp;
+  throw std::runtime_error{"voronoi_3d: unknown backend '" + name +
+                           "' (expected 'auto', 'in_house' or 'voro_pp')"};
 }
 
 // Flat coordinate list of seeds in `dim` dimensions inside the box.
@@ -125,7 +140,8 @@ protected:
     for (std::size_t i = 0; i + 1 < flat.size(); i += 2)
       seeds.push_back({flat[i], flat[i + 1]});
     auto shapes = voronoi_to_shapes<T>(
-        voronoi_generator_2d<T>{box[0], box[1], std::move(seeds)},
+        voronoi_generator_2d<T>{box[0], box[1], std::move(seeds),
+                                _handler.template get<bool>("periodic")},
         this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;
@@ -146,6 +162,9 @@ public:
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
     detail::add_voronoi_fields(s);
+    s.template insert<std::string>("backend")
+        .template add<numsim_core::set_default>(std::string{"auto"})
+        .template add<numsim_core::description_label<"tessellation backend: auto, in_house or voro_pp (default auto: Voro++ when built with it)">>();
     return s;
   }
 
@@ -163,9 +182,13 @@ protected:
     std::vector<std::array<T, 3>> seeds;
     for (std::size_t i = 0; i + 2 < flat.size(); i += 3)
       seeds.push_back({flat[i], flat[i + 1], flat[i + 2]});
-    auto shapes =
-        voronoi_generator_3d<T>{box[0], box[1], box[2], std::move(seeds)}
-            .build(this->cancel());
+    auto shapes = voronoi_to_shapes<T>(
+        voronoi_generator_3d<T>{
+            box[0], box[1], box[2], std::move(seeds),
+            detail::voronoi_backend_from_name(
+                _handler.template get<std::string>("backend")),
+            _handler.template get<bool>("periodic")},
+        this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;
   }

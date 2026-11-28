@@ -129,8 +129,8 @@ def test_run_deterministic_generators_need_no_termination():
 
     weave = rvegen.run(
         {"domain_box": [1.0, 1.0, 0.4],
-         "generator": {"type": "weave", "n_warp_yarns": 3, "n_weft_yarns": 3,
-                       "yarn_radius": 0.05, "amplitude": 0.05}}
+         "generator": {"type": "weave", "n_warp_yarns": 4, "n_weft_yarns": 2,
+                       "yarn_radius": 0.05, "amplitude": 0.06}}
     )
     assert len(weave) == 6
     assert all(s.kind == "polyline_tube" for s in weave)

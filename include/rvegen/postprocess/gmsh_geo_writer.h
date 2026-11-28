@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <set>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -28,6 +29,7 @@
 #include "../shapes/ellipse.h"
 #include "../shapes/rectangle.h"
 #include "../shapes/sphere.h"
+#include "../shapes/voronoi_cell.h"
 #include "../types.h"
 
 namespace rvegen {
@@ -90,6 +92,26 @@ namespace rvegen {
 // All numbers are written in their shortest round-trip decimal form, so
 // the geometry gmsh sees is exactly the geometry rvegen generated.
 //
+// Tessellation mode (polycrystals): when every shape is a 3D voronoi_cell
+// (automatic), or set_tessellation(true) is called with 2D convex_polygon
+// cells, the shapes are NOT inclusions in a matrix but a partition of the
+// domain. They are emitted with gmsh's built-in kernel as one conforming
+// topology: vertices are merged by coordinate, edges by vertex pair and
+// faces by vertex set, so neighbouring grains share points, curves and
+// surfaces exactly (no boolean operations, no tolerance games inside
+// gmsh). Physical groups: "grain_<i>" (tag i+1, i = index in the shape
+// list) per cell and "boundary" (tag N+1) for the outer faces / curves.
+// Mixing cells with other shapes, or combining with periodic, is rejected.
+// Coordinates are written box-relative with Mesh.ScalingFactor = L like
+// the inclusion path (see step 0), so the merge tolerance and gmsh's own
+// tolerances do not depend on the absolute size. Unsupported: seeds on a
+// lattice jittered by more than 0 but less than about 1e-5 of the cell
+// size, and almost coincident seeds. Their Voronoi vertices are not
+// resolved by the generator (before the robust generator: up to ~1e-7 of
+// the cell size, afterwards: below ~1e-9), the cells come out open after
+// merging, and write() throws "not a closed polyhedron" / "seeds ..."
+// instead of emitting a geometry gmsh may crash on.
+//
 // Supported shapes: circle, rectangle, ellipse, convex_polygon (2D);
 // sphere, box (3D). Any other shape makes write() throw before anything
 // is emitted — dropping an inclusion silently would produce a wrong RVE.
@@ -129,7 +151,10 @@ public:
                        : 0},
         _recombine_quads{handler.contains("recombine_quads")
                              ? handler.template get<bool>("recombine_quads")
-                             : false} {}
+                             : false},
+        _tessellation{handler.contains("tessellation")
+                          ? handler.template get<bool>("tessellation")
+                          : false} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -156,6 +181,8 @@ public:
         .template add<numsim_core::range<0, 10>>();
     s.template insert<bool>("recombine_quads")
         .template add<numsim_core::description_label<"if true, emits Mesh.RecombineAll = 1 in the header — gmsh recombines the triangular mesh into quadrilateral / hexahedral elements. Useful for FE-RVE workflows that need structured-style elements. Default false.">>();
+    s.template insert<bool>("tessellation")
+        .template add<numsim_core::description_label<"if true, 2D convex_polygon shapes are written as a conforming tessellation (partition of the domain with shared edges, physical groups grain_<i> and boundary) instead of inclusions in a matrix. 3D voronoi_cell shapes are always written this way. Not combinable with periodic. Default false.">>();
     return s;
   }
 
@@ -240,6 +267,12 @@ public:
   void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
   [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
 
+  // 2D only: treat convex_polygon shapes as a tessellation (partition of
+  // the domain) instead of inclusions. 3D voronoi_cell lists are always
+  // tessellations. See the file comment.
+  void set_tessellation(bool v) noexcept { _tessellation = v; }
+  [[nodiscard]] bool tessellation() const noexcept { return _tessellation; }
+
   void run(shape_vector const& shapes,
            std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
@@ -272,6 +305,35 @@ public:
     }
     for (auto const v : {_char_length_min, _char_length_max}) {
       require_finite(v, "mesh size");
+    }
+
+    set_length_scale(box);
+
+    // Tessellation (polycrystal) mode: cells partition the domain.
+    const bool any_cell3 = std::any_of(
+        shapes.begin(), shapes.end(), [](auto const& sh) {
+          return dynamic_cast<voronoi_cell<value_type> const*>(sh.get()) != nullptr;
+        });
+    if (any_cell3 && !is_3d) {
+      throw std::runtime_error{
+          "gmsh_geo_writer: voronoi_cell needs a 3D domain"};
+    }
+    if (any_cell3 || (_tessellation && !shapes.empty())) {
+      if (_periodic) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: periodic output is not supported for "
+            "tessellations (cells are not wrapped)"};
+      }
+      if (_phases) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: phases are not supported in tessellation mode "
+            "(grains get \"grain_<i>\" physical groups); detach the "
+            "phase_collection"};
+      }
+      std::ostringstream buf;
+      write_tessellation(buf, shapes, box, is_3d);
+      out << buf.str();
+      return;
     }
 
     // Validate everything BEFORE writing anything, so a throw never
@@ -308,11 +370,29 @@ public:
 
     // Emit into a local buffer (num() rejects NaN/inf by throwing), so
     // `out` only ever receives a complete script.
-    set_length_scale(box);
     std::ostringstream buf;
     write_header(buf);
-    const auto inclusions = is_3d ? write_entities_3d(buf, shapes, box)
-                                  : write_entities_2d(buf, shapes, box);
+    // Degenerate polygons (empty / collapsed / zero-area Voronoi cells)
+    // would produce an invalid `Line Loop{}`; drop them before any entity
+    // or clip id is assigned so ids stay index-aligned with `drawable`.
+    shape_vector drawable;
+    drawable.reserve(shapes.size());
+    for (auto const& s : shapes) {
+      if (!is_3d) {
+        if (auto const* p = dynamic_cast<convex_polygon<value_type> const*>(s.get()); p) {
+          // Clip to the domain: periodic wrap images may poke out of it,
+          // and a polygon with < 3 clipped vertices (empty / collapsed /
+          // sliver) would give an invalid `Line Loop{}`.
+          if (clipped_vertices(*p, box).size() < 3) {
+            buf << "// (degenerate polygon skipped)\n";
+            continue;
+          }
+        }
+      }
+      drawable.push_back(s->clone());
+    }
+    const auto inclusions = is_3d ? write_entities_3d(buf, drawable, box)
+                                  : write_entities_2d(buf, drawable, box);
     const char* kind = is_3d ? "Volume" : "Surface";
     write_fragments(buf, inclusions, kind);
     if (_periodic) write_periodic(buf, box, is_3d);
@@ -424,6 +504,282 @@ private:
     return e;
   }
 
+  // ---- tessellation (conforming partition, built-in kernel) -------------
+  //
+  // Built-in kernel instead of OpenCASCADE + BooleanFragments: the cells
+  // of a Voronoi tessellation share their faces exactly, so the topology
+  // can be deduplicated here and emitted once. That gives a guaranteed
+  // conforming result independent of OCC's boolean tolerances, avoids the
+  // cost of fragmenting N polyhedra and keeps explicit, stable tags.
+  struct topology {
+    std::vector<std::array<value_type, 3>> points;
+    std::map<std::array<long long, 3>, std::size_t> grid;  // quantised point -> id
+    std::map<std::pair<std::size_t, std::size_t>, std::size_t> line_id;
+    std::map<std::pair<std::size_t, std::size_t>, int> line_uses;
+    value_type tol{0};
+
+    std::size_t point(std::array<value_type, 3> const& p) {
+      std::array<long long, 3> k{};
+      for (int a = 0; a < 3; ++a) k[a] = std::llround(p[a] / tol);
+      for (long long dx = -1; dx <= 1; ++dx)
+        for (long long dy = -1; dy <= 1; ++dy)
+          for (long long dz = -1; dz <= 1; ++dz) {
+            auto it = grid.find({k[0] + dx, k[1] + dy, k[2] + dz});
+            if (it == grid.end()) continue;
+            auto const& q = points[it->second - 1];
+            if (std::abs(q[0] - p[0]) <= tol && std::abs(q[1] - p[1]) <= tol &&
+                std::abs(q[2] - p[2]) <= tol) {
+              return it->second;
+            }
+          }
+      points.push_back(p);
+      grid[k] = points.size();
+      return points.size();
+    }
+    // Signed line id for traversal a -> b (negative when reversed).
+    long long line(std::size_t a, std::size_t b) {
+      const auto key = std::minmax(a, b);
+      auto it = line_id.try_emplace(key, line_id.size() + 1).first;
+      ++line_uses[key];
+      return a < b ? static_cast<long long>(it->second)
+                   : -static_cast<long long>(it->second);
+    }
+  };
+
+  // Drop repeated consecutive vertex ids of one face ring.
+  static std::vector<std::size_t> clean_ring(std::vector<std::size_t> r) {
+    r.erase(std::unique(r.begin(), r.end()), r.end());
+    while (r.size() > 1 && r.front() == r.back()) r.pop_back();
+    return r;
+  }
+
+  // Watertightness: a face / edge owned by a single cell must lie on a
+  // wall of the domain box; anywhere else it is a hole (a neighbour is
+  // missing or its geometry does not match).
+  template <typename Topo>
+  static void require_on_wall(std::vector<std::size_t> const& verts,
+                              Topo const& topo,
+                              std::array<value_type, 3> const& box,
+                              char const* what) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      for (value_type wall : {value_type{0}, box[axis]}) {
+        bool all = true;
+        for (auto v : verts) {
+          if (std::abs(topo.points[v - 1][axis] - wall) > topo.tol) all = false;
+        }
+        if (all) return;
+      }
+    }
+    auto const& p = topo.points[verts.front() - 1];
+    throw std::runtime_error{
+        std::string{"gmsh_geo_writer: tessellation is not watertight: a "} +
+        what + " near (" + raw_num(p[0]) + ", " + raw_num(p[1]) + ", " + raw_num(p[2]) +
+        ") belongs to one cell only and is not on the domain boundary "
+        "(missing or mismatching neighbour cell)"};
+  }
+
+  void write_tessellation(std::ostream& out, shape_vector const& shapes,
+                          std::array<value_type, 3> const& box,
+                          bool is_3d) const {
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      const bool ok =
+          is_3d ? dynamic_cast<voronoi_cell<value_type> const*>(shapes[i].get()) != nullptr
+                : dynamic_cast<convex_polygon<value_type> const*>(shapes[i].get()) != nullptr;
+      if (!ok) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: tessellation mode needs every shape to be a " +
+            std::string{is_3d ? "voronoi_cell" : "convex_polygon"} +
+            "; shape #" + std::to_string(i) +
+            " is not (mixing cells with inclusions is not supported)"};
+      }
+    }
+    topology topo;
+    // Features smaller than this (vertices closer than tol, edges and
+    // faces that collapse with them) are merged. gmsh segfaults or fails
+    // with PLC errors on slivers around 1e-8..1e-6 of the domain size, so
+    // the merge radius is well above that; nearly degenerate Voronoi
+    // vertices (jittered lattices) collapse onto one point instead.
+    const value_type L = std::max({box[0], box[1], box[2]});
+    topo.tol = value_type{1e-5} * L;
+
+    // Per cell: list of faces as vertex-id rings (2D: one ring per cell).
+    std::vector<std::vector<std::vector<std::size_t>>> cells(shapes.size());
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      if (is_3d) {
+        auto const& c = static_cast<voronoi_cell<value_type> const&>(*shapes[i]);
+        std::vector<std::size_t> vid(c.vertices().size());
+        for (std::size_t k = 0; k < vid.size(); ++k) {
+          auto const& v = c.vertices()[k];
+          vid[k] = topo.point({v[0], v[1], v[2]});
+        }
+        for (auto const& f : c.faces()) {
+          std::vector<std::size_t> ring;
+          for (auto idx : f) ring.push_back(vid[idx]);
+          ring = clean_ring(std::move(ring));
+          if (ring.size() >= 3) cells[i].push_back(std::move(ring));
+        }
+      } else {
+        auto const& p = static_cast<convex_polygon<value_type> const&>(*shapes[i]);
+        std::vector<std::size_t> ring;
+        for (auto const& v : p.vertices()) {
+          ring.push_back(topo.point({v[0], v[1], value_type{0}}));
+        }
+        ring = clean_ring(std::move(ring));
+        if (ring.size() < 3) {
+          throw std::runtime_error{"gmsh_geo_writer: degenerate cell #" +
+                                   std::to_string(i)};
+        }
+        cells[i].push_back(std::move(ring));
+      }
+    }
+
+    // Every cell must be a closed polyhedron / polygon after merging: at
+    // least 4 faces (3 edges in 2D) and each edge used exactly twice, once
+    // per direction. Otherwise gmsh would receive an open or collapsed
+    // volume, which it may segfault on; reject with a clear error instead.
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      if (cells[i].empty() || (is_3d && cells[i].size() < 4)) {
+        throw std::runtime_error{
+            "gmsh_geo_writer: cell #" + std::to_string(i) +
+            " collapsed to a degenerate shape (features below " +
+            raw_num(topo.tol) + "); seeds are duplicated or closer than that"};
+      }
+      if (!is_3d) continue;  // a 2D cell is one ring, closed by construction
+      std::map<std::pair<std::size_t, std::size_t>, std::pair<int, int>> edge;
+      for (auto const& ring : cells[i]) {
+        for (std::size_t k = 0; k < ring.size(); ++k) {
+          const auto a = ring[k];
+          const auto b = ring[(k + 1) % ring.size()];
+          auto& e = edge[std::minmax(a, b)];
+          ++e.first;
+          e.second += a < b ? 1 : -1;
+        }
+      }
+      for (auto const& [key, e] : edge) {
+        if (e.first != 2 || e.second != 0) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: cell #" + std::to_string(i) +
+              " is not a closed polyhedron after merging features below " +
+              raw_num(topo.tol) + " (an edge is not shared by exactly two of "
+              "its faces): the seeds form a nearly degenerate configuration "
+              "(a lattice jittered by more than 0 but less than ~1e-5 of "
+              "the cell size, or almost coincident seeds), which the "
+              "Voronoi generator cannot resolve reliably. Separate the "
+              "seeds further or snap them exactly onto the lattice"};
+        }
+      }
+    }
+
+    // Unique surfaces (3D), keyed by sorted vertex set.
+    struct face_info {
+      std::size_t id{};
+      std::vector<std::size_t> verts;
+      std::vector<long long> lines;
+      int uses{0};
+    };
+    std::map<std::vector<std::size_t>, face_info> faces;
+    std::vector<std::vector<std::size_t>> cell_faces(shapes.size());
+    std::vector<std::vector<long long>> cell_loops(shapes.size());
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      for (auto const& ring : cells[i]) {
+        if (!is_3d) {
+          for (std::size_t k = 0; k < ring.size(); ++k) {
+            cell_loops[i].push_back(topo.line(ring[k], ring[(k + 1) % ring.size()]));
+          }
+          continue;
+        }
+        auto key = ring;
+        std::sort(key.begin(), key.end());
+        auto it = faces.find(key);
+        if (it == faces.end()) {
+          face_info fi;
+          fi.id = faces.size() + 1;
+          fi.verts = ring;
+          for (std::size_t k = 0; k < ring.size(); ++k) {
+            fi.lines.push_back(topo.line(ring[k], ring[(k + 1) % ring.size()]));
+          }
+          it = faces.emplace(std::move(key), std::move(fi)).first;
+        }
+        ++it->second.uses;
+        if (it->second.uses > 2) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: more than two cells claim the same face "
+              "(cell #" + std::to_string(i) + " is the third); cells "
+              "overlap or seeds are duplicated / closer than " +
+              raw_num(topo.tol) + ", so they do not form a valid tessellation"};
+        }
+        cell_faces[i].push_back(it->second.id);
+      }
+    }
+
+    write_header(out, false);
+    for (std::size_t k = 0; k < topo.points.size(); ++k) {
+      auto const& p = topo.points[k];
+      out << "Point(" << k + 1 << ") = {" << num(p[0]) << ", " << num(p[1])
+          << ", " << num(p[2]) << "};\n";
+    }
+    for (auto const& [key, id] : topo.line_id) {
+      out << "Line(" << id << ") = {" << key.first << ", " << key.second << "};\n";
+    }
+    auto write_ids = [&out](auto const& ids) {
+      for (std::size_t k = 0; k < ids.size(); ++k) {
+        if (k > 0) out << ", ";
+        out << ids[k];
+      }
+    };
+    std::vector<std::size_t> boundary;
+    if (is_3d) {
+      std::vector<face_info const*> by_id(faces.size());
+      for (auto const& [key, f] : faces) by_id[f.id - 1] = &f;
+      for (auto const* f : by_id) {
+        out << "Curve Loop(" << f->id << ") = {";
+        write_ids(f->lines);
+        out << "};\nPlane Surface(" << f->id << ") = {" << f->id << "};\n";
+        if (f->uses == 1) {
+          require_on_wall(f->verts, topo, box, "face");
+          boundary.push_back(f->id);
+        }
+      }
+      for (std::size_t i = 0; i < shapes.size(); ++i) {
+        out << "Surface Loop(" << i + 1 << ") = {";
+        write_ids(cell_faces[i]);
+        out << "};\nVolume(" << i + 1 << ") = {" << i + 1 << "};\n";
+      }
+    } else {
+      for (std::size_t i = 0; i < shapes.size(); ++i) {
+        out << "Curve Loop(" << i + 1 << ") = {";
+        write_ids(cell_loops[i]);
+        out << "};\nPlane Surface(" << i + 1 << ") = {" << i + 1 << "};\n";
+      }
+      for (auto const& [key, id] : topo.line_id) {
+        const int uses = topo.line_uses.at(key);
+        if (uses > 2) {
+          throw std::runtime_error{
+              "gmsh_geo_writer: more than two cells share one edge; cells "
+              "overlap or seeds are duplicated / closer than " +
+              raw_num(topo.tol) + ", so they do not form a valid tessellation"};
+        }
+        if (uses == 1) {
+          require_on_wall({key.first, key.second}, topo, box, "edge");
+          boundary.push_back(id);
+        }
+      }
+    }
+    const char* kind = is_3d ? "Volume" : "Surface";
+    out << "\n// One physical group per grain (tag = index + 1) and one for the\n"
+           "// outer boundary.\n";
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      out << "Physical " << kind << "(\"grain_" << i << "\", " << i + 1
+          << ") = {" << i + 1 << "};\n";
+    }
+    if (!boundary.empty()) {
+      out << "Physical " << (is_3d ? "Surface" : "Curve") << "(\"boundary\", "
+          << shapes.size() + 1 << ") = {";
+      write_ids(boundary);
+      out << "};\n";
+    }
+  }
+
   // Distance from `p` to the domain box (0 when inside), over `dim` axes.
   static value_type distance_to_box(std::array<value_type, 3> const& p,
                                     std::array<value_type, 3> const& box,
@@ -516,15 +872,15 @@ private:
     return false;
   }
 
-  void write_header(std::ostream& out) const {
+  void write_header(std::ostream& out, bool occ = true) const {
     out << "// rvegen — generated gmsh .geo script\n";
     if (_length_scale != value_type{1}) {
       out << "// Lengths are in box-relative units (divided by the largest box\n"
              "// extent L = " << raw_num(_length_scale) << "); Mesh.ScalingFactor = L below makes gmsh\n"
-             "// save the mesh in the original units. This keeps OpenCASCADE's\n"
-             "// absolute tolerances independent of the RVE size.\n";
+             "// save the mesh in the original units. This keeps the geometry\n"
+             "// tolerances independent of the RVE size.\n";
     }
-    out << "SetFactory(\"OpenCASCADE\");\n";
+    if (occ) out << "SetFactory(\"OpenCASCADE\");\n";
     if (_length_scale != value_type{1}) {
       out << "Mesh.ScalingFactor = " << raw_num(_length_scale) << ";\n";
     }
@@ -585,7 +941,7 @@ private:
       } else if (auto const* e = dynamic_cast<ellipse<value_type> const*>(raw); e) {
         write_ellipse(out, *e, entity_id);
       } else if (auto const* p = dynamic_cast<convex_polygon<value_type> const*>(raw); p) {
-        write_polygon(out, *p, entity_id);
+        write_polygon(out, clipped_vertices(*p, domain_box), entity_id);
       }
       ids.push_back(entity_id++);
     }
@@ -701,13 +1057,75 @@ private:
     }
   }
 
+  // Sutherland-Hodgman clip of a (convex) polygon against [0,Lx]x[0,Ly];
+  // consecutive near-duplicate vertices (a vertex lying on a clip edge) are
+  // merged so no zero-length Line is emitted. A polygon fully inside is
+  // returned unchanged. Returns fewer than 3 vertices when nothing (or only
+  // a sliver) remains.
+  static std::vector<std::array<value_type, 2>>
+  clip_polygon_to_rect(std::vector<std::array<value_type, 2>> poly,
+                       value_type Lx, value_type Ly) {
+    const value_type eps = std::min(Lx, Ly) * value_type{1e-12};
+    // axis, bound, keep-side sign: keep points with sign*(p[axis]-bound) <= 0
+    struct edge { int axis; value_type bound; value_type sign; };
+    const edge edges[4] = {{0, value_type{0}, value_type{-1}},
+                           {0, Lx, value_type{1}},
+                           {1, value_type{0}, value_type{-1}},
+                           {1, Ly, value_type{1}}};
+    for (auto const& e : edges) {
+      if (poly.size() < 3) return {};
+      std::vector<std::array<value_type, 2>> out;
+      const std::size_t n = poly.size();
+      for (std::size_t i = 0; i < n; ++i) {
+        auto const& a = poly[i];
+        auto const& b = poly[(i + 1) % n];
+        const value_type da = e.sign * (a[e.axis] - e.bound);
+        const value_type db = e.sign * (b[e.axis] - e.bound);
+        const bool ain = da <= value_type{0}, bin = db <= value_type{0};
+        if (ain) out.push_back(a);
+        if (ain != bin) {
+          const value_type t = da / (da - db);
+          std::array<value_type, 2> q{a[0] + t * (b[0] - a[0]),
+                                      a[1] + t * (b[1] - a[1])};
+          q[e.axis] = e.bound;   // exactly on the boundary
+          out.push_back(q);
+        }
+      }
+      poly = std::move(out);
+    }
+    std::vector<std::array<value_type, 2>> res;
+    for (auto const& v : poly) {
+      if (!res.empty() && std::abs(v[0] - res.back()[0]) <= eps &&
+          std::abs(v[1] - res.back()[1]) <= eps) continue;
+      res.push_back(v);
+    }
+    while (res.size() > 1 && std::abs(res.front()[0] - res.back()[0]) <= eps &&
+           std::abs(res.front()[1] - res.back()[1]) <= eps) res.pop_back();
+    // Drop slivers with (numerically) zero area.
+    value_type area2{0};
+    for (std::size_t i = 0; i < res.size(); ++i) {
+      auto const& a = res[i];
+      auto const& b = res[(i + 1) % res.size()];
+      area2 += a[0] * b[1] - a[1] * b[0];
+    }
+    if (res.size() < 3 || std::abs(area2) <= eps * std::max(Lx, Ly)) return {};
+    return res;
+  }
+
+  static std::vector<std::array<value_type, 2>>
+  clipped_vertices(convex_polygon<value_type> const& p, std::array<value_type, 3> const& box) {
+    std::vector<std::array<value_type, 2>> poly;
+    for (auto const& v : p.vertices()) poly.push_back({v[0], v[1]});
+    return clip_polygon_to_rect(std::move(poly), box[0], box[1]);
+  }
+
   // Points / lines / loop get fresh tags from gmsh (newp / newl / newll)
   // so they never collide with the tags OCC auto-assigns to the
   // boundaries of Rectangle / Disk entities. Only the Plane Surface uses
   // the explicit inclusion id.
-  void write_polygon(std::ostream& out, convex_polygon<value_type> const& p,
-                            std::size_t id) const {
-    auto const& verts = p.vertices();
+  void write_polygon(std::ostream& out,
+                     std::vector<std::array<value_type, 2>> const& verts,
+                     std::size_t id) const {
     const std::size_t n = verts.size();
     for (std::size_t k = 0; k < n; ++k) {
       out << "_p" << k << " = newp; Point(_p" << k << ") = {"
@@ -1000,6 +1418,7 @@ private:
   int _element_order{0};
   int _algorithm{0};
   bool _recombine_quads{false};
+  bool _tessellation{false};
 };
 
 } // namespace rvegen

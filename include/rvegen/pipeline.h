@@ -18,7 +18,9 @@
 // `pipeline_options::info` / `warn` so embedders stay silent by default.
 
 #include <algorithm>
+#include <any>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -28,10 +30,13 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <typeinfo>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "json/parameter_visitor_nlohmann.h"
 #include "rvegen.h"
 
 namespace rvegen {
@@ -103,9 +108,31 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
 
   if (config.contains("domain_box")) {
     auto const& db = config.at("domain_box");
-    out.domain_box[0] = db.at(0).get<double>();
-    out.domain_box[1] = db.at(1).get<double>();
-    out.domain_box[2] = db.size() >= 3 ? db.at(2).get<double>() : 0.0;
+    auto& box = out.domain_box;
+    if (!db.is_array() || (db.size() != 2 && db.size() != 3)) {
+      throw std::invalid_argument(
+          "domain_box must be an array of 2 or 3 numbers, got " + db.dump());
+    }
+    box[2] = 0.0;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+      if (!db[i].is_number()) {
+        throw std::invalid_argument(
+            "domain_box entries must be numbers, got " + db.dump());
+      }
+      box[i] = db[i].get<double>();
+      if (!std::isfinite(box[i])) {
+        throw std::invalid_argument(
+            "domain_box entries must be finite, got " + db.dump());
+      }
+    }
+    if (!(box[0] > 0.0) || !(box[1] > 0.0)) {
+      throw std::invalid_argument(
+          "domain_box x and y extents must be > 0, got " + db.dump());
+    }
+    if (box[2] < 0.0) {
+      throw std::invalid_argument(
+          "domain_box z extent must be >= 0 (0 means 2D), got " + db.dump());
+    }
   }
   // Warn about unknown top-level keys (typos would otherwise be ignored).
   for (auto const& [key, value] : config.items()) {
@@ -121,22 +148,21 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
                 "' is ignored");
     }
   }
-  // The sampling engine is a 32-bit mt19937: reject seeds it would silently
-  // truncate (or wrap, for negative JSON values) instead of mis-reporting.
+  // A config seed goes through the same strict integer reader as the
+  // schema keys (rejects negative, fractional and non-numeric values by
+  // key). The engine is the 32-bit std::mt19937; a wider seed would be
+  // truncated silently, so reject it instead.
   if (opts.seed) {
     out.seed = *opts.seed;
   } else if (config.contains("seed")) {
-    auto const& sj = config.at("seed");
-    if (!sj.is_number_integer() ||
-        (!sj.is_number_unsigned() && sj.get<std::int64_t>() < 0)) {
-      throw std::runtime_error{
-          "'seed' must be an integer in [0, 4294967295] (32-bit engine)"};
-    }
-    out.seed = sj.get<std::uint64_t>();
+    parameter_visitor_nlohmann seed_reader{config};
+    out.seed = std::any_cast<std::uint64_t>(
+        seed_reader.read("seed", typeid(std::uint64_t)));
   }
-  if (out.seed > std::numeric_limits<std::uint32_t>::max()) {
-    throw std::runtime_error{
-        "'seed' must be an integer in [0, 4294967295] (32-bit engine)"};
+  if (!std::in_range<std::uint32_t>(out.seed)) {
+    throw std::invalid_argument(
+        "seed must be <= 4294967295 (the engine is 32-bit), got " +
+        std::to_string(out.seed));
   }
   std::mt19937 engine{static_cast<std::uint32_t>(out.seed)};
 
@@ -255,6 +281,17 @@ generate(nlohmann::json const& config, pipeline_options const& opts = {}) {
   if (opts.progress.cancel()) throw pipeline_cancelled{};
   opts.info("rvegen: generated " + std::to_string(out.shapes.size()) +
             " shape" + (out.shapes.size() == 1 ? "" : "s"));
+  // A generator also returns when it exhausts max_attempts. Detect that
+  // by evaluating the termination predicate on the result (random_generator
+  // evaluates it with count_all = true, the others with the primaries-only
+  // default).
+  const bool counts_all =
+      config.at("generator").value("type", std::string{}) == "random";
+  if (!termination->is_met(out.shapes, counts_all)) {
+    opts.warn("rvegen: warning — stopped at max_attempts before reaching "
+              "the termination target (" + std::to_string(out.shapes.size()) +
+              " shapes placed).");
+  }
 
   // Shape -> phase assignment. The collection is handed to every
   // post-process through post_process_base::set_phases.

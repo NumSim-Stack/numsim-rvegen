@@ -154,7 +154,10 @@ private:
 template <typename T>
 [[nodiscard]] inline bool
 collide_two_stage(shape_base<T> const& a, shape_base<T> const& b) noexcept {
-  if (!aabb_overlap(*a.bounding_box(), *b.bounding_box())) return false;
+  auto const* abb = a.bounding_box();
+  auto const* bbb = b.bounding_box();
+  if (!abb || !bbb) return false;
+  if (!aabb_overlap(*abb, *bbb)) return false;
   return collision_dispatcher<T>::instance()(a, b);
 }
 

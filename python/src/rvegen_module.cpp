@@ -36,13 +36,15 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <random>
 
+#include "rvegen/generators/grain_size_control.h"
 #include "rvegen/phase/phase_assignment.h"
 #include "rvegen/pipeline.h"
 #include "rvegen/postprocess/voxel_grid.h"
 #include "rvegen/schema/schema_to_json.h"
-
 #include "rvegen/generators/voronoi_generator_2d.h"
+#include "rvegen/generators/voronoi_generator_3d.h"
 #include "rvegen/generators/weave_generator.h"
 #include "rvegen/shapes/box.h"
 #include "rvegen/shapes/circle.h"
@@ -430,8 +432,11 @@ PYBIND11_MODULE(_core, m) {
   // build_polygons() returns the raw vertex lists; build_cells()
   // returns them as ConvexPolygon objects ready for downstream use.
   py::class_<rvegen::voronoi_generator_2d<double>>(m, "VoronoiGenerator2d")
-      .def(py::init<double, double, std::vector<std::array<double, 2>>>(),
-           py::arg("Lx"), py::arg("Ly"), py::arg("seeds"))
+      .def(py::init<double, double, std::vector<std::array<double, 2>>, bool,
+                    std::vector<double>>(),
+           py::arg("Lx"), py::arg("Ly"), py::arg("seeds"),
+           py::arg("periodic") = false,
+           py::arg("weights") = std::vector<double>{})
       .def_property_readonly(
           "seed_count",
           [](rvegen::voronoi_generator_2d<double> const& g) {
@@ -446,14 +451,18 @@ PYBIND11_MODULE(_core, m) {
       .def("build_cells",
            [](rvegen::voronoi_generator_2d<double> const& g) {
              // Iterate the raw polygons and wrap each as a value
-             // ConvexPolygon. Degenerate (<3 vertex) cells are skipped
-             // — same convention as voronoi_to_shapes on the C++ side.
+             // ConvexPolygon. Degenerate (<3 vertex) cells become empty
+             // placeholders so cell i always matches seed i (same
+             // convention as voronoi_to_shapes on the C++ side).
              auto polys = interruptible(
                  [&](rvegen::cancel_fn const* c) { return g.build(c); });
              std::vector<rvegen::convex_polygon<double>> out;
              out.reserve(polys.size());
              for (auto& v : polys) {
-               if (v.size() < 3) continue;
+               if (v.size() < 3) {
+                 out.emplace_back();
+                 continue;
+               }
                out.emplace_back(std::move(v));
              }
              return out;
@@ -461,20 +470,166 @@ PYBIND11_MODULE(_core, m) {
            "Returns a list of ConvexPolygon — Voronoi cells ready for "
            "downstream is_inside / area queries.");
 
-  // Deterministic plain-weave generator (#3 / #109). build() returns
+  // Bounded or periodic 3D Voronoi / Laguerre tessellation (#8, #70).
+  // build() returns one VoronoiCell per seed, in seed order. Periodic
+  // cells are whole convex polytopes around their seed and may extend
+  // outside the box.
+  m.def("voro_pp_available", &rvegen::voro_pp_available,
+        "True if rvegen was built with the Voro++ backend.");
+  // "auto" (default) picks Voro++ when the module was built with it
+  // (RVEGEN_WITH_VORO_PP; roughly linear in N) and otherwise falls back to
+  // the in-house backend. The in-house backend is brute force: one bounded
+  // tessellation costs ~N^4 (N=100 about 1 s, N=300 about 85 s), a
+  // periodic one ~N^1.5 (N=3200 about 67 s); it refuses more than 300
+  // (bounded) / 3000 (periodic) seeds with an error pointing to Voro++.
+  // python/CMakeLists.txt does not enable Voro++, so a default Python
+  // build resolves "auto" to the in-house backend.
+  auto parse_backend = [](std::string const& name) {
+    if (name == "auto") {
+      return rvegen::voro_pp_available() ? rvegen::voronoi_backend::voro_pp
+                                         : rvegen::voronoi_backend::in_house;
+    }
+    if (name == "in_house") return rvegen::voronoi_backend::in_house;
+    if (name == "voro_pp") return rvegen::voronoi_backend::voro_pp;
+    throw py::value_error("backend must be 'auto', 'in_house' or 'voro_pp'");
+  };
+  py::class_<rvegen::voronoi_generator_3d<double>>(m, "VoronoiGenerator3d")
+      .def(py::init([parse_backend](double Lx, double Ly, double Lz,
+                                    std::vector<std::array<double, 3>> seeds,
+                                    bool periodic, std::string const& backend,
+                                    std::vector<double> weights) {
+             return rvegen::voronoi_generator_3d<double>{
+                 Lx, Ly, Lz, std::move(seeds), parse_backend(backend),
+                 periodic, std::move(weights)};
+           }),
+           py::arg("Lx"), py::arg("Ly"), py::arg("Lz"), py::arg("seeds"),
+           py::arg("periodic") = false, py::arg("backend") = "auto",
+           py::arg("weights") = std::vector<double>{})
+      .def_property_readonly(
+          "seed_count",
+          [](rvegen::voronoi_generator_3d<double> const& g) {
+            return g.seed_count();
+          })
+      .def_property_readonly(
+          "periodic",
+          [](rvegen::voronoi_generator_3d<double> const& g) {
+            return g.periodic();
+          })
+      .def("build",
+           [](rvegen::voronoi_generator_3d<double> const& g) {
+             std::vector<rvegen::voronoi_cell<double>> out;
+             std::vector<std::size_t> empty;
+             {
+               // Tessellation is pure C++ and can take long: release the GIL.
+               py::gil_scoped_release release;
+               auto cells = g.build();
+               empty = g.empty_cell_indices(cells);
+               for (auto const& sh : cells) {
+                 out.push_back(
+                     static_cast<rvegen::voronoi_cell<double> const&>(*sh));
+               }
+             }
+             if (!empty.empty()) {
+               // Weighted (power-diagram) seeds can end up with no cell.
+               std::string msg = std::to_string(empty.size()) +
+                                 " seed(s) have an empty cell (e.g. index " +
+                                 std::to_string(empty.front()) +
+                                 "); the weights are too spread out";
+               PyErr_WarnEx(PyExc_RuntimeWarning, msg.c_str(), 1);
+               if (PyErr_Occurred()) throw py::error_already_set();
+             }
+             return out;
+           },
+           "Returns a list of VoronoiCell, one per seed (index = seed index).");
+
+  // Lognormal grain-size control: seeds + Laguerre weights (see
+  // grain_size_control.h). Returns a dict.
+  m.def("lognormal_grain_seeds_3d",
+        [parse_backend](double L, double mean_diameter, double sigma_ln,
+                        unsigned rng_seed, std::string const& backend,
+                        bool periodic, double tolerance,
+                        std::size_t max_iterations, std::size_t max_restarts) {
+          const auto be = parse_backend(backend);   // may throw: GIL held
+          rvegen::grain_size_result<double> r;
+          {
+            // Pure C++ from here (many tessellations): let other Python
+            // threads run. Ctrl-C is NOT delivered until the call returns
+            // (no PyErr_CheckSignals is wired to progress_options::cancel).
+            py::gil_scoped_release release;
+            std::mt19937 eng{rng_seed};
+            r = rvegen::lognormal_grain_seeds_3d<double>(
+                L, L, L, mean_diameter, sigma_ln, eng, be, periodic, tolerance,
+                max_iterations, max_restarts);
+          }
+          if (!r.converged) {
+            PyErr_WarnEx(
+                PyExc_RuntimeWarning,
+                "lognormal_grain_seeds_3d did not reach the requested volume "
+                "tolerance; the grain-size distribution is approximate "
+                "(see 'max_rel_volume_error' / 'converged')",
+                1);
+            if (PyErr_Occurred()) throw py::error_already_set();
+          }
+          py::dict d;
+          d["seeds"] = r.seeds;
+          d["weights"] = r.weights;
+          d["target_diameters"] = r.target_diameters;
+          d["diameters"] = r.diameters;
+          d["max_rel_volume_error"] = r.max_rel_volume_error;
+          d["converged"] = r.converged;
+          d["empty_cells"] = r.empty_cells;
+          d["iterations"] = r.iterations;
+          d["restarts"] = r.restarts;
+          return d;
+        },
+        py::arg("L"), py::arg("mean_diameter"), py::arg("sigma_ln"),
+        py::arg("rng_seed") = 0, py::arg("backend") = "auto",
+        py::arg("periodic") = true, py::arg("tolerance") = 0.01,
+        py::arg("max_iterations") = 1000, py::arg("max_restarts") = 2);
+
+  // Deterministic weave generator (plain / twill 2/2 / satin 5) (#3 / #109). build() returns
   // a Python list of PolylineTube — every yarn the generator produces
   // IS a polyline_tube by construction, so the down-cast is type-safe.
   // Each tube in the list owns its own data (deep-copied on the way
   // out so Python lifetime is independent of the generator).
+  py::enum_<rvegen::weave_pattern>(m, "WeavePattern")
+      .value("plain", rvegen::weave_pattern::plain)
+      .value("twill_2_2", rvegen::weave_pattern::twill_2_2)
+      .value("satin_5", rvegen::weave_pattern::satin_5);
+
+  // `pattern` accepts a WeavePattern or one of the strings "plain",
+  // "twill_2_2", "satin_5".
   py::class_<rvegen::weave_generator<double>>(m, "WeaveGenerator")
-      .def(py::init<std::array<double, 3> const&, std::size_t, std::size_t,
-                    double, double, std::size_t>(),
+      .def(py::init([](std::array<double, 3> const& box, std::size_t n_warp,
+                       std::size_t n_weft, double r, double a,
+                       std::size_t n_seg, py::object const& pattern) {
+             rvegen::weave_pattern p = rvegen::weave_pattern::plain;
+             if (py::isinstance<py::str>(pattern)) {
+               const auto name = pattern.cast<std::string>();
+               if (name == "plain") p = rvegen::weave_pattern::plain;
+               else if (name == "twill_2_2") p = rvegen::weave_pattern::twill_2_2;
+               else if (name == "satin_5") p = rvegen::weave_pattern::satin_5;
+               else throw py::value_error(
+                   "WeaveGenerator: unknown pattern '" + name +
+                   "' (expected plain, twill_2_2 or satin_5)");
+             } else {
+               p = pattern.cast<rvegen::weave_pattern>();
+             }
+             return rvegen::weave_generator<double>(box, n_warp, n_weft, r, a,
+                                                    n_seg, p);
+           }),
            py::arg("domain_box"),
            py::arg("n_warp_yarns"),
            py::arg("n_weft_yarns"),
            py::arg("yarn_radius"),
            py::arg("amplitude"),
-           py::arg("n_segments_per_yarn") = std::size_t{32})
+           py::arg("n_segments_per_yarn") = std::size_t{32},
+           py::arg("pattern") = rvegen::weave_pattern::plain)
+      .def_property_readonly(
+          "pattern",
+          [](rvegen::weave_generator<double> const& g) {
+            return g.pattern();
+          })
       .def_property_readonly(
           "n_warp_yarns",
           [](rvegen::weave_generator<double> const& g) {

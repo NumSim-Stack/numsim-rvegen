@@ -3,20 +3,10 @@
 // voronoi_cell — a convex polyhedral inclusion defined by vertices and
 // faces. Foundation for #8 (Voronoi-based polycrystal generator).
 //
-// Why this scope and why no CGAL dependency yet:
-//   The full polycrystal generator wants to (a) sample N seed points
-//   in the RVE box, (b) compute a periodic 3D Voronoi tessellation,
-//   and (c) emit each cell as a shape. Step (b) needs CGAL or Voro++
-//   — both are heavyweight dependencies (CGAL is ~200 MB installed).
-//   Adding them as hard rvegen deps to land an unused phase-1 cell
-//   shape is premature.
-//
-//   Instead, this PR ships the *consumer* side: a convex polyhedron
-//   shape that can be constructed from pre-computed cell geometry.
-//   External tools (Voro++, qhull, CGAL outside rvegen, even SciPy
-//   `scipy.spatial.Voronoi` from Python) can produce the cell vertex
-//   / face data; rvegen ingests it. The follow-up PR adds the
-//   in-tree tessellator.
+// The shape is a pure consumer of pre-computed cell geometry: the
+// in-tree `voronoi_generator_3d` produces it, and external tools
+// (Voro++, qhull, CGAL, SciPy `scipy.spatial.Voronoi`) can too.
+// Face indices are validated in the constructor (std::out_of_range).
 //
 // What this header lands today (phase 1 of #8):
 //   * `voronoi_cell<T>` — vertices (`std::vector<gte::Vector3<T>>`)
@@ -40,11 +30,11 @@
 //   that's the producer's responsibility.
 //
 // Out of scope here, ships in follow-up PRs against #8:
-//   * `voronoi_polycrystal_generator` — produces N tessellated cells
-//     for a given seed-point distribution. Needs Voro++ or CGAL; pick
-//     one and add it as an optional dependency.
-//   * Periodic Voronoi (cells that wrap across the RVE box). Trivial
-//     once the tessellator is wired in.
+//   * (Periodic Voronoi now exists: voronoi_generator_{2d,3d} with
+//     `periodic = true` return the cell around each seed, possibly
+//     poking out of the box; periodic images come from
+//     generate_periodic_wraps, which derives the bounding box itself if
+//     the cell has none.)
 //   * `voronoi_cell_input` — JSON-driven loader (cell vertex / face
 //     data is heterogeneous; needs careful schema design).
 //   * Precise `collision_details(voronoi_cell, X)` overloads — falls
@@ -59,7 +49,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -86,6 +78,14 @@ public:
   voronoi_cell(std::vector<vector_type> vertices,
                std::vector<face_type> faces)
       : _vertices{std::move(vertices)}, _faces{std::move(faces)} {
+    for (auto const& face : _faces) {
+      for (auto idx : face) {
+        if (idx >= _vertices.size()) {
+          throw std::out_of_range{
+              "voronoi_cell: face vertex index out of range"};
+        }
+      }
+    }
     rebuild_face_planes();
   }
 
@@ -119,25 +119,33 @@ public:
     return std::abs(sum) / T{6};
   }
 
+  // Per-axis largest one-sided extent from get_middle_point() (the volume
+  // centroid), so middle +/- max_expansion() always encloses the cell (#79).
   [[nodiscard]] std::array<T, 3> max_expansion() const override {
     auto bb = compute_bb_extents();
-    return {(bb[1][0] - bb[0][0]) * T{0.5},
-            (bb[1][1] - bb[0][1]) * T{0.5},
-            (bb[1][2] - bb[0][2]) * T{0.5}};
+    std::array<T, 3> r{};
+    for (int k = 0; k < 3; ++k) {
+      r[k] = std::max(bb[1][k] - _volume_centroid[k],
+                      _volume_centroid[k] - bb[0][k]);
+    }
+    return r;
   }
 
+  // Volume centroid (not the vertex mean; #79).
   [[nodiscard]] std::array<T, 3> get_middle_point() const override {
-    return {_centroid[0], _centroid[1], _centroid[2]};
+    return {_volume_centroid[0], _volume_centroid[1], _volume_centroid[2]};
   }
 
   void set_middle_point(std::array<T, 3> middle_point) override {
-    const T dx = middle_point[0] - _centroid[0];
-    const T dy = middle_point[1] - _centroid[1];
-    const T dz = middle_point[2] - _centroid[2];
+    const T dx = middle_point[0] - _volume_centroid[0];
+    const T dy = middle_point[1] - _volume_centroid[1];
+    const T dz = middle_point[2] - _volume_centroid[2];
     for (auto& v : _vertices) {
       v[0] += dx; v[1] += dy; v[2] += dz;
     }
     _centroid[0] += dx; _centroid[1] += dy; _centroid[2] += dz;
+    _volume_centroid[0] += dx; _volume_centroid[1] += dy;
+    _volume_centroid[2] += dz;
     // Face planes translate with the cell — re-derive offsets only.
     for (auto& plane : _face_planes) {
       plane.offset += plane.normal[0] * dx + plane.normal[1] * dy +
@@ -269,6 +277,32 @@ private:
         _face_planes.push_back({n, offset0});
       }
     }
+    compute_volume_centroid();
+  }
+
+  // Volume centroid from signed tetrahedra (vertex-mean apex, face fans).
+  // Faces are outward-wound after rebuild_face_planes, so signs agree.
+  // Falls back to the vertex mean for a degenerate (zero-volume) cell.
+  void compute_volume_centroid() {
+    _volume_centroid = _centroid;
+    T vol6{0};
+    vector_type acc = vector_type::Zero();
+    for (auto const& face : _faces) {
+      if (face.size() < 3) continue;
+      const vector_type a = _vertices[face[0]] - _centroid;
+      for (std::size_t i = 1; i + 1 < face.size(); ++i) {
+        const vector_type b = _vertices[face[i]] - _centroid;
+        const vector_type d = _vertices[face[i + 1]] - _centroid;
+        const T v6 = a[0] * (b[1] * d[2] - b[2] * d[1]) +
+                     a[1] * (b[2] * d[0] - b[0] * d[2]) +
+                     a[2] * (b[0] * d[1] - b[1] * d[0]);
+        vol6 += v6;
+        acc += (a + b + d) * v6;   // tet centroid = (apex_c + a + b + d)/4, apex_c = 0
+      }
+    }
+    if (std::abs(vol6) > T{0}) {
+      _volume_centroid = _centroid + acc / (T{4} * vol6);
+    }
   }
 
   [[nodiscard]] std::array<std::array<T, 3>, 2> compute_bb_extents() const {
@@ -289,7 +323,8 @@ private:
   std::vector<vector_type> _vertices;
   std::vector<face_type> _faces;
   std::vector<face_plane> _face_planes;
-  vector_type _centroid{vector_type::Zero()};
+  vector_type _centroid{vector_type::Zero()};          // vertex mean (interior reference)
+  vector_type _volume_centroid{vector_type::Zero()};   // true volume centroid
 };
 
 } // namespace rvegen
