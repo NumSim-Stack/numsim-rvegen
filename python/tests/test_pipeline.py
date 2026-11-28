@@ -602,3 +602,44 @@ def test_invalid_domain_box_is_rejected(box):
     cfg["domain_box"] = box
     with pytest.raises(ValueError, match="domain_box"):
         rvegen.check(cfg)
+
+
+def test_min_gap_is_kept_and_reported():
+    """min_gap / wall_gap (#111): every pair of circles is that far apart,
+    periodic images included, and the report carries the settings."""
+    cfg = {
+        "domain_box": [1.0, 1.0],
+        "seed": 9,
+        "distributions": {
+            "x": {"type": "uniform_real", "a": 0.0, "b": 1.0},
+            "r": {"type": "uniform_real", "a": 0.03, "b": 0.06},
+        },
+        "shapes": [{"type": "circle_input", "pos_x_dist": "x",
+                    "pos_y_dist": "x", "radius_dist": "r"}],
+        "generator": {"type": "periodic", "max_attempts": 200000,
+                      "min_gap": 0.025, "wall_gap": 0.02},
+        "termination": {"type": "number_of_inclusions", "target": 40},
+    }
+    res = rvegen.run(cfg, postprocess=False)
+    rep = res.summary["report"]
+    assert rep["min_gap"] == 0.025
+    assert rep["wall_gap"] == 0.02
+    assert rep["min_gap_relative"] == 0.0
+    prim = [s for s in res.shapes if s.is_primary]
+    assert len(prim) == 40
+    closest = min(
+        ((a.x - b.x - sx) ** 2 + (a.y - b.y - sy) ** 2) ** 0.5 - a.radius - b.radius
+        for i, a in enumerate(prim) for b in prim[i:]
+        for sx in (-1.0, 0.0, 1.0) for sy in (-1.0, 0.0, 1.0)
+        if not (a is b and sx == 0.0 and sy == 0.0))
+    assert closest >= 0.025
+
+    loose = json.loads(json.dumps(cfg))
+    del loose["generator"]["min_gap"], loose["generator"]["wall_gap"]
+    rep0 = rvegen.run(loose, postprocess=False).summary["report"]
+    assert rep0["min_gap"] == 0.0 and rep0["wall_gap"] == 0.0
+
+    bad = json.loads(json.dumps(cfg))
+    bad["generator"]["min_gap"] = -0.1
+    with pytest.raises(Exception, match="min_gap"):
+        rvegen.check(bad)

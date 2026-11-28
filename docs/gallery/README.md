@@ -139,6 +139,14 @@ versions mesh differently, so the element counts in their titles change.
 
 <img src="periodic_ellipses_svg-svg.png" alt="periodic_ellipses_svg: SVG" width="440">
 
+## periodic_min_gap
+
+[`periodic_min_gap.json`](../../examples/periodic_min_gap.json) · 2D 1×1 · circle_input · generator `periodic` · 34 shapes
+
+> Periodic 2D pack that a mesher can take as it is: min_gap keeps every two circles at least one element size apart, wall_gap does the same at the box faces and corners (a circle stays that far away or reaches that far through). Without the two keys the same pack contains circles 1e-3 apart and caps a few 1e-3 thick, which gmsh resolves with slivers.
+
+<img src="periodic_min_gap-gmsh_geo.png" alt="periodic_min_gap: gmsh mesh of the .geo" width="440">
+
 ## periodic_spheres_gmsh_3d
 
 [`periodic_spheres_gmsh_3d.json`](../../examples/periodic_spheres_gmsh_3d.json) · 3D 1×1×1 · sphere_input · generator `periodic` · 36 shapes

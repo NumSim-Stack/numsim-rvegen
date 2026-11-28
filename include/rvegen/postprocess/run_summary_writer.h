@@ -14,7 +14,8 @@
 // and, when the writer runs inside the pipeline (set_run_info):
 //   seed             the seed the run used
 //   report           the generation report: termination, target, achieved,
-//                    attempts, max_attempts, stop_reason, target_reached
+//                    attempts, max_attempts, stop_reason, target_reached,
+//                    min_gap, min_gap_relative, wall_gap
 //   config           the config as it was given
 // so a study over many seeds or box sizes can collect one file per run.
 

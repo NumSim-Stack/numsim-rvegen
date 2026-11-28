@@ -65,7 +65,16 @@ fails on a new `box[2] > 0` test.
 4. **Collisions** (optional): pairs registered in
    `registry/register_collisions.h` (`register_pair<A, B>()`) get the precise
    narrow-phase test; unregistered pairs fall back to the bounding-box overlap
-   test, as that header states.
+   test, as that header states. For the generators' minimum gaps
+   (`min_gap`, `wall_gap`; `generators/placement_gap.h`) also provide
+   `collision_details(a, b, gap)`, true when the two shapes are closer than
+   `gap` (`intersection/collision_gap.h` has one per built-in pair), and
+   declare it before the `register_pair` call. A pair without it is judged
+   by the distance between the bounding boxes when a gap is set: never too
+   close, but it refuses placements that would have been fine. `wall_gap`
+   probes a shape with points (a circle or sphere of radius 0) and lines (a
+   tube of radius 0), so a new shape type needs pairs with those to be
+   measured exactly at corners and edges.
 5. **Visualisation** (optional): add a free function
    `to_mesh(my_shape<T> const&)` returning a `triangle_mesh<T>` under
    `include/rvegen/visualization/` (see `circle_mesh.h`) and register it in

@@ -118,7 +118,8 @@ inclusions = [s for s in res if s.is_primary]
 # (the generator ran out of max_attempts) raises a UserWarning; with
 # strict_targets=True it raises rvegen.TargetNotReached and no writer runs.
 print(res.summary["report"])          # termination, target, achieved, attempts,
-                                      # max_attempts, stop_reason, target_reached
+                                      # max_attempts, stop_reason, target_reached,
+                                      # min_gap, min_gap_relative, wall_gap
 
 # Validate without generating: raises on the first problem, writes nothing.
 rvegen.check(config)
