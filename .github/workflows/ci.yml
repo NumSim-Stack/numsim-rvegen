@@ -241,6 +241,38 @@ jobs:
         working-directory: numsim-rvegen/rvegen
         run: ctest --test-dir build-voropp --output-on-failure --no-tests=error --parallel 2
 
+      # Whole-run benchmarks (docs/performance.md), with the Voro++ build so
+      # that the 3D tessellation cases run too. Times of a shared runner
+      # gate nothing; how the time grows with the size does: the step fails
+      # if a family grows faster than its work to the power 1.7 (a pass over
+      # everything per inclusion gives 2). A run that has blown up is cut off
+      # after a minute and counts as a failure of its family, so the step
+      # stays well inside the time limit of the job.
+      - name: Benchmarks (scaling check)
+        if: matrix.full
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          python3 scripts/run_benchmarks.py --rvegen build-voropp/rvegen \
+            --out bench-results --repeat 3 --timeout 60 --check-scaling
+
+      - name: Benchmark table in the job summary
+        if: ${{ matrix.full && always() }}
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          if [ -f bench-results/results.md ]; then
+            cat bench-results/results.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the benchmark table
+        if: ${{ matrix.full && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: |
+            numsim-rvegen/rvegen/bench-results/results.md
+            numsim-rvegen/rvegen/bench-results/results.json
+          if-no-files-found: ignore
+
       # Install + smoke-consume: verifies the CMake export works
       # end-to-end. A separate consumer project does
       # find_package(rvegen CONFIG REQUIRED) and links via

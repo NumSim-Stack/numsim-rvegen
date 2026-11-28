@@ -479,8 +479,11 @@ include/rvegen/
 apps/rvegen_cli.cpp         the JSON-driven executable
 examples/                   bundled example configs (+ data/ assets)
 scripts/make_gallery.py     renders every example into docs/gallery/
+scripts/run_benchmarks.py   times the cases of bench/cases.py, checks scaling
+bench/                      benchmark cases; Google Benchmark micro-benchmarks
 python/                     optional pybind11 bindings (RVEGEN_BUILD_PYTHON=ON)
-docs/                       API-reference config, contributor docs, gallery
+docs/                       API-reference config, contributor docs, gallery,
+                            performance.md
 tests/                      smoke tests, CLI example checks; all under ctest
 ```
 
@@ -511,6 +514,15 @@ is installed. A further test runs `scripts/make_gallery.py` when numpy and
 matplotlib are available, and one checks that the type list above matches the
 registries. CI additionally builds Debug with AddressSanitizer and UBSan, and
 builds with Clang.
+
+### Performance
+
+[`docs/performance.md`](docs/performance.md) has reference timings (10^5
+circles at 40 % in 0.6 s, 10^5 spheres at 30 % in 4.4 s, a periodic 2D
+Voronoi tessellation of 10^5 seeds in 2.8 s, on a laptop) and how they scale.
+`scripts/run_benchmarks.py --rvegen build/rvegen` measures them again in about
+a minute, `--compare` sets two measurements side by side, and CI checks on
+every pull request that no benchmark family has turned quadratic.
 
 ---
 

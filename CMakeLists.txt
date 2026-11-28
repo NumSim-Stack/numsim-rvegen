@@ -490,13 +490,22 @@ else()
   message(STATUS "gmsh not found — skipping gmsh_geo_roundtrip_test")
 endif()
 
-# Collision-dispatch comparison benchmark. Not added to ctest —
-# benchmarks produce numbers, not pass/fail. Run manually:
+# Micro-benchmarks (Google Benchmark). Not added to ctest: they produce
+# numbers, not pass/fail. The benchmarks of whole runs are
+# scripts/run_benchmarks.py, see docs/performance.md.
+# Collision-dispatch comparison. Run manually:
 #   ./rvegen_dispatch_bench --benchmark_format=console
 find_package(benchmark QUIET)
 if(benchmark_FOUND)
   add_executable(rvegen_dispatch_bench bench/dispatch_compare.cpp)
   target_link_libraries(rvegen_dispatch_bench PRIVATE
+      rvegen_lib
+      benchmark::benchmark
+  )
+  # Mesh inclusions: pair tests, point query, rotation, build (#126).
+  #   ./rvegen_mesh_bench
+  add_executable(rvegen_mesh_bench bench/mesh_queries.cpp)
+  target_link_libraries(rvegen_mesh_bench PRIVATE
       rvegen_lib
       benchmark::benchmark
   )
@@ -932,6 +941,18 @@ if(Python3_Interpreter_FOUND)
               --workdir ${CMAKE_CURRENT_BINARY_DIR}/gmsh_min_gap)
     set_tests_properties(gmsh_min_gap PROPERTIES TIMEOUT 900)
   endif()
+  # Benchmark runner (#155): its scaling and comparison rules on made-up
+  # numbers, and three small cases through the real binary.
+  add_test(NAME benchmark_script_self_test
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_benchmarks.py --self-test)
+  add_test(NAME benchmark_script_smoke
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_benchmarks.py
+            --rvegen $<TARGET_FILE:rvegen>
+            --filter "^(circles_periodic_1000|voronoi_2d_1000|write_gmsh_geo_2d)$"
+            --repeat 1
+            --out ${CMAKE_CURRENT_BINARY_DIR}/benchmark_smoke)
   add_test(NAME no_dimension_inference_self_test
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_dimension_inference_check.py
