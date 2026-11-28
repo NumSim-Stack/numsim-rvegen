@@ -22,8 +22,13 @@
 //     map, so this equals testing p against the placed mesh.
 //   * `volume()` — base volume (divergence theorem, cached) × s³.
 //   * `make_bounding_box()`, `max_expansion()` — from the transformed
-//     vertices, cached whenever R or s changes (O(M)); translation via
+//     vertices, cached whenever R or s changes; translation via
 //     `set_middle_point()` stays O(1). `clone()`, `shape_id()`.
+//   * Shared acceleration data, built once per base mesh and shared by
+//     all copies like the triangle list (#126): a 2D grid for the ray
+//     of `is_inside`, and a triangle tree (mesh_triangle_tree.h) behind
+//     `triangles_near()`, the pair tests in intersection/ and the
+//     rotated bounds. No query visits all triangles of a large mesh.
 //   * `to_mesh(mesh_inclusion)` in visualization/mesh_inclusion_mesh.h
 //     returns the placed triangles; registered in mesh_dispatcher.
 //   * Direct C++ ctor from a vector of triangles (wraps in shared_ptr)
@@ -41,8 +46,7 @@
 //   collapses this to O(M) (shared) + O(N) (per-shape offsets).
 //   set_middle_point is O(1) instead of O(M).
 //
-// Out of scope here, ships in follow-up PRs against #9:
-//   * Mesh–mesh collision dispatcher entry.
+// Out of scope here:
 //   * Robust ray-casting on degenerate edges (today a slightly
 //     off-axis direction dodges most parity bugs but pathological
 //     inputs can still trip it).
@@ -73,6 +77,7 @@
 
 #include "../types.h"
 #include "box_bounding.h"
+#include "mesh_triangle_tree.h"
 #include "shape_base.h"
 
 namespace rvegen {
@@ -572,11 +577,14 @@ template <typename T>
 // Degenerate triangles (two welded corners coincide) carry no area and
 // are left out of the topology check and never flipped.
 //
-// Returns an empty vector for an empty mesh.
+// Returns an empty vector for an empty mesh. `component_faces`, when given,
+// receives one (non-degenerate) face index per connected component.
 template <typename T>
 [[nodiscard]] std::vector<char> mesh_inclusion_orientation_flips(
-    std::vector<gte::Triangle3<T>> const& tris) {
+    std::vector<gte::Triangle3<T>> const& tris,
+    std::vector<std::size_t>* component_faces = nullptr) {
   const std::size_t m = tris.size();
+  if (component_faces) component_faces->clear();
   if (m == 0) return {};
 
   for (std::size_t f = 0; f < m; ++f) {
@@ -692,6 +700,7 @@ template <typename T>
     }
   }
   const std::size_t n_comp = seeds.size();
+  if (component_faces) *component_faces = seeds;
 
   // Per-component signed volume, AABB and probe face (the largest-area
   // triangle; its centroid is a point strictly inside the component's
@@ -773,9 +782,11 @@ public:
   // std::runtime_error on an invalid mesh (including an empty list).
   explicit mesh_inclusion(triangle_list triangles) {
     if (triangles.empty()) throw_empty();
-    apply_flips(triangles, detail::mesh_inclusion_orientation_flips(triangles));
+    std::vector<std::size_t> components;
+    apply_flips(triangles,
+                detail::mesh_inclusion_orientation_flips(triangles, &components));
     _base = std::make_shared<triangle_list const>(std::move(triangles));
-    init_cache();
+    init_cache(std::move(components));
   }
 
   // Shares an existing triangle list. The list is validated like the
@@ -787,13 +798,15 @@ public:
   // `mesh_inclusion_input` does.
   explicit mesh_inclusion(shared_triangles base) : _base{std::move(base)} {
     if (!_base || _base->empty()) throw_empty();
-    const auto flips = detail::mesh_inclusion_orientation_flips(*_base);
+    std::vector<std::size_t> components;
+    const auto flips =
+        detail::mesh_inclusion_orientation_flips(*_base, &components);
     if (std::find(flips.begin(), flips.end(), char{1}) != flips.end()) {
       triangle_list fixed = *_base;
       apply_flips(fixed, flips);
       _base = std::make_shared<triangle_list const>(std::move(fixed));
     }
-    init_cache();
+    init_cache(std::move(components));
   }
 
   // ---- shape_base contract ----------------------------------------------
@@ -1006,6 +1019,71 @@ public:
   [[nodiscard]] std::size_t triangle_count() const noexcept {
     return _base ? _base->size() : 0;
   }
+
+  // Indices into base_triangles() of every triangle that may reach into
+  // the world-space box [lo, hi], appended to `out`.
+  //
+  // The list is a superset: it holds every triangle that has a point in
+  // the box (bounds included), in the order of the tree walk, plus
+  // neighbours from the same tree leaves. The box is mapped back to base
+  // coordinates (the bounding box of its eight corners, widened by a
+  // rounding margin), and the shared tree of the base mesh is asked.
+  void triangles_near(std::array<T, 3> const& lo, std::array<T, 3> const& hi,
+                      std::vector<std::size_t>& out) const {
+    if (!_tree) return;
+    std::array<T, 3> blo, bhi;
+    blo.fill(std::numeric_limits<T>::max());
+    bhi.fill(std::numeric_limits<T>::lowest());
+    T reach = T{0};
+    for (int corner = 0; corner < 8; ++corner) {
+      const auto b = to_local({(corner & 1) ? hi[0] : lo[0],
+                               (corner & 2) ? hi[1] : lo[1],
+                               (corner & 4) ? hi[2] : lo[2]});
+      for (int k = 0; k < 3; ++k) {
+        blo[k] = std::min(blo[k], b[k]);
+        bhi[k] = std::max(bhi[k], b[k]);
+        reach = std::max(reach, std::abs(b[k]));
+      }
+    }
+    // to_local and to_world each round a few times; the margin is far
+    // above that and far below anything a caller could tell apart.
+    T margin = reach;
+    for (int k = 0; k < 3; ++k) {
+      margin = std::max({margin, std::abs(_base_min[k]), std::abs(_base_max[k])});
+    }
+    margin *= T{1e-9};
+    for (int k = 0; k < 3; ++k) {
+      blo[k] -= margin;
+      bhi[k] += margin;
+    }
+    _tree->collect(blo, bhi, out);
+  }
+
+  // The triangle tree of the base mesh (base coordinates), shared by all
+  // copies; null only for a default-constructed shape.
+  [[nodiscard]] detail::mesh_triangle_tree<T> const*
+  triangle_tree() const noexcept {
+    return _tree.get();
+  }
+
+  // One vertex of every connected component of the surface, placed. A
+  // closed surface that does not cut another solid lies inside it exactly
+  // when one of its points does, so these are the points to test once a
+  // pair test has found no crossing triangles.
+  [[nodiscard]] std::vector<std::array<T, 3>> component_points() const {
+    std::vector<std::array<T, 3>> out;
+    if (!_base || !_components) return out;
+    out.reserve(_components->size());
+    for (auto f : *_components) out.push_back(to_world((*_base)[f].v[0]));
+    return out;
+  }
+  [[nodiscard]] std::size_t component_count() const noexcept {
+    return _components ? _components->size() : 0;
+  }
+  // Bytes of the triangle tree shared by all copies.
+  [[nodiscard]] std::size_t tree_memory() const noexcept {
+    return _tree ? _tree->memory() : 0;
+  }
   [[nodiscard]] std::array<T, 3> const& offset() const noexcept {
     return _offset;
   }
@@ -1042,8 +1120,10 @@ private:
   // reference point for the offset (so set_middle_point and
   // get_middle_point have stable semantics regardless of how the mesh
   // was originally positioned in the source file).
-  void init_cache() {
+  void init_cache(std::vector<std::size_t> components) {
     if (!_base || _base->empty()) throw_empty();
+    _components = std::make_shared<std::vector<std::size_t> const>(
+        std::move(components));
     auto const& tris = *_base;
     _base_min = {tris[0].v[0][0], tris[0].v[0][1], tris[0].v[0][2]};
     _base_max = _base_min;
@@ -1087,6 +1167,9 @@ private:
           tris, ids, _base_min, _base_max);
       if (grid->usable()) _grid = std::move(grid);
     }
+    // Triangle tree for the pair tests and the rotated bounds, shared by
+    // all copies.
+    _tree = std::make_shared<detail::mesh_triangle_tree<T> const>(tris);
   }
 
   // AABB of R·(x − c) over all base vertices (unit scale), cached in
@@ -1101,14 +1184,50 @@ private:
       }
     } else {
       const gte::Vector3<T> c{_base_centre[0], _base_centre[1], _base_centre[2]};
-      _rot_min.fill(std::numeric_limits<T>::max());
-      _rot_max.fill(std::numeric_limits<T>::lowest());
-      for (auto const& tri : *_base) {
-        for (int i = 0; i < 3; ++i) {
-          const auto r = _rotation * (tri.v[i] - c);
-          for (int k = 0; k < 3; ++k) {
-            _rot_min[k] = std::min(_rot_min[k], r[k]);
-            _rot_max[k] = std::max(_rot_max[k], r[k]);
+      if (_tree) {
+        // The extreme vertex along each rotated axis, found in the tree
+        // instead of a pass over all vertices: every candidate is rotated
+        // every time, so that pass would dominate a placement run. The
+        // values are those of the plain loop below, bit for bit: the same
+        // expression is evaluated for the vertices that can be extreme.
+        T half = T{0};
+        for (int k = 0; k < 3; ++k) half = std::max(half, _base_max[k] - c[k]);
+        const T slack = T{1e-9} * half;
+        for (int k = 0; k < 3; ++k) {
+          for (int side = 0; side < 2; ++side) {
+            const T sign = side == 0 ? T{1} : T{-1};
+            auto bound = [&](std::array<T, 3> const& lo,
+                             std::array<T, 3> const& hi) {
+              T sum = T{0};
+              for (int j = 0; j < 3; ++j) {
+                const T w = sign * _rotation(k, j);
+                sum += std::max(w * (lo[j] - c[j]), w * (hi[j] - c[j]));
+              }
+              return sum;
+            };
+            auto value = [&](std::size_t f) {
+              auto const& tri = (*_base)[f];
+              T best = std::numeric_limits<T>::lowest();
+              for (int i = 0; i < 3; ++i) {
+                const auto r = _rotation * (tri.v[i] - c);
+                best = std::max(best, sign * r[k]);
+              }
+              return best;
+            };
+            const T extreme = sign * _tree->maximise(bound, value, slack);
+            (side == 0 ? _rot_max[k] : _rot_min[k]) = extreme;
+          }
+        }
+      } else {
+        _rot_min.fill(std::numeric_limits<T>::max());
+        _rot_max.fill(std::numeric_limits<T>::lowest());
+        for (auto const& tri : *_base) {
+          for (int i = 0; i < 3; ++i) {
+            const auto r = _rotation * (tri.v[i] - c);
+            for (int k = 0; k < 3; ++k) {
+              _rot_min[k] = std::min(_rot_min[k], r[k]);
+              _rot_max[k] = std::max(_rot_max[k], r[k]);
+            }
           }
         }
       }
@@ -1137,6 +1256,8 @@ private:
   T _scale{1};
   T _volume{0};
   std::shared_ptr<detail::mesh_ray_grid<T> const> _grid;   // null for small meshes
+  std::shared_ptr<detail::mesh_triangle_tree<T> const> _tree;   // likewise
+  std::shared_ptr<std::vector<std::size_t> const> _components;   // one face each
 };
 
 } // namespace rvegen
