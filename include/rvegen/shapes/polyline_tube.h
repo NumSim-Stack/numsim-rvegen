@@ -76,6 +76,8 @@ public:
   // a few percent for smooth centerlines and good enough for the
   // generator's volume_fraction termination.
   [[nodiscard]] int dimension() const noexcept override { return 3; }
+  // The tube diameter, whatever the direction of the centreline.
+  [[nodiscard]] T min_width() const override { return T{2} * _radius; }
   [[nodiscard]] T volume() const override {
     if (_centerline.size() < 2) return T{0};
     T length = T{0};

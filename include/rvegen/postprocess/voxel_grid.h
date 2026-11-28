@@ -130,6 +130,81 @@ sample_voxel_grid_with_ids(
   return grid;
 }
 
+// The value of each shape in the id scheme without phases (see
+// sample_voxel_grid below): 1-based inclusion index, periodic copies share
+// their primary's, Voronoi grains carry grain_id + 1.
+template <typename T>
+[[nodiscard]] std::vector<phase_id> inclusion_index_of_shapes(
+    std::vector<std::unique_ptr<shape_base<T>>> const& shapes) {
+  std::vector<phase_id> shape_to_id(shapes.size());
+  std::unordered_map<std::size_t, phase_id> id_of_inclusion;
+  // Grain value (grain_id + 1) per shape, 0 for a shape without grain_id;
+  // other shapes are numbered from the largest grain value on.
+  std::vector<phase_id> grain_value(shapes.size(), 0);
+  phase_id next_id = 0;
+  for (std::size_t s = 0; s < shapes.size(); ++s) {
+    auto const& info = shapes[s]->info();
+    if (info.contains("grain_id")) {
+      grain_value[s] =
+          static_cast<phase_id>(info.template get<std::size_t>("grain_id") + 1);
+      next_id = std::max(next_id, grain_value[s]);
+    }
+  }
+  for (std::size_t s = 0; s < shapes.size(); ++s) {
+    if (grain_value[s] != 0) {
+      shape_to_id[s] = grain_value[s];
+    } else if (auto const inc = inclusion_id(*shapes[s])) {
+      auto const [it, inserted] =
+          id_of_inclusion.try_emplace(*inc, next_id + 1);
+      if (inserted) ++next_id;
+      shape_to_id[s] = it->second;
+    } else {
+      shape_to_id[s] = ++next_id;
+    }
+  }
+  return shape_to_id;
+}
+
+// The phase id of each shape (see the phase-aware sample_voxel_grid
+// below): 0 for a shape without a phase name, or an error with `strict`.
+template <typename T>
+[[nodiscard]] std::vector<phase_id> phase_id_of_shapes(
+    std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
+    phase_collection<T> const& phases, bool strict) {
+  // Pre-resolve phase ids once per shape — avoids re-hashing the name
+  // on every voxel and lets us throw early on unknown names.
+  std::vector<phase_id> shape_to_id(shapes.size(), 0);
+  for (std::size_t s = 0; s < shapes.size(); ++s) {
+    const auto name = shapes[s]->phase_name();
+    if (name.empty()) {
+      if (strict) {
+        throw std::runtime_error{
+            "sample_voxel_grid: shape has empty phase_name and strict "
+            "mode is enabled. Tag every shape's phase, or disable strict mode."};
+      }
+      continue;
+    }
+    const auto id = phases.id_of(name);
+    if (id > std::numeric_limits<phase_id>::max()) {
+      throw std::runtime_error{
+          "sample_voxel_grid: phase id exceeds phase_id range (uint32)"};
+    }
+    shape_to_id[s] = static_cast<phase_id>(id);
+  }
+  return shape_to_id;
+}
+
+// The id of voxels no shape covers: the declared matrix phase's, else 0.
+template <typename T>
+[[nodiscard]] phase_id matrix_phase_id(phase_collection<T> const& phases) {
+  const auto matrix_id = phases.matrix_id();
+  if (matrix_id > std::numeric_limits<phase_id>::max()) {
+    throw std::runtime_error{
+        "sample_voxel_grid: phase id exceeds phase_id range (uint32)"};
+  }
+  return static_cast<phase_id>(matrix_id);
+}
+
 } // namespace detail
 
 // Sample a regular voxel grid: for each voxel centre point, ask each shape
@@ -159,32 +234,7 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::type_identity_t<domain<T>> const& domain_box,
                   std::size_t nx, std::size_t ny, std::size_t nz,
                   cancel_fn const* cancel = nullptr) {
-  std::vector<phase_id> shape_to_id(shapes.size());
-  std::unordered_map<std::size_t, phase_id> id_of_inclusion;
-  // Grain value (grain_id + 1) per shape, 0 for a shape without grain_id;
-  // other shapes are numbered from the largest grain value on.
-  std::vector<phase_id> grain_value(shapes.size(), 0);
-  phase_id next_id = 0;
-  for (std::size_t s = 0; s < shapes.size(); ++s) {
-    auto const& info = shapes[s]->info();
-    if (info.contains("grain_id")) {
-      grain_value[s] =
-          static_cast<phase_id>(info.template get<std::size_t>("grain_id") + 1);
-      next_id = std::max(next_id, grain_value[s]);
-    }
-  }
-  for (std::size_t s = 0; s < shapes.size(); ++s) {
-    if (grain_value[s] != 0) {
-      shape_to_id[s] = grain_value[s];
-    } else if (auto const inc = inclusion_id(*shapes[s])) {
-      auto const [it, inserted] =
-          id_of_inclusion.try_emplace(*inc, next_id + 1);
-      if (inserted) ++next_id;
-      shape_to_id[s] = it->second;
-    } else {
-      shape_to_id[s] = ++next_id;
-    }
-  }
+  const auto shape_to_id = detail::inclusion_index_of_shapes(shapes);
   return detail::sample_voxel_grid_with_ids(
       shapes, domain_box, nx, ny, nz, shape_to_id, 0, cancel);
 }
@@ -211,34 +261,10 @@ sample_voxel_grid(std::vector<std::unique_ptr<shape_base<T>>> const& shapes,
                   std::size_t nx, std::size_t ny, std::size_t nz,
                   phase_collection<T> const& phases,
                   bool strict = false, cancel_fn const* cancel = nullptr) {
-  // Pre-resolve phase ids once per shape — avoids re-hashing the name
-  // on every voxel and lets us throw early on unknown names.
-  std::vector<phase_id> shape_to_id(shapes.size(), 0);
-  for (std::size_t s = 0; s < shapes.size(); ++s) {
-    const auto name = shapes[s]->phase_name();
-    if (name.empty()) {
-      if (strict) {
-        throw std::runtime_error{
-            "sample_voxel_grid: shape has empty phase_name and strict "
-            "mode is enabled. Tag every shape's phase, or disable strict mode."};
-      }
-      continue;
-    }
-    const auto id = phases.id_of(name);
-    if (id > std::numeric_limits<phase_id>::max()) {
-      throw std::runtime_error{
-          "sample_voxel_grid: phase id exceeds phase_id range (uint32)"};
-    }
-    shape_to_id[s] = static_cast<phase_id>(id);
-  }
-  const auto matrix_id = phases.matrix_id();
-  if (matrix_id > std::numeric_limits<phase_id>::max()) {
-    throw std::runtime_error{
-        "sample_voxel_grid: phase id exceeds phase_id range (uint32)"};
-  }
+  const auto shape_to_id = detail::phase_id_of_shapes(shapes, phases, strict);
   return detail::sample_voxel_grid_with_ids(
       shapes, domain_box, nx, ny, nz, shape_to_id,
-      static_cast<phase_id>(matrix_id), cancel);
+      detail::matrix_phase_id(phases), cancel);
 }
 
 // Effective z-dimension of the grid given the domain (collapses to 1 in 2D).

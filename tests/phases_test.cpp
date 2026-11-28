@@ -312,7 +312,7 @@ void test_matrix_phase_files_from_example(char const* cli, char const* example) 
   std::ifstream vox{"phases_files_test.vox"};
   auto const v = read_voxel_text(vox);
   auto const k = read_vtk_body("phases_files_test.vtk");
-  REQUIRE(v.ids.size() == 64 * 64);
+  REQUIRE(v.ids.size() == 192 * 192);   // the grid of the example
   REQUIRE(v.ids == k.ids);   // voxel and VTK agree voxel by voxel
 
   REQUIRE(v.table.size() == 3);

@@ -23,7 +23,7 @@ versions mesh differently, so the element counts in their titles change.
 
 [`bingham_fibres.json`](../../examples/bingham_fibres.json) · 3D 1×1×1 · polyline_tube_oriented_input · generator `random` · 15 shapes
 
-> Fibres whose axes follow a Bingham distribution (prolate, mean axis +x) via polyline_tube_oriented_input; direction distributions live in their own section.
+> Fibres whose axes follow a Bingham distribution (prolate, mean axis +x) via polyline_tube_oriented_input; direction distributions live in their own section. The 32^3 voxel grid is a preview: the fibres are 1.3 voxels thick, so the resolution check is switched off ("min_voxels_per_feature": 0); without the key the run warns and names the grid a solver needs (200^3).
 
 <img src="bingham_fibres-voxel.png" alt="bingham_fibres: voxel grid (.vox)" width="440">
 
@@ -138,6 +138,15 @@ versions mesh differently, so the element counts in their titles change.
 
 <img src="mixed_3d_svg-svg_3d.png" alt="mixed_3d_svg: SVG" width="440">
 
+## partial_volume_voxels
+
+[`partial_volume_voxels.json`](../../examples/partial_volume_voxels.json) · 2D 1×1 · circle_input · generator `periodic` · 33 shapes
+
+> Partial-volume voxels for FFT solvers. Every voxel is sampled at 4 x 4 points instead of its centre ("subsamples": 4): the voxel file lists, after the grid of dominant ids, the voxels an interface runs through with the share of each id, and the VTK file carries the shares as the cell array volume_fraction. The run prints the volume fraction of the grid next to the one of the shapes; at 96 x 96 the smallest circle is 9.6 voxels across, above the 8 the writers ask for ("min_voxels_per_feature").
+
+<img src="partial_volume_voxels-voxel.png" alt="partial_volume_voxels: voxel grid with partial volumes (.vox)" width="440">
+<img src="partial_volume_voxels-vtk_legacy.png" alt="partial_volume_voxels: voxel grid (.vtk)" width="440">
+
 ## periodic_circles
 
 [`periodic_circles.json`](../../examples/periodic_circles.json) · 2D 1×1 · circle_input · generator `periodic` · 17 shapes
@@ -218,7 +227,7 @@ versions mesh differently, so the element counts in their titles change.
 
 [`tow_weave.json`](../../examples/tow_weave.json) · 3D 1×1×0.25 ·  · generator `tow_weave` · 56 shapes
 
-> Tow-level weave: every yarn of a 4x4 plain weave is a hex-packed bundle of 7 fibres.
+> Tow-level weave: every yarn of a 4x4 plain weave is a hex-packed bundle of 7 fibres. The voxel grid is a preview (a fibre is 1.2 voxels thick), so its resolution check is switched off; without "min_voxels_per_feature": 0 the run names the grid that resolves the fibres (320 x 320 x 80).
 
 <img src="tow_weave-voxel.png" alt="tow_weave: voxel grid (.vox)" width="440">
 

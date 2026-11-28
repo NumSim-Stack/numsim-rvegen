@@ -11,7 +11,7 @@
   },
 
   "postprocess": [
-    { "type": "voxel", "nx": 48, "ny": 48, "nz": 24,
+    { "type": "voxel", "nx": 80, "ny": 80, "nz": 24,
       "output_path": "plain_weave.vox" }
   ]
 }

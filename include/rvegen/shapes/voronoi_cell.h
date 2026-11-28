@@ -101,6 +101,21 @@ public:
   // and silently masked a mis-wound input — the at-end abs lets a
   // mis-wound mesh expose itself via a small or zero result.
   [[nodiscard]] int dimension() const noexcept override { return 3; }
+  // The smallest extent of the cell along one of its face normals. The
+  // width of a polyhedron can also be reached between two edges, so this
+  // is an upper bound of it, and a far tighter one than the bounding box.
+  [[nodiscard]] T min_width() const override {
+    T width = std::numeric_limits<T>::infinity();
+    for (auto const& plane : _face_planes) {
+      T far = T{0};
+      for (auto const& v : _vertices)
+        far = std::max(far, plane.offset - (plane.normal[0] * v[0] +
+                                            plane.normal[1] * v[1] +
+                                            plane.normal[2] * v[2]));
+      width = std::min(width, far);
+    }
+    return std::isfinite(width) ? width : T{0};
+  }
   [[nodiscard]] T volume() const override {
     if (_vertices.empty() || _faces.empty()) return T{0};
     const auto c = _centroid;

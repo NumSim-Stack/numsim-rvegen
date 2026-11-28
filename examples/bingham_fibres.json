@@ -1,5 +1,5 @@
 {
-  "_comment": "Fibres whose axes follow a Bingham distribution (prolate, mean axis +x) via polyline_tube_oriented_input; direction distributions live in their own section.",
+  "_comment": "Fibres whose axes follow a Bingham distribution (prolate, mean axis +x) via polyline_tube_oriented_input; direction distributions live in their own section. The 32^3 voxel grid is a preview: the fibres are 1.3 voxels thick, so the resolution check is switched off (\"min_voxels_per_feature\": 0); without the key the run warns and names the grid a solver needs (200^3).",
 
   "domain_box": [1.0, 1.0, 1.0],
   "seed": 11,
@@ -27,7 +27,7 @@
   "termination": { "type": "number_of_inclusions", "target": 15 },
 
   "postprocess": [
-    { "type": "voxel", "nx": 32, "ny": 32, "nz": 32,
+    { "type": "voxel", "nx": 32, "ny": 32, "nz": 32, "min_voxels_per_feature": 0,
       "output_path": "bingham_fibres.vox" }
   ]
 }

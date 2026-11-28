@@ -33,9 +33,9 @@
   "postprocess": [
     {
       "type": "voxel",
-      "nx": 96,
-      "ny": 96,
-      "nz": 24,
+      "nx": 144,
+      "ny": 144,
+      "nz": 32,
       "output_path": "twill_weave.vox"
     },
     {

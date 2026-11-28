@@ -17,6 +17,7 @@
 #include "../types.h"
 #include "../util/format_number.h"
 #include "phase_table.h"
+#include "voxel_fractions.h"
 #include "voxel_grid.h"
 
 namespace rvegen {
@@ -35,6 +36,16 @@ namespace rvegen {
 // Output format: ASCII header + flat array, voxels in (k, j, i) order
 // (z-slice fastest-varying-axis is k). The format is intentionally
 // human-readable and trivial to parse from any FFT solver.
+//
+// Partial volumes (#115): with `subsamples` k > 1 every voxel is sampled
+// at k points per axis instead of its centre. The value of a voxel is then
+// the id with the largest share, and the voxels that hold more than one id
+// are listed after the grid with the share of each (format v4, see
+// write()). With k = 1 the file is the v3 file, byte for byte.
+//
+// run() also reports, through the log of post_process_base, the volume
+// fraction the grid ended up with next to the one of the shapes, and warns
+// when a shape is fewer than `min_voxels_per_feature` voxels across.
 template <typename T = double>
 class voxel_writer final : public post_process_base<T> {
 public:
@@ -57,7 +68,9 @@ public:
       : _nx{handler.template get<std::size_t>("nx")},
         _ny{handler.template get<std::size_t>("ny")},
         _nz{handler.template get<std::size_t>("nz")},
-        _output_path{handler.template get<std::string>("output_path")} {}
+        _output_path{handler.template get<std::string>("output_path")},
+        _subsamples{handler.template get<std::size_t>("subsamples")},
+        _min_voxels{handler.template get<value_type>("min_voxels_per_feature")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -75,6 +88,7 @@ public:
         .template add<numsim_core::description_label<"voxel-grid resolution along z (collapses to 1 for 2D RVEs)">>();
     s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"destination path for the voxel-grid file">>();
+    add_voxel_sampling_parameters<value_type>(s);
     return s;
   }
 
@@ -87,6 +101,19 @@ public:
   [[nodiscard]] std::size_t nz() const noexcept { return _nz; }
   [[nodiscard]] std::string const& output_path() const noexcept {
     return _output_path;
+  }
+
+  // Sample points per voxel and axis (1: the voxel centre).
+  void set_subsamples(std::size_t subsamples) noexcept {
+    _subsamples = subsamples;
+  }
+  [[nodiscard]] std::size_t subsamples() const noexcept { return _subsamples; }
+  // Voxels a shape should be across before run() warns; 0: no check.
+  void set_min_voxels_per_feature(value_type voxels) noexcept {
+    _min_voxels = voxels;
+  }
+  [[nodiscard]] value_type min_voxels_per_feature() const noexcept {
+    return _min_voxels;
   }
 
   // Attach a phase_collection so the writer emits real phase ids keyed
@@ -122,7 +149,7 @@ public:
           "voxel_writer: output_path not set; cannot run() as post-process"};
     }
     // Reject an unusable grid before the output file is created.
-    (void)checked_voxel_count(_nx, _ny, effective_nz(domain_box, _nz));
+    validate_voxel_sampling(domain_box, _nx, _ny, _nz, _subsamples);
   }
 
   void run(shape_vector const& shapes,
@@ -133,9 +160,17 @@ public:
       throw std::runtime_error{
           "voxel_writer: cannot open '" + _output_path + "' for writing"};
     }
-    write(out, shapes, domain_box);
+    const auto samples_of_id = write_counted(out, shapes, domain_box);
     out.close();
     if (_phases) write_phase_table_sidecar(_output_path, *_phases);
+    if (this->has_log()) {
+      report_voxel_sampling<value_type>(
+          shapes, domain_box, _nx, _ny, _nz, _subsamples,
+          static_cast<double>(_min_voxels), _phases, _phase_strict,
+          samples_of_id,
+          [this](std::string const& line) { this->log_info(line); },
+          [this](std::string const& line) { this->log_warn(line); });
+    }
   }
 
   // Stream-based emit. Public so tests and embedders can capture the output
@@ -143,6 +178,27 @@ public:
   void write(std::ostream& out,
              shape_vector const& shapes,
              domain<value_type> const& domain_box) const {
+    (void)write_counted(out, shapes, domain_box);
+  }
+
+  // The partial-volume grid this writer would write (any `subsamples`).
+  [[nodiscard]] voxel_fractions
+  sample_fractions(shape_vector const& shapes,
+                   domain<value_type> const& domain_box) const {
+    if (_phases) {
+      return sample_voxel_fractions(shapes, domain_box, _nx, _ny, _nz,
+                                    _subsamples, *_phases, _phase_strict);
+    }
+    return sample_voxel_fractions(shapes, domain_box, _nx, _ny, _nz,
+                                  _subsamples);
+  }
+
+private:
+  // write(), returning the sample points per id of what was written.
+  [[nodiscard]] std::vector<std::uint64_t>
+  write_counted(std::ostream& out, shape_vector const& shapes,
+                domain<value_type> const& domain_box) const {
+    if (_subsamples != 1) return write_fractions(out, shapes, domain_box);
     const auto grid = sample(shapes, domain_box);
     const std::size_t nz_eff = effective_nz(domain_box, _nz);
 
@@ -166,6 +222,56 @@ public:
         << "# Lx Ly Lz: " << format_number(domain_box[0]) << ' '
         << format_number(domain_box[1]) << ' '
         << format_number(domain_box[2]) << '\n';
+    write_id_scheme(out);
+
+    for (std::size_t k = 0; k < nz_eff; ++k) {
+      for (std::size_t j = 0; j < _ny; ++j) {
+        for (std::size_t i = 0; i < _nx; ++i) {
+          out << grid[(k * _ny + j) * _nx + i] << '\n';
+        }
+      }
+    }
+    return count_voxel_ids(grid);
+  }
+
+  // Format v4, written for subsamples > 1. The header gains two lines
+  // (the subsamples, and the number M of composite voxels with the layout
+  // of their lines); the N = nx * ny * nz values are the dominant id of
+  // each voxel; then M lines follow, one per composite voxel:
+  //   <voxel index (k * ny + j) * nx + i> <id> <samples> <id> <samples> ...
+  // with the ids ascending and the samples adding up to the sample points
+  // per voxel, so <samples> / <sample points per voxel> is the exact share.
+  // A voxel that is not listed belongs to its id entirely.
+  [[nodiscard]] std::vector<std::uint64_t>
+  write_fractions(std::ostream& out, shape_vector const& shapes,
+                  domain<value_type> const& domain_box) const {
+    const auto f = sample_fractions(shapes, domain_box);
+    out << "# rvegen voxel grid [rvegen-voxel-format: v4]\n"
+        << "# nx ny nz: " << f.nx << ' ' << f.ny << ' ' << f.nz << '\n'
+        << "# Lx Ly Lz: " << format_number(domain_box[0]) << ' '
+        << format_number(domain_box[1]) << ' '
+        << format_number(domain_box[2]) << '\n'
+        << "# subsamples: " << f.subsamples << " (" << f.samples_per_voxel
+        << " sample points per voxel)\n";
+    write_id_scheme(out);
+    out << "# values: the id with the largest share of each voxel (the "
+           "smallest id on a tie)\n"
+        << "# composite voxels: " << f.mixed.size() << " (after the "
+        << f.dominant.size() << " values, one line each: voxel index "
+           "(k*ny + j)*nx + i, then pairs \"id samples\" adding up to "
+        << f.samples_per_voxel << ")\n";
+    for (const phase_id id : f.dominant) out << id << '\n';
+    for (std::size_t m = 0; m < f.mixed.size(); ++m) {
+      out << f.mixed[m];
+      for (std::size_t e = f.first[m]; e < f.first[m + 1]; ++e)
+        out << ' ' << f.shares[e].id << ' ' << f.shares[e].samples;
+      out << '\n';
+    }
+    return f.samples_of_id;
+  }
+
+  // The comment lines on the run's gaps and on what the ids mean.
+  void write_id_scheme(std::ostream& out) const {
     // Only when the run kept minimum gaps (#111): one more comment line.
     if (auto const note = this->placement_gap_note(_info); !note.empty()) {
       out << "# placement: " << note << '\n';
@@ -188,18 +294,12 @@ public:
       out << "# id scheme: 1-based inclusion index, periodic wraps share "
              "their primary's id (0 = matrix)\n";
     }
-
-    for (std::size_t k = 0; k < nz_eff; ++k) {
-      for (std::size_t j = 0; j < _ny; ++j) {
-        for (std::size_t i = 0; i < _nx; ++i) {
-          out << grid[(k * _ny + j) * _nx + i] << '\n';
-        }
-      }
-    }
   }
 
+public:
   // Computed grid as a flat phase_id array, exposed for tests and any
   // downstream tool that wants the data without parsing the file format.
+  // One sample at the voxel centre, whatever `subsamples` is.
   [[nodiscard]] std::vector<phase_id>
   sample(shape_vector const& shapes,
          domain<value_type> const& domain_box) const {
@@ -215,6 +315,8 @@ private:
   std::size_t _ny{32};
   std::size_t _nz{32};
   std::string _output_path{};
+  std::size_t _subsamples{1};
+  value_type _min_voxels{8};
   phase_collection<value_type> const* _phases{nullptr};
   nlohmann::json const* _info{nullptr};
   bool _phase_strict{false};

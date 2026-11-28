@@ -183,6 +183,18 @@ calls `validate` for all post-processes before the first shape is placed, and
 `rvegen --check` runs it without generating anything, so such a mistake does
 not cost a generation run. `validate` must not create or truncate a file.
 
+What a post-process has to say about its own output goes through
+`log_info(line)` and `log_warn(line)` of the base class, called from
+`run()`: the pipeline prints them as
+`rvegen: post-process '<type>': <line>` and as a warning. Used on its own,
+a post-process has no sink and the calls do nothing (`set_log` attaches
+one; `has_log()` tells whether a costly message is worth computing).
+
+A shape of your own may override `min_width()`, the smallest distance
+across it, which the voxel writers compare with the voxel size. The default
+is the smallest side of the axis-aligned extent, which is right for a shape
+aligned with the axes and too large for a thin one at an angle.
+
 ## Checking the result
 
 - `rvegen --list-types` should list the new name. Update the catalogue in

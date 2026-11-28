@@ -51,9 +51,9 @@
   "postprocess": [
     {
       "type": "vtk_legacy",
-      "nx": 64,
-      "ny": 64,
-      "nz": 64,
+      "nx": 120,
+      "ny": 120,
+      "nz": 120,
       "output_path": "fibres_3d.vtk"
     }
   ]

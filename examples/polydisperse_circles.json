@@ -18,6 +18,6 @@
 
   "postprocess": [
     { "type": "svg", "canvas_width": 800.0, "output_path": "polydisperse_circles.svg" },
-    { "type": "vtk_legacy", "nx": 128, "ny": 128, "nz": 1, "output_path": "polydisperse_circles.vtk" }
+    { "type": "vtk_legacy", "nx": 144, "ny": 144, "nz": 1, "output_path": "polydisperse_circles.vtk" }
   ]
 }

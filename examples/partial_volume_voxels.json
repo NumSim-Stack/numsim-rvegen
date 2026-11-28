@@ -1,0 +1,29 @@
+{
+  "_comment": "Partial-volume voxels for FFT solvers. Every voxel is sampled at 4 x 4 points instead of its centre (\"subsamples\": 4): the voxel file lists, after the grid of dominant ids, the voxels an interface runs through with the share of each id, and the VTK file carries the shares as the cell array volume_fraction. The run prints the volume fraction of the grid next to the one of the shapes; at 96 x 96 the smallest circle is 9.6 voxels across, above the 8 the writers ask for (\"min_voxels_per_feature\").",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 7,
+
+  "distributions": {
+    "uniform_x":      { "type": "uniform_real", "a": 0.0, "b": 1.0 },
+    "uniform_y":      { "type": "uniform_real", "a": 0.0, "b": 1.0 },
+    "uniform_radius": { "type": "uniform_real", "a": 0.05, "b": 0.09 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",
+      "pos_x_dist":  "uniform_x",
+      "pos_y_dist":  "uniform_y",
+      "radius_dist": "uniform_radius" }
+  ],
+
+  "generator":   { "type": "periodic", "max_attempts": 500000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.35 },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 96, "ny": 96, "nz": 1, "subsamples": 4,
+      "output_path": "partial_volume_voxels.vox" },
+    { "type": "vtk_legacy", "nx": 96, "ny": 96, "nz": 1, "subsamples": 4,
+      "output_path": "partial_volume_voxels.vtk" }
+  ]
+}

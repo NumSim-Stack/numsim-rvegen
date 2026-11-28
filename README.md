@@ -45,6 +45,7 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_PREFIX_PATH="$HOME/numsi
 cmake --build build
 cd build && ./rvegen ../examples/circles_in_unit_box.json
 # -> rvegen: generated 10 shapes
+# -> rvegen: post-process 'voxel': volume fraction of the inclusions 0.05141 on the grid, 0.05162 from the shape sizes (144 x 144 voxels)
 # -> rvegen: post-process 'voxel' done   (writes circles_in_unit_box.vox)
 
 ctest --output-on-failure
@@ -176,8 +177,8 @@ declared by its static `parameters()` method):
 |                 | `volume_fraction`          | `target_fraction` (0..1)                 |
 |                 | `until_full`               | (no params; relies on generator's cap)   |
 | **postprocess** | `gmsh_geo`                 | `output_path`, `periodic`, mesh size / order / algorithm / recombine knobs |
-|                 | `voxel`                    | `output_path`, `nx`, `ny`, `nz` (phase-id grid) |
-|                 | `vtk_legacy`               | `output_path`, `nx`, `ny`, `nz` (ParaView-readable) |
+|                 | `voxel`                    | `output_path`, `nx`, `ny`, `nz` (phase-id grid); optional `subsamples`, `min_voxels_per_feature` |
+|                 | `vtk_legacy`               | `output_path`, `nx`, `ny`, `nz` (ParaView-readable); optional `subsamples`, `min_voxels_per_feature` |
 |                 | `svg`                      | `output_path`, `canvas_width` (2D picture) |
 |                 | `svg_3d`                   | `output_path`, `canvas_width` (projected 3D picture) |
 |                 | `three_js`                 | `output_path` (HTML viewer; loads three.js from unpkg.com, so the page needs network access) |
@@ -222,6 +223,53 @@ reach, so a `volume_fraction` target may need more `max_attempts` or become
 unreachable; the report says which. `examples/periodic_min_gap.json` is a
 periodic pack with `min_gap` and `wall_gap` set to the mesh size.
 
+### Voxel grids: resolution and partial volumes
+
+A voxel grid takes the id at each voxel centre, so an interface is a
+staircase and the volume fraction of the grid is off by an amount that
+depends on the resolution. The two voxel writers (`voxel`, `vtk_legacy`)
+help with both:
+
+- **What the grid ended up with.** Each writer prints the volume fraction
+  of its grid next to the one from the sizes of the shapes (per phase when
+  phases are declared):
+  `post-process 'voxel': volume fraction of the inclusions 0.3018 on the grid, 0.3004 from the shape sizes (64 x 64 voxels)`.
+  The second number adds up the shapes, so it is not the covered part where
+  shapes overlap or are cut by the box.
+- **Resolution check.** A warning names the thinnest shape when it is fewer
+  than `min_voxels_per_feature` voxels across (default 8, 0 switches the
+  check off) and the grid that would give it that many:
+  `15 of 15 shapes are less than 8 voxels across: the thinnest is 0.04 wide, 1.28 voxels of 0.03125. nx >= 200, ny >= 200, nz >= 200 gives it 8 voxels`.
+  The width of a shape is its smallest distance across (diameter of a
+  circle, sphere or tube, minor axis of an ellipse, short side of a box,
+  width of a polygon or grain); for a mesh inclusion it is the smallest side
+  of its bounding box, which is too large for a thin part at an angle. Most
+  of the 3D examples keep a coarse grid so that they run in a moment, and
+  say so when run.
+- **Partial volumes.** `"subsamples": k` (1 to 16) samples every voxel at
+  k x k (x k in 3D) points instead of its centre, at k^2 (k^3) times the
+  sampling cost. A voxel's value is then the id with the largest share, and
+  the shares are written too:
+  - `voxel` (format v4): after the nx·ny·nz values, one line per voxel that
+    holds more than one id, `<voxel index> <id> <samples> <id> <samples> ...`
+    with index (k·ny + j)·nx + i and the samples adding up to k^2 (k^3), so
+    the shares are exact fractions. The header gives the subsamples and the
+    number of such lines. Voxels that are not listed belong to one id.
+  - `vtk_legacy` (format v4): a second cell array `volume_fraction` with one
+    component per phase id (component 0: no phase), or without phases two
+    components (no shape, any shape). At most 255 components.
+
+  With `"subsamples": 1`, the default, both files are what they were (v3).
+  With 4 x 4 points the volume fraction of a 64 x 64 grid of circles is
+  within 0.5 % of the exact one. `examples/partial_volume_voxels.json`
+  writes both files.
+
+From C++ the same is `sample_voxel_fractions`, `check_voxel_resolution`
+and `shape_base::min_width()` (`postprocess/voxel_fractions.h`), from Python
+`rvegen.voxel_fractions`, `rvegen.voxel_resolution` and `Shape.min_width()`.
+A post-process of your own reports through `log_info()` / `log_warn()` of
+`post_process_base`.
+
 ### Worked examples
 
 `examples/` holds one config per feature area (2D/3D, periodic, polydisperse,
@@ -230,6 +278,8 @@ fibres, weaves, polycrystals, mesh inclusions, every writer); see the
 points:
 
 - `examples/circles_in_unit_box.json`: 2D, 10 circles, voxel output.
+- `examples/partial_volume_voxels.json`: voxel and VTK output with partial
+  volumes (4 x 4 sample points per voxel).
 - `examples/spheres_in_cube.json`: 3D, ~5% volume fraction, voxel output.
 - `examples/periodic_circles.json`: 2D periodic, 20% volume fraction, VTK and
   gmsh output.

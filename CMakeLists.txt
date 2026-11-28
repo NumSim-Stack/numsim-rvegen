@@ -379,6 +379,15 @@ target_link_libraries(rvegen_voronoi_2d_neighbour_test PRIVATE rvegen_lib)
 add_test(NAME voronoi_2d_neighbour_test COMMAND rvegen_voronoi_2d_neighbour_test)
 set_tests_properties(voronoi_2d_neighbour_test PROPERTIES TIMEOUT 600)
 
+# Partial-volume voxels and resolution guidance (#115): the sampler against
+# a point-by-point reference, shape widths, the resolution check, the v4
+# voxel file and the VTK volume_fraction array, the lines of a run.
+add_executable(rvegen_voxel_fractions_test tests/voxel_fractions_test.cpp)
+target_link_libraries(rvegen_voxel_fractions_test PRIVATE rvegen_lib)
+target_compile_definitions(rvegen_voxel_fractions_test PRIVATE
+    RVEGEN_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples")
+add_test(NAME voxel_fractions_test COMMAND rvegen_voxel_fractions_test)
+
 # Running tally of the termination criteria (#153).
 add_executable(rvegen_termination_tally_test tests/termination_tally_test.cpp)
 target_link_libraries(rvegen_termination_tally_test PRIVATE rvegen_lib)

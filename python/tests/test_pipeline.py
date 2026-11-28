@@ -168,6 +168,64 @@ def test_voxelize_2d():
     assert (grid > 0).mean() == pytest.approx(np.pi * 0.25**2, abs=0.01)
 
 
+def test_voxel_fractions_2d():
+    shapes = [rvegen.Circle(0.5, 0.5, 0.25), rvegen.Circle(0.1, 0.1, 0.05)]
+    box = [1.0, 1.0, 0.0]
+    f = rvegen.voxel_fractions(shapes, box, 64, 48, 1, subsamples=4)
+    assert f["subsamples"] == 4 and f["samples_per_voxel"] == 16
+    dominant = f["dominant"]
+    assert dominant.dtype == np.uint32 and dominant.shape == (64, 48, 1)
+    # One sample per voxel is voxelize(), and nothing is shared.
+    one = rvegen.voxel_fractions(shapes, box, 64, 48, 1, subsamples=1)
+    assert np.array_equal(one["dominant"], rvegen.voxelize(shapes, box, 64, 48, 1))
+    assert len(one["voxel"]) == 0 and len(one["id"]) == 0
+    # Compressed rows: ascending voxels, fractions of a voxel add up to one.
+    voxel, offset, ids, frac = f["voxel"], f["offset"], f["id"], f["fraction"]
+    assert len(voxel) > 0 and len(offset) == len(voxel) + 1
+    assert offset[0] == 0 and offset[-1] == len(ids) == len(frac)
+    assert np.all(np.diff(voxel) > 0)
+    flat = dominant.reshape(-1, order="F")
+    for m in range(len(voxel)):
+        row = slice(offset[m], offset[m + 1])
+        assert frac[row].sum() == pytest.approx(1.0)
+        assert np.all(np.diff(ids[row].astype(np.int64)) > 0)
+        best = ids[row][np.argmax(frac[row])]   # first maximum: smallest id
+        assert flat[voxel[m]] == best
+    # The area of the big circle: far closer with 16 points than with one.
+    exact = np.pi * 0.25**2
+    assert f["volume_fraction"][1] == pytest.approx(exact, rel=2e-3)
+    assert f["volume_fraction"].sum() == pytest.approx(1.0)
+    assert abs(f["volume_fraction"][1] - exact) < abs(one["volume_fraction"][1] - exact)
+
+
+def test_voxel_fractions_3d_and_errors():
+    shapes = [rvegen.Sphere(0.5, 0.5, 0.5, 0.3)]
+    f = rvegen.voxel_fractions(shapes, [1.0, 1.0, 1.0], 12, 10, 8, subsamples=3)
+    assert f["dominant"].shape == (12, 10, 8) and f["samples_per_voxel"] == 27
+    assert f["volume_fraction"][1] == pytest.approx(4 / 3 * np.pi * 0.3**3, rel=0.02)
+    for bad in (0, 17):
+        with pytest.raises(ValueError, match="subsamples"):
+            rvegen.voxel_fractions(shapes, [1.0, 1.0, 1.0], 4, 4, 4, subsamples=bad)
+    with pytest.raises(ValueError):
+        rvegen.voxel_fractions(shapes, [1.0, 1.0, 1.0], 0, 4, 4)
+
+
+def test_voxel_resolution_and_min_width():
+    shapes = [rvegen.Circle(0.3, 0.3, 0.05), rvegen.Circle(0.7, 0.7, 0.1)]
+    assert shapes[0].min_width() == pytest.approx(0.1)
+    r = rvegen.voxel_resolution(shapes, [1.0, 1.0, 0.0], 64, 64)
+    assert not r["resolved"] and r["shapes"] == 2 and r["under"] == 1
+    assert r["smallest_width"] == pytest.approx(0.1)
+    assert r["voxels_across"] == pytest.approx(6.4)
+    assert r["suggested"] == (80, 80, 1)
+    assert "nx >= 80, ny >= 80" in r["message"]
+    ok = rvegen.voxel_resolution(shapes, [1.0, 1.0, 0.0], *r["suggested"])
+    assert ok["resolved"] and ok["message"] == ""
+    assert rvegen.voxel_resolution(shapes, [1.0, 1.0, 0.0], 8, 8, min_voxels=0)["resolved"]
+    with pytest.raises(ValueError):
+        rvegen.voxel_resolution(shapes, [1.0, 1.0, 0.0], 0, 8)
+
+
 def test_voxelize_3d_orientation_and_ids():
     shapes = [rvegen.Sphere(0.25, 0.5, 0.5, 0.2), rvegen.Sphere(0.75, 0.5, 0.5, 0.2)]
     grid = rvegen.voxelize(shapes, [1.0, 1.0, 1.0], 16, 8, 4)
