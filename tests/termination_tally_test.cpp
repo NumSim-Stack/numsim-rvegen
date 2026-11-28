@@ -137,6 +137,9 @@ struct spy_fraction final : rvegen::termination_base<D> {
   rvegen::volume_fraction<D> inner;
   mutable std::size_t full_passes = 0;
   mutable std::size_t with_tally = 0;
+  mutable std::size_t fresh_tallies = 0;   // tallies that knew no shape
+  mutable std::size_t last_size = 0;
+  mutable bool carried = true;   // every tally knew the list of the last call
   spy_fraction(D target, rvegen::domain<D> const& box) : inner{target, box} {}
   [[nodiscard]] bool operator()(shape_vector const& accepted) const override {
     ++full_passes;
@@ -150,6 +153,9 @@ struct spy_fraction final : rvegen::termination_base<D> {
   [[nodiscard]] bool is_met(shape_vector const& accepted, bool count_all,
                             tally_t& tally) const override {
     ++with_tally;
+    if (tally.seen == 0) ++fresh_tallies;
+    if (tally.seen != last_size) carried = false;
+    last_size = accepted.size();
     return inner.is_met(accepted, count_all, tally);
   }
   [[nodiscard]] double achieved_value(shape_vector const& accepted,
@@ -188,6 +194,11 @@ void test_generators_use_the_tally() {
     REQUIRE(shapes.size() > 200);
     REQUIRE(spy.full_passes == 0);
     REQUIRE(spy.with_tally >= reports + 1);
+    // One tally for the whole run: it is empty only while no shape has been
+    // accepted, and at every call it knows the list of the call before. A
+    // generator that made a new tally per call would be quadratic again.
+    REQUIRE(spy.carried);
+    REQUIRE(spy.fresh_tallies <= 2);
     REQUIRE(reports > 200);
     REQUIRE(last == rvegen::current_volume_fraction<D>(shapes, box));
     REQUIRE(gen.last_report().has_value());
@@ -211,6 +222,79 @@ void test_generators_use_the_tally() {
   run(a);
   run(b);
   run(c);
+
+  // number_of_inclusions honours `count_all`, so the flag each generator
+  // passes shows in the result: exactly the requested number of inclusions,
+  // and for the periodic generator the copies on top of that.
+  auto count = [&](rvegen::rve_generator_base<D>& gen, bool copies) {
+    std::mt19937 engine{7};
+    rvegen::uniform_real_distribution<D> x{0.0, 1.0, engine};
+    rvegen::uniform_real_distribution<D> rad{0.03, 0.05, engine};
+    input_vector in;
+    in.push_back(std::make_unique<rvegen::circle_input<D>>(x, x, rad));
+    const rvegen::number_of_inclusions<D> sixty{60};
+    const auto shapes = gen.compute(in, sixty, box);
+    std::size_t primaries = 0;
+    for (auto const& s : shapes) primaries += s->is_primary() ? 1 : 0;
+    REQUIRE(primaries == 60);
+    if (copies) {
+      REQUIRE(shapes.size() > 60);
+    } else {
+      REQUIRE(shapes.size() == 60);
+    }
+    REQUIRE(gen.last_report().has_value());
+    REQUIRE(gen.last_report()->achieved == 60.0);
+  };
+  count(a, false);
+  count(b, false);
+  count(c, true);
+}
+
+// number_of_inclusions turns true exactly when the count reaches the
+// target, with and without the copies counted, one shape at a time.
+void test_count_flips_at_the_target() {
+  auto pool = random_shapes(120, 21);
+  for (bool count_all : {false, true}) {
+    for (std::size_t target : {1u, 2u, 17u, 40u}) {
+      const rvegen::number_of_inclusions<D> criterion{target};
+      shape_vector accepted;
+      tally_t tally;
+      std::size_t counted = 0;
+      bool flipped = false;
+      REQUIRE(!criterion.is_met(accepted, count_all, tally));
+      for (auto const& s : pool) {
+        accepted.push_back(s->clone());
+        accepted.back()->set_image_shift(s->image_shift());
+        counted += (count_all || s->is_primary()) ? 1 : 0;
+        const bool met = criterion.is_met(accepted, count_all, tally);
+        REQUIRE(met == (counted >= target));
+        REQUIRE(met == criterion.is_met(accepted, count_all));
+        flipped = flipped || met;
+      }
+      REQUIRE(flipped);
+    }
+  }
+}
+
+// running_volume_fraction follows current_volume_fraction, also when it is
+// handed a list shorter than the one it knew.
+void test_running_fraction() {
+  const rvegen::domain<D> box{std::array<D, 3>{1.0, 1.0, 0.0}};
+  auto pool = random_shapes(300, 22);
+  rvegen::running_volume_fraction<D> filled{box};
+  shape_vector accepted;
+  REQUIRE(filled(accepted) == 0.0);
+  for (auto& s : pool) {
+    accepted.push_back(std::move(s));
+    if (accepted.size() % 7 == 0)
+      REQUIRE(filled(accepted) ==
+              rvegen::current_volume_fraction<D>(accepted, box));
+  }
+  REQUIRE(filled(accepted) == rvegen::current_volume_fraction<D>(accepted, box));
+  accepted.resize(100);
+  REQUIRE(filled(accepted) == rvegen::current_volume_fraction<D>(accepted, box));
+  accepted.clear();
+  REQUIRE(filled(accepted) == 0.0);
 }
 
 } // namespace
@@ -219,6 +303,8 @@ int main() {
   test_tally_equals_full_pass();
   test_tally_looks_at_each_shape_once();
   test_generators_use_the_tally();
+  test_count_flips_at_the_target();
+  test_running_fraction();
   if (failures != 0) {
     std::cerr << failures << " check(s) failed\n";
     return EXIT_FAILURE;
