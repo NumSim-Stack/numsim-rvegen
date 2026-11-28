@@ -1,0 +1,22 @@
+{
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 7,
+
+  "distributions": {
+    "uniform_x":      { "type": "uniform_real", "a": 0.3, "b": 0.7 },
+    "uniform_y":      { "type": "uniform_real", "a": 0.3, "b": 0.7 },
+    "uniform_radius": { "type": "uniform_real", "a": 0.25, "b": 0.3 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",
+      "pos_x_dist":  "uniform_x",
+      "pos_y_dist":  "uniform_y",
+      "radius_dist": "uniform_radius" }
+  ],
+
+  "generator":   { "type": "only_inside",          "max_attempts": 200 },
+  "termination": { "type": "number_of_inclusions", "target": 50 },
+
+  "postprocess": []
+}
