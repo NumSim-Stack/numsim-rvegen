@@ -10,6 +10,20 @@
 
 namespace rvegen {
 
+// What a criterion has added up over the first `seen` accepted shapes. A
+// generator keeps one per run and passes it to is_met() after every
+// acceptance, so a criterion that adds something up per shape looks at the
+// new shapes only instead of at all of them: with a pass over all accepted
+// shapes per acceptance a run costs the square of the number of inclusions
+// (#153). A tally belongs to one criterion and one list: between two calls
+// with the same tally the accepted list may only grow at its end.
+template <typename T>
+struct termination_tally {
+  std::size_t seen{0};    // shapes of `accepted` already included
+  T sum{};                // for criteria that add a measure
+  std::size_t count{0};   // for criteria that count
+};
+
 // Polymorphic stop predicate for the generator's accept loop.
 // operator() returns true to halt generation. Common implementations:
 //   * number_of_inclusions: stop after N accepted shapes
@@ -39,6 +53,16 @@ public:
   [[nodiscard]] virtual bool is_met(shape_vector const& accepted,
                                     bool /*count_all*/) const {
     return (*this)(accepted);
+  }
+
+  // is_met() with a running tally. The answer is the one is_met(accepted,
+  // count_all) gives, bit for bit: an overrider adds the new shapes in the
+  // order of the list, which is the order of the full pass. The default is
+  // the full pass, so a criterion that keeps no tally needs no override.
+  [[nodiscard]] virtual bool is_met(shape_vector const& accepted,
+                                    bool count_all,
+                                    termination_tally<T>& /*tally*/) const {
+    return is_met(accepted, count_all);
   }
 
   // Optional progress hooks consumed by the generator base when filling

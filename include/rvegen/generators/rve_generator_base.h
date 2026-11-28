@@ -157,4 +157,41 @@ template <typename T>
   return sum / dom_extent;
 }
 
+// current_volume_fraction(accepted, domain_box) kept up to date while a
+// generator appends shapes: the same sum in the same order, so the same
+// value, without a pass over all shapes for every progress report.
+template <typename T>
+class running_volume_fraction {
+public:
+  explicit running_volume_fraction(domain<T> const& domain_box)
+      : _domain{domain_box},
+        _extent{domain_box.is_3d()
+                    ? static_cast<double>(domain_box[0]) *
+                          static_cast<double>(domain_box[1]) *
+                          static_cast<double>(domain_box[2])
+                    : static_cast<double>(domain_box[0]) *
+                          static_cast<double>(domain_box[1])} {}
+
+  [[nodiscard]] double operator()(
+      std::vector<std::unique_ptr<shape_base<T>>> const& accepted) {
+    if (_extent <= 0.0) return 0.0;
+    if (accepted.size() < _seen) {   // not the list it knew
+      _seen = 0;
+      _sum = 0.0;
+    }
+    for (; _seen < accepted.size(); ++_seen) {
+      auto const& shape = accepted[_seen];
+      if (!shape || !is_counted_in_rve(*shape, _domain)) continue;
+      _sum += static_cast<double>(shape->measure());
+    }
+    return _sum / _extent;
+  }
+
+private:
+  domain<T> _domain;
+  double _extent;
+  std::size_t _seen{0};
+  double _sum{0.0};
+};
+
 } // namespace rvegen

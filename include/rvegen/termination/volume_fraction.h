@@ -37,6 +37,14 @@ public:
       : _target{target_fraction},
         _domain_size{domain_size} {}
 
+  // Target and box, for C++ callers: the same counting as the schema-driven
+  // ctor (shapes without copies count when their centre is in the box).
+  volume_fraction(value_type target_fraction,
+                  domain<value_type> const& domain_box)
+      : _target{target_fraction},
+        _domain_box{domain_box},
+        _domain_size{domain_box.measure()} {}
+
   // Schema-driven ctor — the domain size is the box's area (2D) or
   // volume (3D).
   volume_fraction(parameter_handler_t const& handler,
@@ -63,6 +71,17 @@ public:
     return _domain_size > value_type{0} && fraction(accepted) >= _target;
   }
 
+  [[nodiscard]] bool is_met(shape_vector const& accepted, bool /*count_all*/,
+                            termination_tally<T>& tally) const override {
+    if (!(_domain_size > value_type{0})) return false;
+    if (accepted.size() < tally.seen) tally = {};   // not the list it knew
+    for (; tally.seen < accepted.size(); ++tally.seen) {
+      auto const& shape = accepted[tally.seen];
+      if (counted(*shape)) tally.sum += shape->measure();
+    }
+    return tally.sum / _domain_size >= _target;
+  }
+
   [[nodiscard]] std::string kind() const override { return "volume_fraction"; }
   [[nodiscard]] double target_value() const noexcept override {
     return static_cast<double>(_target);
@@ -77,14 +96,17 @@ public:
     if (!(_domain_size > value_type{0})) return value_type{0};
     value_type sum{};
     for (auto const& shape : accepted) {
-      // (`count_all` is deliberately ignored.) Without a box (direct
-      // construction) only the periodic copies can be told apart.
-      if (_domain_box ? !is_counted_in_rve(*shape, *_domain_box)
-                      : !shape->is_primary())
-        continue;
-      sum += shape->measure();
+      if (counted(*shape)) sum += shape->measure();
     }
     return sum / _domain_size;
+  }
+
+  // Whether a shape adds to the fraction. (`count_all` is deliberately
+  // ignored.) Without a box (direct construction) only the periodic copies
+  // can be told apart.
+  [[nodiscard]] bool counted(shape_base<T> const& shape) const {
+    return _domain_box ? is_counted_in_rve(shape, *_domain_box)
+                       : shape.is_primary();
   }
 
   [[nodiscard]] value_type target_fraction() const noexcept { return _target; }
