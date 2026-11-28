@@ -5,7 +5,6 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../intersection/aabb_overlap.h"
 #include "../types.h"
 #include "termination_base.h"
 
@@ -13,28 +12,26 @@ namespace rvegen {
 
 // Stop after N inclusions (primaries) accepted.
 //
-// "primary" = shape whose centre is in the domain box. periodic_generator
-// stores wrap copies alongside primaries so subsequent collision checks
-// can use the standard non-periodic dispatch; the wraps share storage but
-// represent the same physical inclusion as their primary, so we don't
-// count them. only_inside_generator only accepts shapes inside the box, so
-// the filter is a no-op there. random_generator accepts shapes anywhere
-// (centres may lie outside the box) and has no wraps, so it calls
-// is_met(accepted, /*count_all=*/true) to count every accepted shape.
+// periodic_generator stores wrap copies alongside primaries so subsequent
+// collision checks can use the standard non-periodic dispatch; a copy is
+// the same physical inclusion as its primary and is not counted
+// (shape_base::is_primary). The generators without copies
+// (only_inside_generator, random_generator) call
+// is_met(accepted, /*count_all=*/true): every accepted shape is a primary
+// there, so the count is the vector's size, without a pass over it.
 template <typename T = double>
 class number_of_inclusions final : public termination_base<T> {
 public:
   using shape_vector = typename termination_base<T>::shape_vector;
 
   explicit number_of_inclusions(std::size_t target) noexcept
-      : _target{target}, _domain_box{T{0}, T{0}, T{0}} {}
+      : _target{target} {}
 
-  // Schema-driven ctor — captures domain_box for the centre-in-domain
-  // primary filter.
+  // Schema-driven ctor. Every termination is built with the domain box;
+  // counting inclusions does not need it (shape_base::is_primary).
   number_of_inclusions(parameter_handler_t const& handler,
-                       std::array<T, 3> const& domain_box)
-      : _target{handler.template get<std::size_t>("target")},
-        _domain_box{domain_box} {}
+                       std::array<T, 3> const& /*domain_box*/)
+      : _target{handler.template get<std::size_t>("target")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t p;
@@ -50,17 +47,10 @@ public:
 
   [[nodiscard]] bool is_met(shape_vector const& accepted,
                             bool count_all) const override {
-    bool const have_box =
-        _domain_box[0] > T{0} && _domain_box[1] > T{0};
-    if (count_all || !have_box) {
-      // No primary filter (direct ctor path, empty box, or a generator
-      // without a domain constraint): count everything.
-      return accepted.size() >= _target;
-    }
+    if (count_all) return accepted.size() >= _target;
     std::size_t primary_count = 0;
     for (auto const& shape : accepted) {
-      if (is_centre_in_domain(shape->get_middle_point(), _domain_box))
-        ++primary_count;
+      if (shape->is_primary()) ++primary_count;
     }
     return primary_count >= _target;
   }
@@ -76,7 +66,6 @@ public:
 
 private:
   std::size_t _target;
-  std::array<T, 3> _domain_box;
 };
 
 } // namespace rvegen

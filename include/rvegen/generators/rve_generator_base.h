@@ -8,6 +8,7 @@
 
 #include "../inputs/shape_input_base.h"
 #include "../intersection/aabb_overlap.h"
+#include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
 #include "../termination/termination_base.h"
 
@@ -70,12 +71,12 @@ public:
           progress_options const& opts = {}) = 0;
 };
 
-// Snapshot the current in-domain volume / area fraction. Called from the
-// concrete generators once per progress emission (so at most every
-// `emit_every` placements — bounded O(N) cost). Filters wrap copies by
-// the centre-in-domain test, matching how volume_fraction termination
-// accounts: counting wrap copies would double-report a single physical
-// inclusion, and shapes centred outside the box are not part of the RVE.
+// The volume / area fraction of the shapes that count as material of the
+// RVE (is_counted_in_rve: no periodic copies; an unwrapped shape that
+// crosses a face counts when its centre is inside). The one implementation
+// behind the volume_fraction termination's accounting, the generators'
+// progress reports (once per emission, so bounded O(N) cost) and the
+// statistics. `count_all` counts every shape instead.
 template <typename T>
 [[nodiscard]] inline double current_volume_fraction(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
@@ -93,9 +94,7 @@ template <typename T>
   double sum = 0.0;
   for (auto const& shape : accepted) {
     if (!shape) continue;
-    if (!count_all &&
-        !is_centre_in_domain(shape->get_middle_point(), domain_box))
-      continue;
+    if (!count_all && !is_counted_in_rve(*shape, domain_box)) continue;
     const auto v = shape->volume();
     sum += static_cast<double>((v > T{0}) ? v : shape->area());
   }

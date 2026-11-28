@@ -94,7 +94,7 @@ public:
   }
 
   // Centroid: mean of centerline points. Cheap and physically sensible
-  // for the centre-in-domain filter.
+  // as the tube's reference point.
   [[nodiscard]] std::array<T, 3> get_middle_point() const override {
     if (_centerline.empty()) return {T{0}, T{0}, T{0}};
     point_type sum = point_type::Zero();

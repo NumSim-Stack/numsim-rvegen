@@ -18,10 +18,14 @@
 // full equivalence class so subsequent collision checks can use the
 // non-periodic (faster) dispatch.
 //
-// Wraps are clones, so they copy the primary's inclusion id.
-// periodic_generator stamps the primary and all its wraps with one id
-// (shape_base::set_inclusion_id) when the class has more than one member. Shape-index voxel output uses that id to number one
-// physical inclusion once, however many periodic pieces it has.
+// Linking (#121): every wrap is marked as an image of the primary. It
+// carries the integer lattice shift (shape_base::image_shift, relative to
+// the primary's own shift, normally {0,0,0}) and shares the primary's
+// inclusion id. When wraps exist and the primary has no id yet, the primary
+// is given a fresh one, which is why it is taken by non-const reference.
+// A primary without wraps is left untouched. Consumers that must count an
+// inclusion once use is_primary() / is_counted_in_rve() below; shape-index
+// voxel output numbers one physical inclusion once through the shared id.
 
 #include <array>
 #include <atomic>
@@ -30,6 +34,7 @@
 #include <optional>
 #include <vector>
 
+#include "../intersection/aabb_overlap.h"
 #include "shape_base.h"
 
 namespace rvegen {
@@ -51,9 +56,30 @@ inclusion_id(shape_base<T> const& shape) {
   return shape.inclusion_id();
 }
 
+// Does this shape count as material of the RVE, once? The single rule
+// behind the volume fraction (termination, progress, statistics) and the
+// centre-based statistics:
+//   * a periodic copy never counts: its primary does;
+//   * a primary that has periodic copies counts in full, wherever its
+//     centre lies: the copies bring the parts that left the box back in;
+//   * a primary without copies counts when its centre is inside the box.
+//     For a shape fully inside that is always true. It only decides for a
+//     shape that crosses a face WITHOUT being wrapped (random_generator
+//     clips at the box): counting the shapes centred inside in full and
+//     the ones centred outside not at all is the unbiased estimate of the
+//     clipped volume, and has nothing to do with periodic images.
+template <typename T>
+[[nodiscard]] inline bool
+is_counted_in_rve(shape_base<T> const& shape,
+                  std::array<T, 3> const& domain_box) noexcept {
+  if (!shape.is_primary()) return false;
+  if (shape.inclusion_id().has_value()) return true;
+  return is_centre_in_domain(shape.get_middle_point(), domain_box);
+}
+
 template <typename T>
 [[nodiscard]] std::vector<std::unique_ptr<shape_base<T>>>
-generate_periodic_wraps(shape_base<T> const& primary,
+generate_periodic_wraps(shape_base<T>& primary,
                          std::array<T, 3> const& domain_box) {
   std::vector<std::unique_ptr<shape_base<T>>> wraps;
   auto const* bb = primary.bounding_box();
@@ -92,20 +118,29 @@ generate_periodic_wraps(shape_base<T> const& primary,
   std::size_t const n_combinations = n_opts[0] * n_opts[1] * n_opts[2];
   for (std::size_t combo = 1; combo < n_combinations; ++combo) {
     std::array<T, 3> shift{T{0}, T{0}, T{0}};
+    std::array<int, 3> lattice = primary.image_shift();
     std::size_t rest = combo;
     for (std::size_t axis = 0; axis < 3; ++axis) {
       std::size_t const digit = rest % n_opts[axis];
       rest /= n_opts[axis];
       shift[axis] =
           static_cast<T>(shift_opts[axis][digit]) * domain_box[axis];
+      lattice[axis] += shift_opts[axis][digit];
     }
     auto wrap = primary.clone();
     auto mp = wrap->get_middle_point();
     wrap->set_middle_point({mp[0] + shift[0],
                              mp[1] + shift[1],
                              mp[2] + shift[2]});
+    wrap->set_image_shift(lattice);
     wrap->make_bounding_box();
     wraps.push_back(std::move(wrap));
+  }
+  // One id for the whole class. Only a multi-piece class gets one: a
+  // primary without wraps stays an ordinary single shape.
+  if (!wraps.empty()) {
+    if (!primary.inclusion_id()) primary.set_inclusion_id(next_inclusion_id());
+    for (auto& w : wraps) w->set_inclusion_id(*primary.inclusion_id());
   }
   return wraps;
 }

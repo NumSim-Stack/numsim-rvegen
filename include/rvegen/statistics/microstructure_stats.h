@@ -32,40 +32,25 @@
 
 #include "../distributions/portable_random.h"
 #include "../postprocess/voxel_grid.h"
+#include "../generators/rve_generator_base.h"
+#include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
 #include "../util/wrap_to_box.h"
 
 namespace rvegen {
 
 // ---------------------------------------------------------------------------
-// Volume fraction over the unit cell, filtering wrap copies via the
-// centre-in-domain test. Same definition as the volume_fraction termination
-// uses internally — exposed here as a public helper so post-processes,
-// audits, and tests can compute it without duplicating the logic.
+// Volume fraction over the unit cell. Same definition as the
+// volume_fraction termination and the generators' progress reports
+// (current_volume_fraction: periodic copies are not counted again) —
+// exposed here under the statistics name so post-processes, audits and
+// tests need not know where it lives.
 // ---------------------------------------------------------------------------
 template <typename T>
 [[nodiscard]] double volume_fraction_in_domain(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
     std::array<T, 3> const& domain_box) noexcept {
-  const bool is_3d = domain_box[2] > T{0};
-  const double dom_extent = is_3d
-      ? double(domain_box[0]) * double(domain_box[1]) * double(domain_box[2])
-      : double(domain_box[0]) * double(domain_box[1]);
-  if (dom_extent <= 0.0) return 0.0;
-
-  double sum = 0.0;
-  for (auto const& shape : accepted) {
-    if (!shape) continue;
-    const auto centre = shape->get_middle_point();
-    const bool in_domain =
-        centre[0] >= T{0} && centre[0] < domain_box[0] &&
-        centre[1] >= T{0} && centre[1] < domain_box[1] &&
-        (!is_3d || (centre[2] >= T{0} && centre[2] < domain_box[2]));
-    if (!in_domain) continue;
-    const auto v = shape->volume();
-    sum += double((v > T{0}) ? v : shape->area());
-  }
-  return sum / dom_extent;
+  return current_volume_fraction<T>(accepted, domain_box);
 }
 
 // ---------------------------------------------------------------------------
@@ -218,16 +203,17 @@ radial_distribution_2d(
     std::vector<std::unique_ptr<shape_base<T>>> const& accepted,
     std::array<T, 3> const& domain_box,
     std::size_t nbins = 32) {
-  // Collect in-domain centres (filter wrap copies).
+  // Collect one centre per inclusion (no periodic copies).
   std::vector<std::array<double, 2>> centres;
   centres.reserve(accepted.size());
   for (auto const& shape : accepted) {
     if (!shape) continue;
+    // One centre per inclusion, taken into the box: a primary whose
+    // periodic copies hold the part inside may itself be centred outside.
+    if (!is_counted_in_rve(*shape, domain_box)) continue;
     const auto c = shape->get_middle_point();
-    if (c[0] >= T{0} && c[0] < domain_box[0] &&
-        c[1] >= T{0} && c[1] < domain_box[1]) {
-      centres.push_back({double(c[0]), double(c[1])});
-    }
+    centres.push_back({double(wrap_to_box(c[0], domain_box[0])),
+                       double(wrap_to_box(c[1], domain_box[1]))});
   }
   if (nbins == 0) return {};
   const std::size_t N = centres.size();
@@ -278,8 +264,8 @@ radial_distribution_2d(
 // Radial distribution function g(r) in 3D: same estimator as
 // radial_distribution_2d with periodic minimum-image distances along all
 // three axes, spherical shells of volume 4/3·π·(r_outer³ − r_inner³) and
-// number density N / (Lx·Ly·Lz). Only primaries count (centre inside the
-// domain box), so periodic wrap copies are filtered out.
+// number density N / (Lx·Ly·Lz). Each inclusion counts once
+// (is_counted_in_rve), so periodic wrap copies are filtered out.
 // max_r = min(Lx, Ly, Lz) / 2.
 // ---------------------------------------------------------------------------
 template <typename T>
@@ -292,12 +278,12 @@ radial_distribution_3d(
   centres.reserve(accepted.size());
   for (auto const& shape : accepted) {
     if (!shape) continue;
+    if (!(domain_box[2] > T{0})) break;   // not a 3D box: no centres
+    if (!is_counted_in_rve(*shape, domain_box)) continue;
     const auto c = shape->get_middle_point();
-    if (c[0] >= T{0} && c[0] < domain_box[0] &&
-        c[1] >= T{0} && c[1] < domain_box[1] &&
-        c[2] >= T{0} && c[2] < domain_box[2]) {
-      centres.push_back({double(c[0]), double(c[1]), double(c[2])});
-    }
+    centres.push_back({double(wrap_to_box(c[0], domain_box[0])),
+                       double(wrap_to_box(c[1], domain_box[1])),
+                       double(wrap_to_box(c[2], domain_box[2]))});
   }
   if (nbins == 0) return {};
   const std::size_t N = centres.size();

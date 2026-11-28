@@ -4,26 +4,21 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
-#include "../intersection/aabb_overlap.h"
+#include "../shapes/periodic_wraps.h"
 #include "../types.h"
 #include "termination_base.h"
 
 namespace rvegen {
 
-// Stop when the in-domain shapes' total area (2D) or volume (3D) reaches
-// the configured fraction of the domain.
+// Stop when the total area (2D) or volume (3D) of the shapes that count as
+// material of the RVE reaches the configured fraction of the domain.
 //
-// "in-domain" means the shape's centre lies inside the domain box. This
-// matters for periodic_generator, which inserts wrap copies of shapes
-// near box faces — the wraps share the primary's geometry but live with
-// their centres outside the domain. Counting wraps would double-count
-// the same physical inclusion, so we filter by centre-in-domain.
-// only_inside_generator only accepts shapes inside the box, so the filter
-// is a no-op there. random_generator accepts shapes anywhere; it has no
-// wraps, but material outside the box is not part of the RVE, so the same
-// centre-in-domain rule applies, so a shape lying entirely outside the box
-// contributes nothing. The `count_all` flag therefore only affects
-// number_of_inclusions.
+// Which shapes count is decided in one place, is_counted_in_rve()
+// (shapes/periodic_wraps.h): a periodic copy never does (its primary
+// stands for the whole inclusion), a primary with copies always does, and
+// a shape that crosses a face without being wrapped (random_generator)
+// counts when its centre is inside the box. The `count_all` flag
+// therefore only affects number_of_inclusions.
 //
 // Dimension is auto-detected: shape_base::area() is zero for 3D shapes,
 // shape_base::volume() is zero for 2D shapes — sum whichever is non-zero
@@ -34,9 +29,9 @@ public:
   using value_type = T;
   using shape_vector = typename termination_base<T>::shape_vector;
 
-  // Direct ctor — caller computes domain_size; centre-in-domain filter
-  // is unavailable on this path. Use the schema-driven ctor for
-  // periodic-correct accounting.
+  // Direct ctor — caller computes domain_size. Periodic copies are not
+  // counted on this path either; the estimate for shapes that cross a face
+  // without copies needs the box, i.e. the schema-driven ctor.
   volume_fraction(value_type target_fraction, value_type domain_size) noexcept
       : _target{target_fraction},
         _domain_box{T{0}, T{0}, T{0}},
@@ -69,10 +64,10 @@ public:
     bool const have_box =
         _domain_box[0] > value_type{0} && _domain_box[1] > value_type{0};
     for (auto const& shape : accepted) {
-      // Filter wrap copies and material outside the box: only count shapes
-      // whose centre is in domain (`count_all` is deliberately ignored).
-      if (have_box && !is_centre_in_domain(shape->get_middle_point(),
-                                           _domain_box))
+      // (`count_all` is deliberately ignored.) Without a box (direct
+      // construction) only the periodic copies can be told apart.
+      if (have_box ? !is_counted_in_rve(*shape, _domain_box)
+                   : !shape->is_primary())
         continue;
       const auto v = shape->volume();
       sum += (v > value_type{0}) ? v : shape->area();

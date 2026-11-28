@@ -138,6 +138,14 @@ The cross-references in shape inputs (e.g. `"pos_x_dist": "uniform_x"`) refer
 to keys in the `distributions` block. The orchestrator builds distributions
 first, then resolves these names when constructing inputs.
 
+**Periodic copies.** A periodic generator (`periodic`, and `voronoi_2d` /
+`voronoi_3d` with `"periodic": true`) returns each inclusion that crosses a
+face together with its translated copies, so writers see the complete box. A
+copy is linked to its primary: it carries the lattice shift from it and both
+share an inclusion id. Inclusion counts, volume fractions, statistics, phase
+assignment by index and shape-index voxel output all count such an inclusion
+once, including one centred exactly on a face or a corner.
+
 ### Worked examples
 
 `examples/` holds one config per feature area (2D/3D, periodic, polydisperse,

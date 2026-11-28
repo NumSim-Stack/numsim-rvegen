@@ -227,7 +227,24 @@ PYBIND11_MODULE(_core, m) {
           })
       .def_property_readonly("info", [](rvegen::shape_base<double> const& s) {
         return json_to_py(s.info().json());
-      });
+      })
+      .def_property_readonly("is_primary",
+          &rvegen::shape_base<double>::is_primary,
+          "False for a periodic copy of another shape (see image_shift).")
+      .def_property_readonly("image_shift",
+          [](rvegen::shape_base<double> const& s) {
+            auto const& sh = s.image_shift();
+            return py::make_tuple(sh[0], sh[1], sh[2]);
+          },
+          "(i, j, k): this shape is its primary translated by i*Lx, j*Ly, "
+          "k*Lz. (0, 0, 0) for a primary.")
+      .def_property_readonly("inclusion_id",
+          [](rvegen::shape_base<double> const& s) -> py::object {
+            if (auto const id = s.inclusion_id()) return py::int_(*id);
+            return py::none();
+          },
+          "Id shared by a primary and its periodic copies; None for a shape "
+          "without copies. Unique per inclusion, not consecutive.");
 
   py::class_<rvegen::circle<double>, rvegen::shape_base<double>>(m, "Circle")
       .def(py::init<double, double, double>(), py::arg("x"), py::arg("y"),

@@ -29,8 +29,8 @@ namespace rvegen {
 //      generation iterations then see the wraps as ordinary shapes.
 //
 // This avoids periodic-aware collision math at runtime — wraps are stored
-// explicitly. Volume_fraction filters by is_centre_in_domain so wraps
-// don't double-count. Output writers (voxel grids especially) get correct
+// explicitly, each marked as an image of its primary (image_shift, shared
+// inclusion id), so terminations and statistics count an inclusion once. Output writers (voxel grids especially) get correct
 // periodic behaviour at the box faces because the wraps are physical.
 template <typename T = double>
 class periodic_generator final : public rve_generator_base<T> {
@@ -87,15 +87,10 @@ public:
       // has its own periodic image overlapping itself.
       if (self_periodic_collides(*prim_bb, domain_box)) continue;
 
-      // Build the periodic equivalence class — primary + wraps. Only a
-      // multi-piece class gets an inclusion id (shared by all members);
-      // a primary without wraps is an ordinary single shape.
+      // Build the periodic equivalence class — primary + wraps. The
+      // helper links them: each wrap carries its lattice shift and all
+      // members of a multi-piece class share one inclusion id.
       auto wraps = generate_periodic_wraps(*primary, domain_box);
-      if (!wraps.empty()) {
-        const auto id = next_inclusion_id();
-        primary->set_inclusion_id(id);
-        for (auto& w : wraps) w->set_inclusion_id(id);
-      }
 
       // Check every class member vs every accepted shape. The accepted
       // vector (and the grid mirroring it) already contains all
@@ -116,9 +111,8 @@ public:
       }
       if (collides) continue;
 
-      // Accept: push primary first, then wraps. Centre-in-domain
-      // accounting (volume_fraction termination) distinguishes them
-      // by their middle_point, not by insertion role.
+      // Accept: push primary first, then wraps. Accounting (terminations,
+      // statistics) tells them apart by shape_base::is_primary().
       grid.insert(*primary->bounding_box());
       accepted.push_back(std::move(primary));
       for (auto& w : wraps) {
