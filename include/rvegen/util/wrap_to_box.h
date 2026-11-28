@@ -15,10 +15,12 @@ namespace rvegen {
 //     lies just below the upper face; it becomes the largest value below L,
 //     not 0, so it stays on its side of the face.
 //   * x == L, x == -L and x == 0 all give 0 (a point on a face belongs to
-//     the cell that starts there).
+//     the cell that starts there), always as +0: fmod keeps the sign of x,
+//     so a negative multiple of L would otherwise come back as -0.
 template <typename T>
 [[nodiscard]] inline T wrap_to_box(T x, T L) noexcept {
   T r = std::fmod(x, L);
+  if (r == T{0}) return T{0};
   if (r < T{0}) {
     r += L;
     if (!(r < L)) r = std::nextafter(L, T{0});

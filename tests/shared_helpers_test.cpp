@@ -37,6 +37,12 @@ void test_wrap_to_box() {
   REQUIRE(wrap_to_box(-L, L) == 0.0);
   REQUIRE(wrap_to_box(3.0 * L, L) == 0.0);
   REQUIRE(wrap_to_box(-0.0, L) == 0.0);
+  // ... and it is +0, never -0 (== cannot tell them apart).
+  for (double x : {0.0, -0.0, L, -L, 3.0 * L, -3.0 * L, -1e300}) {
+    const double r = wrap_to_box(x, L);
+    if (x != -1e300) REQUIRE(r == 0.0);
+    if (r == 0.0) REQUIRE(!std::signbit(r));
+  }
   // One period outside, either side.
   REQUIRE(wrap_to_box(L + 0.25, L) == 0.25);
   REQUIRE(wrap_to_box(-0.25, L) == 1.25);
@@ -95,7 +101,7 @@ void test_extent_of() {
   // Without a bounding box: centre +- max_expansion().
   rvegen::sphere<double> s{0.5, 0.25, 0.75, 0.2};
   REQUIRE(s.bounding_box() == nullptr);
-  auto e = rvegen::extent_of<double>(s);
+  auto e = rvegen::extent_of(s);   // deduces through shape_base<double>
   for (int k = 0; k < 3; ++k) {
     REQUIRE(std::abs((e.top[k] - e.bottom[k]) - 0.4) < 1e-15);
   }
