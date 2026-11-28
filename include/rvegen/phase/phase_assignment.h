@@ -18,9 +18,9 @@
 //   * Precedence, most specific first: by_index > by_shape_type >
 //     all_inclusions.
 //   * by_index keys address UNIQUE INCLUSIONS in generation order: "N",
-//     "N-M" (inclusive) or "N-" (to the end). When a domain box is given
-//     to apply(), periodic wrap copies (centre outside the box) are not
-//     counted: a wrap takes the index of the primary preceding it, so
+//     "N-M" (inclusive) or "N-" (to the end). Periodic copies
+//     (shape_base::is_primary() == false) are not counted: a copy takes
+//     the index of its primary, found through the shared inclusion id, so
 //     both get the same phase. Ranges must not overlap (the JSON object
 //     key order is not file order, so overlaps would be ambiguous).
 //   * Shape-type names: circle, ellipse, rectangle, sphere, box,
@@ -53,7 +53,6 @@
 #include "../shapes/shape_base.h"
 #include "../shapes/sphere.h"
 #include "../shapes/voronoi_cell.h"
-#include "../intersection/aabb_overlap.h"
 #include "phase.h"
 
 namespace rvegen {
@@ -159,23 +158,34 @@ public:
   }
 
   // Stamp phase names onto shapes that have none. Returns the number of
-  // shapes assigned. With `domain_box`, by_index counts unique inclusions
-  // (periodic wraps share their primary's index); without it every shape
-  // counts.
+  // shapes assigned. by_index counts inclusions: every primary takes the
+  // next index, and a periodic copy uses the index of its primary (found
+  // through the shared inclusion id, wherever the copy sits in the vector),
+  // so all pieces of one inclusion get the same phase. A copy whose primary
+  // is not in the vector is numbered like a primary.
   template <typename ShapeVector>
-  std::size_t apply(ShapeVector& shapes,
-                    std::optional<std::array<T, 3>> domain_box = std::nullopt) const {
+  std::size_t apply(ShapeVector& shapes) const {
+    std::vector<std::size_t> index(shapes.size(), 0);
+    std::unordered_map<std::size_t, std::size_t> index_of_class;
+    std::size_t next = 0;
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      auto const& s = *shapes[i];
+      if (!s.is_primary()) continue;
+      index[i] = next++;
+      if (auto const id = s.inclusion_id()) index_of_class.emplace(*id, index[i]);
+    }
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      auto const& s = *shapes[i];
+      if (s.is_primary()) continue;
+      auto const id = s.inclusion_id();
+      auto const it = id ? index_of_class.find(*id) : index_of_class.end();
+      index[i] = it != index_of_class.end() ? it->second : next++;
+    }
     std::size_t n = 0;
-    std::size_t incl = 0;
-    bool first = true;
     for (std::size_t i = 0; i < shapes.size(); ++i) {
       auto& s = *shapes[i];
-      if (!domain_box || is_centre_in_domain(s.get_middle_point(), *domain_box)) {
-        if (!first) ++incl;
-        first = false;
-      }
       if (!s.phase_name().empty()) continue;
-      if (auto p = resolve(s, incl)) {
+      if (auto p = resolve(s, index[i])) {
         s.info().set_phase_name(*p);
         ++n;
       }

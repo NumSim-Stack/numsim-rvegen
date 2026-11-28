@@ -85,13 +85,13 @@ template <typename T>
   return false;
 }
 
-// True if the shape's middle point sits in [0, Lx) × [0, Ly) × [0, Lz).
-// The half-open intervals match the periodic-wrap convention: a shape at
-// exactly x = Lx is the wrap of a shape at x = 0; only one of them is the
-// "primary". 2D RVEs (domain_box[2] == 0) ignore the z component.
+// True if the shape's middle point sits in [0, Lx) × [0, Ly) × [0, Lz)
+// (half-open, so a point on the upper face belongs to the next cell).
+// 2D RVEs (domain_box[2] == 0) ignore the z component.
 //
-// Used by periodic accounting (e.g. volume_fraction) to count primaries
-// only, not periodic wrap copies that share storage.
+// Not a test for "is this a periodic copy": that is
+// shape_base::is_primary(). It remains as the estimate for shapes that
+// cross a face without copies; see is_counted_in_rve (periodic_wraps.h).
 template <typename T>
 [[nodiscard]] constexpr bool
 is_centre_in_domain(std::array<T, 3> const& middle_point,

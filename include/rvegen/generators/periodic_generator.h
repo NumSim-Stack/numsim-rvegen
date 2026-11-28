@@ -10,6 +10,7 @@
 #include "../intersection/collision_dispatcher.h"
 #include "../shapes/periodic_wraps.h"
 #include "../types.h"
+#include "../util/wrap_to_box.h"
 #include "rve_generator_base.h"
 
 namespace rvegen {
@@ -29,8 +30,8 @@ namespace rvegen {
 //      generation iterations then see the wraps as ordinary shapes.
 //
 // This avoids periodic-aware collision math at runtime — wraps are stored
-// explicitly. Volume_fraction filters by is_centre_in_domain so wraps
-// don't double-count. Output writers (voxel grids especially) get correct
+// explicitly, each marked as an image of its primary (image_shift, shared
+// inclusion id), so terminations and statistics count an inclusion once. Output writers (voxel grids especially) get correct
 // periodic behaviour at the box faces because the wraps are physical.
 template <typename T = double>
 class periodic_generator final : public rve_generator_base<T> {
@@ -79,6 +80,22 @@ public:
       input_idx = (input_idx + 1) % inputs.size();
 
       auto primary = input.new_shape();
+      // The inclusion is the same wherever its centre is drawn modulo the
+      // box, so store it at its image inside [0, L). The copies below
+      // reach one lattice step: without this a centre drawn more than a
+      // box length outside would leave no piece inside the box at all.
+      // (A centre already inside comes back unchanged, bit for bit.)
+      {
+        auto c = primary->get_middle_point();
+        bool moved = false;
+        for (std::size_t k = 0; k < 3; ++k) {
+          if (!(domain_box[k] > value_type{0})) continue;   // 2D: no z period
+          const auto w = wrap_to_box(c[k], domain_box[k]);
+          moved = moved || w != c[k];
+          c[k] = w;
+        }
+        if (moved) primary->set_middle_point(c);
+      }
       primary->make_bounding_box();
       auto const* prim_bb = primary->bounding_box();
       if (prim_bb == nullptr) continue;
@@ -87,15 +104,10 @@ public:
       // has its own periodic image overlapping itself.
       if (self_periodic_collides(*prim_bb, domain_box)) continue;
 
-      // Build the periodic equivalence class — primary + wraps. Only a
-      // multi-piece class gets an inclusion id (shared by all members);
-      // a primary without wraps is an ordinary single shape.
+      // Build the periodic equivalence class — primary + wraps. The
+      // helper links them: each wrap carries its lattice shift and all
+      // members of a multi-piece class share one inclusion id.
       auto wraps = generate_periodic_wraps(*primary, domain_box);
-      if (!wraps.empty()) {
-        const auto id = next_inclusion_id();
-        primary->set_inclusion_id(id);
-        for (auto& w : wraps) w->set_inclusion_id(id);
-      }
 
       // Check every class member vs every accepted shape. The accepted
       // vector (and the grid mirroring it) already contains all
@@ -116,9 +128,8 @@ public:
       }
       if (collides) continue;
 
-      // Accept: push primary first, then wraps. Centre-in-domain
-      // accounting (volume_fraction termination) distinguishes them
-      // by their middle_point, not by insertion role.
+      // Accept: push primary first, then wraps. Accounting (terminations,
+      // statistics) tells them apart by shape_base::is_primary().
       grid.insert(*primary->bounding_box());
       accepted.push_back(std::move(primary));
       for (auto& w : wraps) {

@@ -69,6 +69,28 @@ returning the accepted shapes. Provide a constructor from
 with `generator_registry_t<T>::instance().template register_type<...>("name")`
 and add the call to `register_all_generators()`.
 
+## Periodic copies
+
+A generator that makes a periodic RVE stores, next to each inclusion that
+crosses a face, its translated copies, so collision checks and writers can
+treat every shape as an ordinary one. Produce the copies with
+`generate_periodic_wraps(primary, domain_box)` (`shapes/periodic_wraps.h`)
+and nothing else: it links them to the primary.
+
+- `shape.is_primary()` is false for a copy; `shape.image_shift()` is its
+  integer lattice translation from the primary.
+- A primary and its copies share `shape.inclusion_id()`; a shape without
+  copies has none.
+
+Code that counts must not look at where a centre lies:
+
+- counting inclusions: `is_primary()`;
+- anything proportional to volume or built on centres:
+  `is_counted_in_rve(shape, domain_box)`, the same rule the `volume_fraction`
+  termination and the statistics use (it also covers shapes that
+  `random_generator` lets cross a face without copies);
+- finding the pieces of one inclusion: equal `inclusion_id()`.
+
 ## Adding a post-process
 
 Derive from `post_process_base<T>` (`postprocess/post_process_base.h`) and

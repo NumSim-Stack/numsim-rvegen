@@ -24,8 +24,9 @@ namespace rvegen {
 // periodic wrap copies, so every accepted shape is a primary. The
 // termination predicate is therefore evaluated with count_all = true
 // (see termination_base::is_met): number_of_inclusions counts every shape,
-// while volume_fraction (and the progress volume fraction) only counts
-// material in the box, by the centre-in-domain rule.
+// while volume_fraction (and the progress volume fraction) estimates the
+// material in the box: a shape that crosses a face is not wrapped here, so
+// it counts when its centre is inside (is_counted_in_rve).
 template <typename T = double>
 class random_generator final : public rve_generator_base<T> {
 public:

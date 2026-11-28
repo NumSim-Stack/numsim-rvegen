@@ -507,12 +507,9 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
   opts.info("rvegen: generated " + std::to_string(out.shapes.size()) +
             " shape" + (out.shapes.size() == 1 ? "" : "s"));
   // A generator also returns when it exhausts max_attempts. Detect that
-  // by evaluating the termination predicate on the result (random_generator
-  // evaluates it with count_all = true, the others with the primaries-only
-  // default).
-  const bool counts_all =
-      config.at("generator").value("type", std::string{}) == "random";
-  if (!termination->is_met(out.shapes, counts_all)) {
+  // by evaluating the termination predicate on the result (it counts every
+  // inclusion once, whichever generator produced the shapes).
+  if (!(*termination)(out.shapes)) {
     opts.warn("rvegen: warning — stopped at max_attempts before reaching "
               "the termination target (" + std::to_string(out.shapes.size()) +
               " shapes placed).");
@@ -521,7 +518,7 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
   // Shape -> phase assignment. The collection is handed to every
   // post-process through post_process_base::set_phases.
   if (assignment) {
-    const auto assigned = assignment->apply(out.shapes, out.domain_box);
+    const auto assigned = assignment->apply(out.shapes);
     opts.info("rvegen: phase_assignment tagged " + std::to_string(assigned) +
               " shape" + (assigned == 1 ? "" : "s"));
   }

@@ -28,12 +28,12 @@ public:
 
   [[nodiscard]] virtual bool operator()(shape_vector const& accepted) const = 0;
 
-  // Same predicate with explicit accounting. `count_all == false` is the
-  // operator() behaviour: only primaries (centre in the domain box) count,
-  // so periodic wrap copies are not double-counted. `count_all == true` is
-  // for generators with no domain constraint (random_generator), where
-  // every accepted shape is a distinct primary even when its centre lies
-  // outside the box. Terminations that do not distinguish ignore it.
+  // Same predicate with a hint. `count_all == false` is the operator()
+  // behaviour: periodic copies (shape_base::is_primary() == false) are not
+  // counted again. `count_all == true` is the caller's promise that the
+  // vector holds no periodic copies (only_inside_generator,
+  // random_generator), which lets a counting termination skip the pass
+  // over the shapes. Terminations that do not distinguish ignore it.
   [[nodiscard]] virtual bool is_met(shape_vector const& accepted,
                                     bool /*count_all*/) const {
     return (*this)(accepted);
