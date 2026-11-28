@@ -61,6 +61,26 @@ breaking changes there don't cascade into every rvegen PR. To bump:
 Bump deliberately — typically when rvegen needs a new numsim-core
 feature, or as part of a quarterly sync. Don't bump speculatively.
 
+## Floating-point keys in comparators and predicates
+
+Do not compute a floating-point key inside a comparator or predicate:
+
+```cpp
+// wrong: the same vertex can get two different angles
+std::sort(v.begin(), v.end(), [&](auto a, auto b) { return angle(a) < angle(b); });
+
+// right: compute each key once, compare the stored numbers
+std::vector<std::pair<double, std::size_t>> keyed;   // {angle(i), i}
+std::sort(keyed.begin(), keyed.end());
+```
+
+A compiler that contracts `a*b+c` into a fused multiply-add (the default
+with `-march=x86-64-v3` or `-march=native`) may round the expression
+differently at each place it is inlined. The comparator then stops being a
+strict weak order, which is undefined behaviour in `std::sort`; it scrambled
+the Voronoi face loops in #137. The CI job "x86-64-v3 + FMA contraction"
+builds and tests with contraction on.
+
 ## Adding a new shape
 
 See `docs/extending.md` for the full walkthrough. Short version:

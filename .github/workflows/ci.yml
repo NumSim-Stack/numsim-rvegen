@@ -21,7 +21,8 @@ jobs:
     # Pinned image: the tool versions below (GCC 14, clang 19, gmsh, Boost,
     # numpy) are those of Ubuntu 24.04. `ubuntu-latest` moves to a newer
     # release on GitHub's schedule and changes all of them at once.
-    runs-on: ubuntu-24.04
+    # (One job below names a newer image on purpose, see its comment.)
+    runs-on: ${{ matrix.os || 'ubuntu-24.04' }}
     # Hard cap: a stuck FetchContent download or pathological test
     # shouldn't hold a runner for the GitHub default 6h. Sanitizer builds
     # run several times slower, so they get more headroom.
@@ -70,6 +71,23 @@ jobs:
             # initialised first, so shape types shared id 0. The
             # dispatchers refuse duplicate ids (shape_id_claims.h) and
             # shape_id_unique_test checks them, so an older pin fails here.
+
+          # Floating-point contraction on (#137): with FMA the compiler may
+          # evaluate a*b+c differently at each place an expression is
+          # inlined, so code that recomputes a floating-point key (a sort
+          # comparator, a predicate) can disagree with itself. GCC 14.3 on
+          # Ubuntu 26.04 is where that broke the Voronoi face sort; GCC 14.2
+          # on 24.04 compiles the same code without the fault, so this job
+          # names the newer image. The flags are spelled out so the job does
+          # not depend on the distribution's default -march.
+          - name: "gcc-14 Release, x86-64-v3 + FMA contraction (Ubuntu 26.04)"
+            os: ubuntu-26.04
+            cc: gcc-14
+            cxx: g++-14
+            build_type: Release
+            cxx_flags: "-march=x86-64-v3 -ffp-contract=fast"
+            full: false
+            timeout: 30
 
     steps:
       - name: Checkout rvegen
