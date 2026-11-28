@@ -681,6 +681,33 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
 
+# `rvegen --check` (#120): validation only. Every shipped example must pass
+# it, quickly (the check builds every block but places no shape), and a
+# misspelt section must be rejected with the section it meant. Run from
+# examples/ because mesh inputs are read at validation time and their paths
+# are relative to the working directory.
+file(GLOB _rvegen_check_configs CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.json)
+foreach(_cfg IN LISTS _rvegen_check_configs)
+  get_filename_component(_name ${_cfg} NAME_WE)
+  add_test(NAME cli_validate_${_name} COMMAND rvegen --check ${_cfg})
+  set_tests_properties(cli_validate_${_name} PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/examples
+    PASS_REGULAR_EXPRESSION "rvegen: config OK"
+    TIMEOUT 20 LABELS "cli")
+endforeach()
+add_test(NAME cli_validate_rejects_misspelt_section
+  COMMAND rvegen --check
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/misspelt_postprocess.json)
+set_tests_properties(cli_validate_rejects_misspelt_section PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "unknown top-level key 'post_process' \\(did you mean 'postprocess'\\?\\)"
+  LABELS "cli")
+add_test(NAME cli_rejects_unknown_option
+  COMMAND rvegen --chekc ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)
+set_tests_properties(cli_rejects_unknown_option PROPERTIES
+  PASS_REGULAR_EXPRESSION "unknown option '--chekc'" LABELS "cli")
+
 # Output-checking CLI tests (#85): one test per config in examples/. Exit
 # status and stdout are not enough, so tests/cli_example_check.py runs the
 # CLI and then inspects every file the config's postprocess entries wrote
