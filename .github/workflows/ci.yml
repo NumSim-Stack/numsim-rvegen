@@ -312,10 +312,10 @@ jobs:
           cl /nologo /std:c++latest /EHsc /O2 /utf-8 /W3 /I include tests\golden_portable_test.cpp /Fe:golden_portable_test.exe || exit /b 1
           golden_portable_test.exe
 
-      - name: Install Boost headers (vcpkg)
+      - name: Install Boost, nlohmann/json and Eigen (vcpkg, header-only)
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install boost-container boost-math --triplet x64-windows
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install boost-container boost-math nlohmann-json eigen3 --triplet x64-windows
 
       - name: Build and install numsim-core
         shell: pwsh
