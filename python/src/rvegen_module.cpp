@@ -427,20 +427,49 @@ PYBIND11_MODULE(_core, m) {
         py::arg("periodic") = true, py::arg("tolerance") = 0.01,
         py::arg("max_iterations") = 1000, py::arg("max_restarts") = 2);
 
-  // Deterministic plain-weave generator (#3 / #109). build() returns
+  // Deterministic weave generator (plain / twill 2/2 / satin 5) (#3 / #109). build() returns
   // a Python list of PolylineTube — every yarn the generator produces
   // IS a polyline_tube by construction, so the down-cast is type-safe.
   // Each tube in the list owns its own data (deep-copied on the way
   // out so Python lifetime is independent of the generator).
+  py::enum_<rvegen::weave_pattern>(m, "WeavePattern")
+      .value("plain", rvegen::weave_pattern::plain)
+      .value("twill_2_2", rvegen::weave_pattern::twill_2_2)
+      .value("satin_5", rvegen::weave_pattern::satin_5);
+
+  // `pattern` accepts a WeavePattern or one of the strings "plain",
+  // "twill_2_2", "satin_5".
   py::class_<rvegen::weave_generator<double>>(m, "WeaveGenerator")
-      .def(py::init<std::array<double, 3> const&, std::size_t, std::size_t,
-                    double, double, std::size_t>(),
+      .def(py::init([](std::array<double, 3> const& box, std::size_t n_warp,
+                       std::size_t n_weft, double r, double a,
+                       std::size_t n_seg, py::object const& pattern) {
+             rvegen::weave_pattern p = rvegen::weave_pattern::plain;
+             if (py::isinstance<py::str>(pattern)) {
+               const auto name = pattern.cast<std::string>();
+               if (name == "plain") p = rvegen::weave_pattern::plain;
+               else if (name == "twill_2_2") p = rvegen::weave_pattern::twill_2_2;
+               else if (name == "satin_5") p = rvegen::weave_pattern::satin_5;
+               else throw py::value_error(
+                   "WeaveGenerator: unknown pattern '" + name +
+                   "' (expected plain, twill_2_2 or satin_5)");
+             } else {
+               p = pattern.cast<rvegen::weave_pattern>();
+             }
+             return rvegen::weave_generator<double>(box, n_warp, n_weft, r, a,
+                                                    n_seg, p);
+           }),
            py::arg("domain_box"),
            py::arg("n_warp_yarns"),
            py::arg("n_weft_yarns"),
            py::arg("yarn_radius"),
            py::arg("amplitude"),
-           py::arg("n_segments_per_yarn") = std::size_t{32})
+           py::arg("n_segments_per_yarn") = std::size_t{32},
+           py::arg("pattern") = rvegen::weave_pattern::plain)
+      .def_property_readonly(
+          "pattern",
+          [](rvegen::weave_generator<double> const& g) {
+            return g.pattern();
+          })
       .def_property_readonly(
           "n_warp_yarns",
           [](rvegen::weave_generator<double> const& g) {

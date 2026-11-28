@@ -18,6 +18,7 @@ from ._core import (
     VoronoiGenerator2d,
     VoronoiGenerator3d,
     WeaveGenerator,
+    WeavePattern,
     lognormal_grain_seeds_3d,
     voro_pp_available,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "VoronoiGenerator2d",
     "VoronoiGenerator3d",
     "WeaveGenerator",
+    "WeavePattern",
     "lognormal_grain_seeds_3d",
     "voro_pp_available",
 ]

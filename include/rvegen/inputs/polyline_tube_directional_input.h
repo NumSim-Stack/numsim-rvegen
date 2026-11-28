@@ -62,10 +62,13 @@ public:
                                   distribution_base<value_type>& dy,
                                   distribution_base<value_type>& dz,
                                   distribution_base<value_type>& length,
-                                  distribution_base<value_type>& radius) noexcept
+                                  distribution_base<value_type>& radius)
       : _px{px}, _py{py}, _pz{pz},
         _dx{dx}, _dy{dy}, _dz{dz},
-        _length{length}, _radius{radius} {}
+        _length{length}, _radius{radius} {
+    this->require_positive_support(_length, "polyline_tube_directional_input", "length");
+    this->require_positive_support(_radius, "polyline_tube_directional_input", "radius");
+  }
 
   polyline_tube_directional_input(parameter_handler_t const& handler,
                                   distribution_map_t<value_type> const& d)
@@ -121,17 +124,29 @@ public:
   // `is_inside` then degenerates to a point-radius test (effectively
   // a sphere of \c radius centred at \c position). Callers should
   // pick direction distributions whose support excludes the origin.
+  //
+  // Draw order: position x, y, z, direction x, y, z, length, radius.
+  // The length and radius distributions are truncated to (0, inf) —
+  // non-positive draws are resampled (see shape_input_base for the
+  // constructor check and the redraw backstop).
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    const value_type cx = _px(), cy = _py(), cz = _pz();
-    value_type dx = _dx(), dy = _dy(), dz = _dz();
+    const value_type cx = _px();
+    const value_type cy = _py();
+    const value_type cz = _pz();
+    value_type dx = _dx();
+    value_type dy = _dy();
+    value_type dz = _dz();
     const value_type mag = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (mag > value_type{0}) { dx /= mag; dy /= mag; dz /= mag; }
-    const value_type half = _length() * value_type{0.5};
+    const value_type half =
+        this->draw_positive(_length, "polyline_tube_directional_input", "length") *
+        value_type{0.5};
+    const value_type r =
+        this->draw_positive(_radius, "polyline_tube_directional_input", "radius");
     std::vector<std::array<value_type, 3>> centerline{
         {{cx - half * dx, cy - half * dy, cz - half * dz}},
         {{cx + half * dx, cy + half * dy, cz + half * dz}}};
-    auto shape =
-        std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+    auto shape = std::make_unique<polyline_tube<value_type>>(centerline, r);
     this->tag(*shape);
     return shape;
   }

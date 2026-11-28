@@ -704,9 +704,35 @@ void test_voro_pp_dropped_vs_vanished() {
 }
 #endif
 
+// Voxel ids when grains (grain_id), periodic wraps (inclusion_id) and plain
+// shapes share one list: a grain keeps grain_id + 1, the other shapes are
+// numbered after the largest grain value, wraps share their primary's id.
+void test_voxel_ids_grains_wraps_and_plain_shapes() {
+  using circle = rvegen::circle<double>;
+  std::vector<std::unique_ptr<rvegen::shape_base<double>>> shapes;
+  auto add = [&](double x, double y) -> rvegen::shape_base<double>& {
+    shapes.push_back(std::make_unique<circle>(x, y, 0.1));
+    return *shapes.back();
+  };
+  add(0.125, 0.125).info().set("grain_id", std::size_t{4});   // value 5
+  add(0.375, 0.125);                                          // plain: 6
+  add(0.625, 0.125).info().set("grain_id", std::size_t{0});   // value 1
+  auto& primary = add(0.875, 0.125);                          // wrap pair: 7
+  auto& wrap = add(0.125, 0.625);
+  primary.set_inclusion_id(42);
+  wrap.set_inclusion_id(42);
+  add(0.375, 0.625);                                          // plain: 8
+  add(0.625, 0.625).info().set("grain_id", std::size_t{4});   // same grain: 5
+  const auto grid = rvegen::sample_voxel_grid(shapes, {1.0, 1.0, 0.0}, 4, 4, 1);
+  // Voxel centres are at 0.125 + 0.25 i; rows j = 0 (y = 0.125), j = 2.
+  REQUIRE(grid[0] == 5 && grid[1] == 6 && grid[2] == 1 && grid[3] == 7);
+  REQUIRE(grid[8] == 7 && grid[9] == 8 && grid[10] == 5 && grid[11] == 0);
+}
+
 } // namespace
 
 int main() {
+  test_voxel_ids_grains_wraps_and_plain_shapes();
   test_periodic_2d();
   test_periodic_3d_in_house();
   test_weighted_2d_3d_partition();

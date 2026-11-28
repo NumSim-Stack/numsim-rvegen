@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 namespace rvegen {
 
 // Polymorphic random scalar source. Concrete implementations
@@ -11,6 +13,12 @@ namespace rvegen {
 // at construction. This is the architecturally correct alternative to a global
 // singleton — distributions are reproducible (same seed → same sequence) and
 // safe to use across threads when each thread has its own engine.
+//
+// Cross-toolchain reproducibility: the built-in scalar distributions
+// sample through rvegen/distributions/portable_random.h instead of
+// std::*_distribution, so a fixed engine seed gives bit-identical draws
+// on libstdc++, libc++ and MSVC (see that header for the exact
+// guarantee). Custom subclasses should do the same.
 //
 // Threading: a distribution and its engine form a unit. Sharing either across
 // threads is undefined behaviour (std::mt19937 is not thread-safe). Each
@@ -29,6 +37,14 @@ public:
   virtual ~distribution_base() = default;
 
   [[nodiscard]] virtual value_type operator()() = 0;
+
+  // P(X > 0) for one draw, or std::nullopt when the distribution cannot
+  // compute it cheaply (the default). Inputs use it at construction to
+  // reject size distributions that (almost) never produce a positive
+  // value, instead of failing mid-run; see shape_input_base.
+  [[nodiscard]] virtual std::optional<value_type> positive_probability() const {
+    return std::nullopt;
+  }
 };
 
 } // namespace rvegen

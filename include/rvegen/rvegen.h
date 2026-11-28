@@ -57,6 +57,11 @@
 #include "distributions/normal_distribution.h"
 #include "distributions/constant_distribution.h"
 #include "distributions/bingham_distribution.h"
+#include "distributions/oriented_uniform_distribution.h"
+#include "distributions/orientation_tensor_fit.h"
+#include "distributions/von_mises_a2_distribution.h"
+#include "distributions/bingham_a2_distribution.h"
+#include "distributions/uniform_rotation.h"
 
 // registry (opt-in: pulls in object_registry)
 #include "registry/register_distributions.h"
@@ -77,6 +82,7 @@
 #include "visualization/circle_mesh.h"
 #include "visualization/convex_polygon_mesh.h"
 #include "visualization/ellipse_mesh.h"
+#include "visualization/mesh_inclusion_mesh.h"
 #include "visualization/polyline_tube_mesh.h"
 #include "visualization/rectangle_mesh.h"
 #include "visualization/sphere_mesh.h"
