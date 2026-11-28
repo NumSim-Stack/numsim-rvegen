@@ -225,7 +225,7 @@ periodic pack with `min_gap` and `wall_gap` set to the mesh size.
 ### Worked examples
 
 `examples/` holds one config per feature area (2D/3D, periodic, polydisperse,
-fibres, mesh inclusions, every writer); see the
+fibres, weaves, polycrystals, mesh inclusions, every writer); see the
 [example gallery](docs/gallery/README.md) for pictures of each. A few starting
 points:
 
@@ -233,7 +233,20 @@ points:
 - `examples/spheres_in_cube.json`: 3D, ~5% volume fraction, voxel output.
 - `examples/periodic_circles.json`: 2D periodic, 20% volume fraction, VTK and
   gmsh output.
-- `examples/fe_rve_workflow.json`: periodic FE mesh with every gmsh knob.
+- `examples/fe_rve_workflow.json`: periodic gmsh geometry with element
+  options and one physical group per phase.
+- `examples/periodic_min_gap.json`: a minimum gap between inclusions and to
+  the boundary.
+- `examples/aligned_ellipses_a2.json`: orientations from a second-order
+  orientation tensor.
+- `examples/twill_weave.json`, `examples/satin_weave.json`: weave patterns,
+  warp and weft as separate phases.
+- `examples/voronoi_2d_gmsh.json`: polycrystal as a conforming gmsh geometry,
+  one physical group per grain.
+- `examples/voronoi_3d_grain_sizes.json`: periodic polycrystal with a
+  prescribed grain-size distribution.
+- `examples/mesh_inclusions_rotated.json`: copies of an STL mesh with random
+  orientation and size.
 - `examples/circles_statistics.json`: S2(r) and g(r) of a dense pack.
 
 Run any of them with `./build/rvegen <path-to.json>` from any directory; the

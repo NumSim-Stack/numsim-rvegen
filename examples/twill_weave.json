@@ -1,0 +1,46 @@
+{
+  "_comment": "Twill 2/2 weave: every yarn passes over two and under two crossing yarns, shifted by one from yarn to yarn, which gives the diagonal rib. Warp and weft carry their own phase, so the voxel grid tells them apart.",
+  "domain_box": [
+    1.0,
+    1.0,
+    0.2
+  ],
+  "phases": [
+    {
+      "name": "matrix"
+    },
+    {
+      "name": "warp"
+    },
+    {
+      "name": "weft"
+    }
+  ],
+  "phase_assignment": {
+    "matrix": "matrix"
+  },
+  "generator": {
+    "type": "weave",
+    "pattern": "twill_2_2",
+    "n_warp_yarns": 8,
+    "n_weft_yarns": 8,
+    "yarn_radius": 0.028,
+    "amplitude": 0.035,
+    "n_segments_per_yarn": 64,
+    "warp_phase_name": "warp",
+    "weft_phase_name": "weft"
+  },
+  "postprocess": [
+    {
+      "type": "voxel",
+      "nx": 96,
+      "ny": 96,
+      "nz": 24,
+      "output_path": "twill_weave.vox"
+    },
+    {
+      "type": "three_js",
+      "output_path": "twill_weave.html"
+    }
+  ]
+}
