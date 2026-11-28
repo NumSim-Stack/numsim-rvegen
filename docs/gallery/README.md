@@ -11,6 +11,14 @@ Each config runs from any directory: rvegen resolves relative input paths
 The `gmsh_geo` pictures were meshed with gmsh 4.12.1; other gmsh
 versions mesh differently, so the element counts in their titles change.
 
+## aligned_ellipses_a2
+
+[`aligned_ellipses_a2.json`](../../examples/aligned_ellipses_a2.json) · 2D 1×1 · ellipse_input · generator `periodic` · 92 shapes
+
+> Ellipses whose long axes follow a prescribed second-order orientation tensor: von_mises_a2 takes the tensor components (here a11 = 0.85, strongly aligned with x) and fits the concentration of the angle distribution to them.
+
+<img src="aligned_ellipses_a2-svg.png" alt="aligned_ellipses_a2: SVG" width="440">
+
 ## bingham_fibres
 
 [`bingham_fibres.json`](../../examples/bingham_fibres.json) · 3D 1×1×1 · polyline_tube_oriented_input · generator `random` · 15 shapes
@@ -69,7 +77,7 @@ versions mesh differently, so the element counts in their titles change.
 
 [`fe_rve_workflow.json`](../../examples/fe_rve_workflow.json) · 2D 1×1 · circle_input · generator `periodic` · 34 shapes
 
-> End-to-end FE-RVE workflow demo. Periodic 2D circle pack at 20% fibre fraction. Emits a gmsh .geo with every knob the FE-RVE workflow typically needs: periodic Curve directives, characteristic element size, quadratic element order, Frontal-Delaunay algorithm (6; algorithm 8 segfaults gmsh 4.12 when periodic constraints are present), and tri->quad recombination. Run gmsh on the resulting .geo and you get a periodic quad mesh ready for meshing in gmsh. Note on Physical groups: shapes carry the phase_name 'fibre' on their info blob, but the gmsh writer's JSON schema doesn't (yet) accept a phase_collection so the produced .geo doesn't emit `Physical Surface("fibre", ...)` directives — that requires attaching the collection in C++ via set_phases(&phases). The JSON-config phase-group hookup is a separate follow-up.
+> Periodic 2D circle pack at 20 % as a gmsh geometry with the options a finite-element mesh usually needs: periodic curve constraints, element sizes, quadratic elements, Frontal-Delaunay meshing (algorithm 6; algorithm 8 crashes gmsh 4.12 when periodic constraints are present) and recombination into quads. The phases declared here become physical groups in the .geo: Physical Surface("fibre") for the circles and Physical Surface("matrix") for the rest.
 
 <img src="fe_rve_workflow-gmsh_geo.png" alt="fe_rve_workflow: gmsh mesh of the .geo" width="440">
 
@@ -88,6 +96,14 @@ versions mesh differently, so the element counts in their titles change.
 > Arbitrary inclusion geometry from a triangle mesh: copies of an octahedron read from data/octahedron.stl, placed without overlap and voxelised to 64^3. The mesh_path is relative to this config file, so the example runs from any directory.
 
 <img src="mesh_inclusions_3d-vtk_legacy.png" alt="mesh_inclusions_3d: voxel grid (.vtk)" width="440">
+
+## mesh_inclusions_rotated
+
+[`mesh_inclusions_rotated.json`](../../examples/mesh_inclusions_rotated.json) · 3D 1×1×1 · mesh_inclusion_input · generator `only_inside` · 40 shapes
+
+> Copies of one triangle mesh (data/octahedron.stl) with a random orientation and a random size each: orientation 'uniform' draws isotropic rotations, scale_dist the scale factor. All copies share the triangles of the file.
+
+<img src="mesh_inclusions_rotated-three_js.png" alt="mesh_inclusions_rotated: three.js viewer (screenshot)" width="440">
 
 ## mixed_2d_periodic_gmsh
 
@@ -181,6 +197,15 @@ versions mesh differently, so the element counts in their titles change.
 <img src="polydisperse_circles-svg.png" alt="polydisperse_circles: SVG" width="440">
 <img src="polydisperse_circles-vtk_legacy.png" alt="polydisperse_circles: voxel grid (.vtk)" width="440">
 
+## satin_weave
+
+[`satin_weave.json`](../../examples/satin_weave.json) · 3D 1×1×0.2 ·  · generator `weave` · 20 shapes
+
+> Satin 5 weave: each yarn floats over four crossing yarns and dips under the fifth, with the dips spread so that no two touch. Long floats, few interlacings. Warp and weft carry their own phase.
+
+<img src="satin_weave-voxel.png" alt="satin_weave: voxel grid (.vox)" width="440">
+<img src="satin_weave-three_js.png" alt="satin_weave: three.js viewer (screenshot)" width="440">
+
 ## spheres_in_cube
 
 [`spheres_in_cube.json`](../../examples/spheres_in_cube.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 20 shapes
@@ -197,6 +222,15 @@ versions mesh differently, so the element counts in their titles change.
 
 <img src="tow_weave-voxel.png" alt="tow_weave: voxel grid (.vox)" width="440">
 
+## twill_weave
+
+[`twill_weave.json`](../../examples/twill_weave.json) · 3D 1×1×0.2 ·  · generator `weave` · 16 shapes
+
+> Twill 2/2 weave: every yarn passes over two and under two crossing yarns, shifted by one from yarn to yarn, which gives the diagonal rib. Warp and weft carry their own phase, so the voxel grid tells them apart.
+
+<img src="twill_weave-voxel.png" alt="twill_weave: voxel grid (.vox)" width="440">
+<img src="twill_weave-three_js.png" alt="twill_weave: three.js viewer (screenshot)" width="440">
+
 ## voronoi_2d
 
 [`voronoi_2d.json`](../../examples/voronoi_2d.json) · 2D 1×1 ·  · generator `voronoi_2d` · 24 shapes
@@ -206,6 +240,23 @@ versions mesh differently, so the element counts in their titles change.
 <img src="voronoi_2d-svg.png" alt="voronoi_2d: SVG" width="440">
 <img src="voronoi_2d-voxel.png" alt="voronoi_2d: voxel grid (.vox)" width="440">
 
+## voronoi_2d_gmsh
+
+[`voronoi_2d_gmsh.json`](../../examples/voronoi_2d_gmsh.json) · 2D 1×1 ·  · generator `voronoi_2d` · 30 shapes
+
+> 2D Voronoi polycrystal as a conforming gmsh geometry: the grains share their boundary curves, so the mesh has no gaps or doubled nodes between grains, and every grain is a physical group of its own.
+
+<img src="voronoi_2d_gmsh-gmsh_geo.png" alt="voronoi_2d_gmsh: gmsh mesh of the .geo" width="440">
+
+## voronoi_2d_periodic
+
+[`voronoi_2d_periodic.json`](../../examples/voronoi_2d_periodic.json) · 2D 1×1 ·  · generator `voronoi_2d` · 57 shapes
+
+> Periodic 2D Voronoi polycrystal: grains that cross a face of the box continue on the opposite face, so the cell tiles the plane. Compare the left and right edge of the picture.
+
+<img src="voronoi_2d_periodic-svg.png" alt="voronoi_2d_periodic: SVG" width="440">
+<img src="voronoi_2d_periodic-voxel.png" alt="voronoi_2d_periodic: voxel grid (.vox)" width="440">
+
 ## voronoi_3d
 
 [`voronoi_3d.json`](../../examples/voronoi_3d.json) · 3D 1×1×1 ·  · generator `voronoi_3d` · 12 shapes
@@ -213,3 +264,11 @@ versions mesh differently, so the element counts in their titles change.
 > 3D Voronoi polycrystal on a unit cube, voxelised for FFT.
 
 <img src="voronoi_3d-voxel.png" alt="voronoi_3d: voxel grid (.vox)" width="440">
+
+## voronoi_3d_grain_sizes
+
+[`voronoi_3d_grain_sizes.json`](../../examples/voronoi_3d_grain_sizes.json) · 3D 1×1×1 ·  · generator `voronoi_3d` · 114 shapes
+
+> Periodic 3D polycrystal with a prescribed grain-size distribution: the equivalent grain diameters follow a lognormal distribution with the given mean and spread (a weighted tessellation fitted to the drawn sizes), instead of whatever a plain Voronoi tessellation of random seeds happens to give.
+
+<img src="voronoi_3d_grain_sizes-voxel.png" alt="voronoi_3d_grain_sizes: voxel grid (.vox)" width="440">
