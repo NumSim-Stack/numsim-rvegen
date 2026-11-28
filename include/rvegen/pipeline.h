@@ -132,6 +132,9 @@ struct target_not_reached : std::runtime_error {
           {"achieved", r.achieved},
           {"attempts", r.attempts},
           {"max_attempts", r.max_attempts},
+          {"min_gap", r.min_gap},
+          {"min_gap_relative", r.min_gap_relative},
+          {"wall_gap", r.wall_gap},
           {"stop_reason", to_string(r.reason)},
           {"target_reached", !r.target_missed()}};
 }

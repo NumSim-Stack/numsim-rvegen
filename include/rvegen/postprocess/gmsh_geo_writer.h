@@ -248,6 +248,10 @@ public:
   //
   // Caller retains ownership; the pointer must outlive the next run() /
   // write() call. Passing nullptr clears the attachment.
+  void set_run_info(nlohmann::json const* info) noexcept override {
+    _info = info;
+  }
+
   void set_phases(phase_collection<value_type> const* phases) noexcept override {
     _phases = phases;
   }
@@ -853,6 +857,11 @@ private:
 
   void write_header(std::ostream& out, bool occ = true) const {
     out << "// rvegen — generated gmsh .geo script\n";
+    // Only when the run kept minimum gaps (#111): a mesh size above the
+    // gap between two inclusions leaves one element across it.
+    if (auto const note = this->placement_gap_note(_info); !note.empty()) {
+      out << "// placement: " << note << "\n";
+    }
     if (_length_scale != value_type{1}) {
       out << "// Lengths are in box-relative units (divided by the largest box\n"
              "// extent L = " << raw_num(_length_scale) << "); Mesh.ScalingFactor = L below makes gmsh\n"
@@ -1390,6 +1399,7 @@ private:
   std::string _output_path;
   bool _periodic{false};
   phase_collection<value_type> const* _phases{nullptr};
+  nlohmann::json const* _info{nullptr};
   bool _phase_strict{false};
   value_type _char_length_min{0};
   value_type _char_length_max{0};

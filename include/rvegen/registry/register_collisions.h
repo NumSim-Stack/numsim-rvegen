@@ -11,6 +11,7 @@
 // collide_two_stage / collision_dispatcher::instance().
 
 #include "../intersection/collision_details_extra.h"
+#include "../intersection/collision_gap.h"
 #include "../intersection/collision_dispatcher.h"
 #include "../shapes/box.h"
 #include "../shapes/circle.h"

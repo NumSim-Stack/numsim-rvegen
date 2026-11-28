@@ -40,6 +40,11 @@ struct generation_report {
   double achieved{0};   // value the returned shapes have
   std::size_t attempts{0};       // placement attempts made
   std::size_t max_attempts{0};   // the generator's limit; 0 = not known
+  // Minimum distances the placement kept (#111, placement_gap.h); 0 where
+  // the generator has no such setting or it was not used.
+  double min_gap{0};
+  double min_gap_relative{0};
+  double wall_gap{0};
   stop_reason reason{stop_reason::reached};
 
   [[nodiscard]] bool target_missed() const noexcept {

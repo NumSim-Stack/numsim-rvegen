@@ -146,4 +146,45 @@ generate_periodic_wraps(shape_base<T>& primary,
   return wraps;
 }
 
+// Copies of `shape` shifted by every lattice vector along which the shape,
+// grown by `pad`, reaches across a face of the domain. For neighbour tests
+// with a minimum gap (#111): two shapes that both stay inside the box can
+// still be closer than the gap through a periodic face, and neither has a
+// wrap there. Unlike generate_periodic_wraps() this changes nothing on
+// `shape`: the copies carry no inclusion id and are meant to be thrown
+// away. With pad = 0 the shifts are those of generate_periodic_wraps().
+template <typename T>
+[[nodiscard]] std::vector<std::unique_ptr<shape_base<T>>>
+periodic_images_within(shape_base<T> const& shape,
+                       std::type_identity_t<domain<T>> const& domain_box,
+                       std::type_identity_t<T> pad) {
+  std::vector<std::unique_ptr<shape_base<T>>> images;
+  auto const* bb = shape.bounding_box();
+  if (bb == nullptr) return images;
+  std::array<std::array<int, 3>, 3> shift_opts{};
+  std::array<std::size_t, 3> n_opts{1, 1, 1};
+  for (int axis = 0; axis < domain_box.dimension(); ++axis) {
+    const auto k = static_cast<std::size_t>(axis);
+    if (bb->bottom_point()[k] - pad < T{0}) shift_opts[k][n_opts[k]++] = +1;
+    if (bb->top_point()[k] + pad > domain_box[k]) shift_opts[k][n_opts[k]++] = -1;
+  }
+  std::size_t const n_combinations = n_opts[0] * n_opts[1] * n_opts[2];
+  for (std::size_t combo = 1; combo < n_combinations; ++combo) {
+    std::array<T, 3> shift{T{0}, T{0}, T{0}};
+    std::size_t rest = combo;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      std::size_t const digit = rest % n_opts[axis];
+      rest /= n_opts[axis];
+      shift[axis] = static_cast<T>(shift_opts[axis][digit]) * domain_box[axis];
+    }
+    auto image = shape.clone();
+    auto const mp = image->get_middle_point();
+    image->set_middle_point({mp[0] + shift[0], mp[1] + shift[1],
+                             mp[2] + shift[2]});
+    image->make_bounding_box();
+    images.push_back(std::move(image));
+  }
+  return images;
+}
+
 } // namespace rvegen
