@@ -1,0 +1,57 @@
+{
+  "_comment": "spheres_in_cube.json with a volume-fraction target (0.60) that sequential placement of these spheres cannot reach: the run stops at max_attempts far below it. Used by the under-fill tests (#119).",
+  "domain_box": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "seed": 2026,
+  "distributions": {
+    "uniform_x": {
+      "type": "uniform_real",
+      "a": 0.1,
+      "b": 0.9
+    },
+    "uniform_y": {
+      "type": "uniform_real",
+      "a": 0.1,
+      "b": 0.9
+    },
+    "uniform_z": {
+      "type": "uniform_real",
+      "a": 0.1,
+      "b": 0.9
+    },
+    "uniform_radius": {
+      "type": "uniform_real",
+      "a": 0.06,
+      "b": 0.1
+    }
+  },
+  "shapes": [
+    {
+      "type": "sphere_input",
+      "pos_x_dist": "uniform_x",
+      "pos_y_dist": "uniform_y",
+      "pos_z_dist": "uniform_z",
+      "radius_dist": "uniform_radius"
+    }
+  ],
+  "generator": {
+    "type": "only_inside",
+    "max_attempts": 200000
+  },
+  "termination": {
+    "type": "volume_fraction",
+    "target_fraction": 0.6
+  },
+  "postprocess": [
+    {
+      "type": "voxel",
+      "nx": 8,
+      "ny": 8,
+      "nz": 8,
+      "output_path": "unreachable_spheres.vox"
+    }
+  ]
+}

@@ -561,6 +561,11 @@ def main():
         if msg := check_target(str(Path(a.rvegen).resolve()), config, config_path.parent,
                               nshapes, work, domain):
             print(f"  target: {msg}")
+        # A shipped example runs clean: it reaches its target (the measured
+        # check above is independent of rvegen's own report) and prints no
+        # warning of any kind.
+        if "warning" in r.stderr:
+            fail(f"rvegen printed a warning:\n{r.stderr.strip()}")
         domain = [float(v) for v in config.get("domain_box", [1, 1, 0])] + [0.0]
         domain = domain[:3]
         three_d = domain[2] > 0

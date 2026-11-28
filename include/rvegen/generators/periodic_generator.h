@@ -61,7 +61,11 @@ public:
           std::array<value_type, 3> const& domain_box,
           progress_options const& opts = {}) override {
     shape_vector accepted;
-    if (inputs.empty()) return accepted;
+    if (inputs.empty()) {
+      this->record_report(termination, accepted, false, 0, _max_attempts,
+                          stop_reason::no_inputs);
+      return accepted;
+    }
 
     std::size_t attempts = 0;
     std::size_t input_idx = 0;
@@ -74,7 +78,11 @@ public:
     bool done = termination(accepted);
 
     while (!done && attempts < _max_attempts) {
-      if (opts.cancel()) return accepted;
+      if (opts.cancel()) {
+        this->record_report(termination, accepted, false, attempts,
+                            _max_attempts, stop_reason::cancelled);
+        return accepted;
+      }
       ++attempts;
       auto& input = *inputs[input_idx];
       input_idx = (input_idx + 1) % inputs.size();
@@ -146,6 +154,9 @@ public:
       done = termination(accepted);
     }
 
+    this->record_report(termination, accepted, false, attempts,
+                        _max_attempts,
+                        done ? stop_reason::reached : stop_reason::max_attempts);
     return accepted;
   }
 

@@ -4,6 +4,7 @@
 
 #include "../postprocess/gmsh_geo_writer.h"
 #include "../postprocess/post_process_base.h"
+#include "../postprocess/run_summary_writer.h"
 #include "../postprocess/statistics_post_process.h"
 #include "../postprocess/svg_3d_writer.h"
 #include "../postprocess/svg_writer.h"
@@ -68,6 +69,12 @@ inline void register_statistics_post_process() {
 }
 
 template <typename T = double>
+inline void register_run_summary_writer() {
+  post_process_registry_t<T>::instance()
+      .template register_type<run_summary_writer<T>>("run_summary");
+}
+
+template <typename T = double>
 inline void register_all_post_processes() {
   register_gmsh_geo_writer<T>();
   register_voxel_writer<T>();
@@ -76,6 +83,7 @@ inline void register_all_post_processes() {
   register_three_js_writer<T>();
   register_svg_3d_writer<T>();
   register_statistics_post_process<T>();
+  register_run_summary_writer<T>();
 }
 
 } // namespace rvegen

@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include "../inputs/shape_input_base.h"
@@ -11,6 +13,7 @@
 #include "../shapes/periodic_wraps.h"
 #include "../shapes/shape_base.h"
 #include "../termination/termination_base.h"
+#include "generation_report.h"
 
 namespace rvegen {
 
@@ -69,6 +72,41 @@ public:
           termination_base<T> const& termination,
           std::array<value_type, 3> const& domain_box,
           progress_options const& opts = {}) = 0;
+
+  // What the last compute() achieved against its termination (#119).
+  // Empty before the first compute() and for a generator that does not
+  // record one.
+  [[nodiscard]] std::optional<generation_report> const&
+  last_report() const noexcept {
+    return _report;
+  }
+
+protected:
+  // For compute() implementations: call on every return path. `count_all`
+  // is the hint the implementation gives termination::is_met.
+  void record_report(termination_base<T> const& termination,
+                     shape_vector const& accepted, bool count_all,
+                     std::size_t attempts, std::size_t max_attempts,
+                     stop_reason reason) {
+    generation_report r;
+    r.termination = termination.kind();
+    r.has_target = termination.has_target();
+    r.target = termination.target_value();
+    r.achieved = termination.achieved_value(accepted, count_all);
+    r.attempts = attempts;
+    r.max_attempts = max_attempts;
+    r.reason = reason;
+    _report = std::move(r);
+  }
+  // A generator that builds its shapes without a termination target.
+  void record_report(stop_reason reason) {
+    generation_report r;
+    r.reason = reason;
+    _report = std::move(r);
+  }
+
+private:
+  std::optional<generation_report> _report;
 };
 
 // The volume / area fraction of the shapes that count as material of the

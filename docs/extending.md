@@ -69,6 +69,18 @@ returning the accepted shapes. Provide a constructor from
 with `generator_registry_t<T>::instance().template register_type<...>("name")`
 and add the call to `register_all_generators()`.
 
+Before every `return` of `compute()`, call
+`record_report(termination, accepted, count_all, attempts, max_attempts, reason)`
+with the reason it stopped (`stop_reason::reached`, `max_attempts`,
+`cancelled`, `no_inputs`). The pipeline prints the report, warns about a missed
+target and fails a strict run on it; a generator that records nothing is
+measured after the fact, without the number of attempts.
+
+A termination (`termination/termination_base.h`) reports through `kind()`,
+`target_value()` and `achieved_value(accepted, count_all)`, which must use the
+same accounting as `is_met()`; one that never stops by itself returns
+`has_target() == false`.
+
 ## Periodic copies
 
 A generator that makes a periodic RVE stores, next to each inclusion that

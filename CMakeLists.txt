@@ -348,6 +348,17 @@ add_executable(rvegen_shape_id_unique_test tests/shape_id_unique_test.cpp)
 target_link_libraries(rvegen_shape_id_unique_test PRIVATE rvegen_lib)
 add_test(NAME shape_id_unique_test COMMAND rvegen_shape_id_unique_test)
 
+# Generation report (#119): achieved against requested for every placement
+# generator and termination type, strict runs, the run_summary writer. The
+# test also pins rvegen::version to the project version.
+add_executable(rvegen_generation_report_test tests/generation_report_test.cpp)
+target_link_libraries(rvegen_generation_report_test PRIVATE rvegen_lib)
+target_compile_definitions(rvegen_generation_report_test PRIVATE
+  RVEGEN_EXPECTED_VERSION="${PROJECT_VERSION}")
+add_test(NAME generation_report_test COMMAND rvegen_generation_report_test)
+set_tests_properties(generation_report_test PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # Periodic copies linked to their primary (#121): lattice shift, shared id,
 # and every count going by is_primary() instead of a centre test.
 add_executable(rvegen_periodic_images_test tests/periodic_images_test.cpp)
@@ -563,7 +574,7 @@ add_test(
 )
 set_tests_properties(cli_max_attempts_warning PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    PASS_REGULAR_EXPRESSION "warning .* stopped at max_attempts"
+    PASS_REGULAR_EXPRESSION "warning - number_of_inclusions: reached [0-9]+ of 50 after 200 attempts \\(max_attempts\\)"
 )
 
 add_test(
@@ -712,6 +723,30 @@ add_test(NAME cli_rejects_unknown_option
   COMMAND rvegen --chekc ${CMAKE_CURRENT_SOURCE_DIR}/examples/circles_in_unit_box.json)
 set_tests_properties(cli_rejects_unknown_option PROPERTIES
   PASS_REGULAR_EXPRESSION "unknown option '--chekc'" LABELS "cli")
+
+# Under-fill is visible (#119): the two configs of the issue stop at
+# max_attempts below their volume-fraction target. Without --strict that is
+# a warning and exit status 0; with --strict the run fails (WILL_FAIL: the
+# exit status must be non-zero) and says what was reached.
+foreach(_case underfilled_polydisperse unreachable_spheres)
+  add_test(NAME cli_underfill_warns_${_case}
+    COMMAND rvegen --output-dir ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/${_case}.json)
+  set_tests_properties(cli_underfill_warns_${_case} PROPERTIES
+    PASS_REGULAR_EXPRESSION "rvegen: warning - volume_fraction: reached 0\\.[0-9]+ of 0\\.[0-9]+ after [0-9]+ attempts \\(max_attempts\\)"
+    LABELS "cli")
+  add_test(NAME cli_underfill_strict_fails_${_case}
+    COMMAND rvegen --strict --output-dir ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/${_case}.json)
+  set_tests_properties(cli_underfill_strict_fails_${_case} PROPERTIES
+    WILL_FAIL TRUE LABELS "cli")
+  add_test(NAME cli_underfill_strict_message_${_case}
+    COMMAND rvegen --strict --output-dir ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/${_case}.json)
+  set_tests_properties(cli_underfill_strict_message_${_case} PROPERTIES
+    PASS_REGULAR_EXPRESSION "rvegen: error: target not reached - volume_fraction: reached 0\\.[0-9]+ of 0\\.[0-9]+ after [0-9]+ attempts \\(max_attempts\\)"
+    LABELS "cli")
+endforeach()
 
 # Log control and directories (#129). --quiet: no output at all on success
 # (FAIL_REGULAR_EXPRESSION "." = any character printed fails the test; the

@@ -68,6 +68,23 @@ turns that error into a warning.
 # -> rvegen: config OK: examples/circles_in_unit_box.json   (nothing generated or written)
 ```
 
+**Targets.** A placement generator also stops when it runs out of
+`max_attempts`. Every run says what it reached; a missed target is a warning on
+stderr, and an error with `--strict` (or `"strict": true` in the config): exit
+status 1 and no output file.
+
+```bash
+./build/rvegen examples/polydisperse_circles.json
+# -> rvegen: volume_fraction: reached 0.3515 of 0.35 after 177 attempts
+./build/rvegen --strict tests/data/unreachable_spheres.json
+# -> rvegen: error: target not reached - volume_fraction: reached 0.2687 of 0.6 after 200000 attempts (max_attempts)
+```
+
+A `{"type": "run_summary", "output_path": "run.json"}` entry under
+`postprocess` writes the same report as JSON, together with the seed, the
+rvegen version, the config, the shape count and the volume fraction, one file
+per run for studies over many seeds.
+
 **Files and output.** A relative input path in a config (`mesh_path`) is
 resolved against the directory of the config file, so a config and its data
 can be run from anywhere. A relative `output_path` is resolved against the
@@ -129,7 +146,7 @@ CTest check fails if this list drifts from the registries):
 - **shapes (`shapes`)**: `box_input`, `circle_input`, `ellipse_input`, `mesh_inclusion_input`, `polyline_tube_directional_input`, `polyline_tube_input`, `polyline_tube_oriented_input`, `rectangle_input`, `sphere_input`
 - **generators (`generator`)**: `only_inside`, `periodic`, `random`, `tow_weave`, `voronoi_2d`, `voronoi_3d`, `weave`
 - **terminations (`termination`)**: `number_of_inclusions`, `until_full`, `volume_fraction`
-- **post-processes (`postprocess`)**: `gmsh_geo`, `statistics`, `svg`, `svg_3d`, `three_js`, `voxel`, `vtk_legacy`
+- **post-processes (`postprocess`)**: `gmsh_geo`, `run_summary`, `statistics`, `svg`, `svg_3d`, `three_js`, `voxel`, `vtk_legacy`
 <!-- END list-types -->
 
 Common parameters (each type's full schema, with ranges and descriptions, is
@@ -161,6 +178,7 @@ declared by its static `parameters()` method):
 |                 | `svg_3d`                   | `output_path`, `canvas_width` (projected 3D picture) |
 |                 | `three_js`                 | `output_path` (HTML viewer; loads three.js from unpkg.com, so the page needs network access) |
 |                 | `statistics`               | `output_path` (CSV), `nx`, `ny`, `nbins`: two-point correlation S2(r) and radial distribution g(r) |
+|                 | `run_summary`              | `output_path` (JSON): rvegen version, seed, the config, the generation report, shape count and volume fraction |
 
 The cross-references in shape inputs (e.g. `"pos_x_dist": "uniform_x"`) refer
 to keys in the `distributions` block. The orchestrator builds distributions

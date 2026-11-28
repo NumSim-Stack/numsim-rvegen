@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "../shapes/shape_base.h"
@@ -46,6 +47,23 @@ public:
   // than a percentage.
   [[nodiscard]] virtual std::size_t target_count() const noexcept { return 0; }
   [[nodiscard]] virtual double target_volume_fraction() const noexcept { return 0.0; }
+
+  // What the predicate measures, for the generation report (#119):
+  //   kind()            its name ("volume_fraction", ...);
+  //   has_target()      false for a predicate that never stops by itself
+  //                     (until_full): running out of attempts is then the
+  //                     expected end;
+  //   target_value()    the requested value;
+  //   achieved_value()  the value `accepted` has, by the same accounting
+  //                     (and the same `count_all` hint) as is_met().
+  // The defaults describe a predicate without a number to report.
+  [[nodiscard]] virtual std::string kind() const { return "termination"; }
+  [[nodiscard]] virtual bool has_target() const noexcept { return true; }
+  [[nodiscard]] virtual double target_value() const noexcept { return 0.0; }
+  [[nodiscard]] virtual double achieved_value(shape_vector const& /*accepted*/,
+                                              bool /*count_all*/) const {
+    return 0.0;
+  }
 };
 
 } // namespace rvegen

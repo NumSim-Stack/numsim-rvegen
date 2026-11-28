@@ -61,9 +61,10 @@ void test_generate() {
   REQUIRE(r.seed == 5);
   REQUIRE(r.phases && r.phases->size() == 1);
   REQUIRE(r.shapes[0]->phase_name() == "fibre");
-  REQUIRE(lines.size() >= 2);
+  REQUIRE(lines.size() >= 3);
   REQUIRE(lines[0] == "rvegen: generated 6 shapes");
-  REQUIRE(lines[1] == "rvegen: phase_assignment tagged 6 shapes");
+  REQUIRE(lines[1].starts_with("rvegen: number_of_inclusions: reached 6 of 6 after "));
+  REQUIRE(lines[2] == "rvegen: phase_assignment tagged 6 shapes");
 
   // Seed override changes the layout; same seed reproduces it.
   rvegen::pipeline_options o2;
