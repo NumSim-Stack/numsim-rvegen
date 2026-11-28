@@ -98,8 +98,10 @@ inline std::optional<std::uint64_t> remaining_bytes(std::istream& in) {
 // parse_real for standard libraries without floating-point from_chars
 // (libc++ before 20): strtod on a copy, restricted to what from_chars
 // accepts (no leading white space, no hexadecimal form) and to the whole
-// token. strtod follows the C locale's decimal point; rvegen never changes
-// the locale. Always compiled, so the tests compare it with from_chars
+// token. strtod reads the decimal point of the current LC_NUMERIC
+// locale: rvegen never changes it, but a host program that calls
+// setlocale(LC_NUMERIC, "de_DE") makes this fallback refuse "1.5" (the
+// from_chars path does not depend on the locale). Always compiled, so the tests compare it with from_chars
 // where both exist. `token` is non-empty and carries no leading '+'.
 inline bool parse_real_strtod(std::string_view token, double& out) {
   if (token.empty()) return false;

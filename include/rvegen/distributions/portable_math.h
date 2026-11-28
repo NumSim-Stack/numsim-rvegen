@@ -199,6 +199,11 @@ inline constexpr double inv_ln2 = 0x1.71547652b82fep+0;
   RVEGEN_PORTABLE_MATH_FP
   using namespace portable_detail;
   x = rounded(x);
+  if (!(x > -1.0)) {                       // -1, below -1, NaN
+    return x == -1.0 ? -std::numeric_limits<double>::infinity()
+                     : std::numeric_limits<double>::quiet_NaN();
+  }
+  if (x > std::numeric_limits<double>::max()) return x;   // +inf
   if (!(std::abs(x) < 0.25)) return portable_log(1.0 + x);
   // log(1 + x) = 2 atanh(t), t = x / (2 + x), |t| < 1/7.
   const double t = x / (2.0 + x);
@@ -208,10 +213,15 @@ inline constexpr double inv_ln2 = 0x1.71547652b82fep+0;
   return mul(2.0 * t, p);
 }
 
-// sin x and cos x for finite x.
+// sin x and cos x. Within 2 ulp for |x| <= 2^19 (about 83000 turns), which
+// is far more than a sampler needs. Beyond that the argument is folded with
+// fmod by the double nearest to 2 pi, so the absolute error grows like
+// |x| * 4e-17 and nothing is left of the result near 1e16: still the same
+// bits everywhere, but not a sine. Infinite x and NaN give NaN.
 [[nodiscard]] inline double portable_sin(double x) noexcept {
   using namespace portable_detail;
   x = rounded(x);
+  if (x == 0.0) return x;                  // keeps the sign of -0
   if (!(std::abs(x) <= std::numeric_limits<double>::max()))
     return std::numeric_limits<double>::quiet_NaN();
   double r = 0.0;
@@ -243,7 +253,8 @@ inline constexpr double inv_ln2 = 0x1.71547652b82fep+0;
   RVEGEN_PORTABLE_MATH_FP
   using namespace portable_detail;
   x = rounded(x);
-  if (!(x == x)) return x;
+  if (!(std::abs(x) <= std::numeric_limits<double>::max()))
+    return std::numeric_limits<double>::quiet_NaN();   // NaN, +-inf
   constexpr double pi = std::numbers::pi;
   if (x >= 1.0) return 0.0;
   if (x <= -1.0) return pi;

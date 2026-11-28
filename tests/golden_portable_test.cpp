@@ -160,7 +160,7 @@ constexpr golden expected[] = {
   {"acos", 0x91d70121217a9a2eull},
   {"acos_near_one", 0xb8fd427a5bb467b8ull},
   {"cbrt", 0xafc5df40020756fbull},
-  {"edges", 0x1e519849da8287bcull},
+  {"edges", 0xc3dc7973ad7bec3cull},
 };
 
 std::uint64_t expected_hash(char const* name) {
@@ -280,8 +280,12 @@ void test_math() {
   REQUIRE(portable_cbrt(0.0) == 0.0 && portable_cbrt(inf) == inf);
   const double nan = std::numeric_limits<double>::quiet_NaN();
   for (double v : {portable_exp(nan), portable_sin(nan), portable_cos(inf),
-                   portable_acos(nan), portable_cbrt(nan)})
+                   portable_acos(nan), portable_cbrt(nan),
+                   portable_acos(inf), portable_acos(-inf),
+                   portable_log1p(-2.0), portable_log1p(nan)})
     REQUIRE(v != v);
+  REQUIRE(portable_log1p(-1.0) == -inf && portable_log1p(inf) == inf);
+  REQUIRE(std::signbit(portable_sin(-0.0)) && !std::signbit(portable_sin(0.0)));
   // Near multiples of pi/2 the three-part reduction keeps the result
   // accurate in absolute terms.
   double worst = 0.0;

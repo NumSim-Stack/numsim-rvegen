@@ -15,17 +15,22 @@ import re
 import sys
 
 ROOTS = ("include", "apps", "python/src")
+# `using namespace std;` would let a bare normal_distribution through (and
+# rvegen has classes of its own with these names), so it is refused too.
 PATTERN = re.compile(
     r"std::(\w+_distribution|generate_canonical|shuffle|random_shuffle|sample"
-    r"|random_device)\b")
+    r"|random_device)\b|\busing\s+namespace\s+std\s*;")
 
 
 def main() -> int:
     root = pathlib.Path(sys.argv[1])
     hits = []
     for sub in ROOTS:
+        if not (root / sub).is_dir():
+            print(f"no_std_distribution_check: no directory {root / sub}")
+            return 2
         for path in sorted((root / sub).rglob("*")):
-            if path.suffix not in (".h", ".hpp", ".cpp"):
+            if path.suffix not in (".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx"):
                 continue
             rel = path.relative_to(root).as_posix()
             for number, line in enumerate(
