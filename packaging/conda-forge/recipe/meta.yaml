@@ -55,9 +55,10 @@ about:
   description: |
     rvegen is a C++23 header-only library for generating Representative
     Volume Elements (random packings of circles, rectangles, ellipses,
-    spheres, boxes, and polyline tubes) together with geometric
-    statistics. It writes the geometry as gmsh .geo, voxel grids, VTK,
-    SVG, and three.js; materials and solvers are out of scope.
+    spheres, boxes and polyline tubes, weaves and Voronoi polycrystals)
+    together with geometric statistics. It writes the geometry as gmsh
+    .geo, voxel grids, VTK, SVG, and three.js; materials and solvers are
+    out of scope.
 
 extra:
   recipe-maintainers:

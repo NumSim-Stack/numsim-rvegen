@@ -1,5 +1,5 @@
 {
-  "_comment": "3D RVE: spheres packed into a unit cube, terminated by volume fraction. The voxel writer outputs a 32^3 phase-id grid suitable for FFT homogenization.",
+  "_comment": "3D RVE: spheres packed into a unit cube, terminated by volume fraction. The voxel writer outputs a 32^3 phase-id grid, e.g. for FFT solvers.",
 
   "domain_box": [1.0, 1.0, 1.0],
   "seed": 2026,

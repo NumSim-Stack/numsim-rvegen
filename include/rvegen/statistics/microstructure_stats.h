@@ -1,7 +1,7 @@
 #pragma once
 
-// Microstructure statistics — free functions for the standard quantitative
-// descriptors that homogenization papers report alongside their RVEs:
+// Microstructure statistics — free functions for the standard geometric
+// descriptors of an RVE:
 //
 //   * volume_fraction_in_domain — accepts shapes, returns φ.
 //   * two_point_correlation_2d — S2(r), the probability that two points

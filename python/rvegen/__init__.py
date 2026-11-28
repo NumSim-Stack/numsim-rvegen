@@ -1,4 +1,4 @@
-"""rvegen — RVE generator for FFT/FEM homogenization.
+"""rvegen — RVE geometry generator.
 
 Python surface:
 

@@ -1,7 +1,7 @@
 #pragma once
 
-// rvegen — RVE (Representative Volume Element) generation for FFT/FEM
-// homogenization. Header-only library; consumers include this umbrella
+// rvegen — RVE (Representative Volume Element) geometry generation.
+// Header-only library; consumers include this umbrella
 // and link no compiled artifact.
 //
 // Layered architecture:

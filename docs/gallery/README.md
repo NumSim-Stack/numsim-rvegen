@@ -127,7 +127,7 @@ versions mesh differently, so the element counts in their titles change.
 
 [`periodic_circles.json`](../../examples/periodic_circles.json) · 2D 1×1 · circle_input · generator `periodic` · 17 shapes
 
-> Periodic 2D RVE: circles wrapping across box faces, written as a ParaView-readable VTK file. Canonical config for FFT-based homogenization.
+> Periodic 2D RVE: circles wrapping across box faces, written as a ParaView-readable VTK file. Canonical periodic config, e.g. for FFT voxel grids.
 
 <img src="periodic_circles-vtk_legacy.png" alt="periodic_circles: voxel grid (.vtk)" width="440">
 <img src="periodic_circles-gmsh_geo.png" alt="periodic_circles: gmsh mesh of the .geo" width="440">
@@ -136,7 +136,7 @@ versions mesh differently, so the element counts in their titles change.
 
 [`periodic_ellipses_svg.json`](../../examples/periodic_ellipses_svg.json) · 2D 1×1 · ellipse_input · generator `periodic` · 28 shapes
 
-> Periodic 2D RVE with rotated ellipses. Note how shapes near the boundary get visible wrap-copies on the opposite face — this is what FFT homogenization actually sees as the periodic unit cell.
+> Periodic 2D RVE with rotated ellipses. Note how shapes near the boundary get visible wrap-copies on the opposite face — this is the periodic unit cell.
 
 <img src="periodic_ellipses_svg-svg.png" alt="periodic_ellipses_svg: SVG" width="440">
 
@@ -178,7 +178,7 @@ versions mesh differently, so the element counts in their titles change.
 
 [`spheres_in_cube.json`](../../examples/spheres_in_cube.json) · 3D 1×1×1 · sphere_input · generator `only_inside` · 20 shapes
 
-> 3D RVE: spheres packed into a unit cube, terminated by volume fraction. The voxel writer outputs a 32^3 phase-id grid suitable for FFT homogenization.
+> 3D RVE: spheres packed into a unit cube, terminated by volume fraction. The voxel writer outputs a 32^3 phase-id grid, e.g. for FFT solvers.
 
 <img src="spheres_in_cube-voxel.png" alt="spheres_in_cube: voxel grid (.vox)" width="440">
 

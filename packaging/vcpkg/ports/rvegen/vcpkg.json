@@ -1,7 +1,7 @@
 {
   "name": "rvegen",
   "version-string": "0.1.0",
-  "description": "RVE (Representative Volume Element) generator for FFT/FEM homogenization",
+  "description": "RVE (Representative Volume Element) geometry generator",
   "homepage": "https://github.com/NumSim-Stack/numsim-rvegen",
   "license": "BSD-3-Clause",
   "supports": "!uwp",
