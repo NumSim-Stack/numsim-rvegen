@@ -83,19 +83,23 @@ public:
     return s;
   }
 
-  void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+  void validate(std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "statistics_post_process: output_path not set"};
     }
-    const bool is_3d = domain_box[2] > value_type{0};
-    if (is_3d && _nz == 0) {
+    if (domain_box[2] > value_type{0} && _nz == 0) {
       throw std::runtime_error{
           "statistics_post_process: 3D domain needs \"nz\" (voxel-grid "
           "resolution along z for S2). Set it explicitly; 3D S2 cost scales "
           "with nx*ny*nz."};
     }
+  }
+
+  void run(shape_vector const& shapes,
+           std::array<value_type, 3> const& domain_box) const override {
+    validate(domain_box);
+    const bool is_3d = domain_box[2] > value_type{0};
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{

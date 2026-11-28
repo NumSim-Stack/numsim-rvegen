@@ -41,6 +41,15 @@ public:
   // implicitly. The pointer must outlive the next run().
   virtual void set_phases(phase_collection<T> const* /*phases*/) noexcept {}
 
+  // Everything run() would reject that depends only on the configuration
+  // and the domain box, not on the generated shapes: a missing output
+  // path, a grid that is too large, an option that needs a 3D box. The
+  // pipeline calls it for every writer BEFORE the first shape is placed
+  // (and `rvegen --check` calls nothing else), so such a mistake does not
+  // cost a generation run. Must not create or truncate any file. run()
+  // implementations call it first, so the checks exist once.
+  virtual void validate(std::array<value_type, 3> const& /*domain_box*/) const {}
+
   virtual void run(shape_vector const& shapes,
                    std::array<value_type, 3> const& domain_box) const = 0;
 };

@@ -60,7 +60,9 @@ void print_usage(char const* argv0) {
       << "                accepted shapes — \"[progress] placed=X / N | φ=…\".\n"
       << "                Off by default so scripted output stays stable.\n\n"
       << "  --list-types  Print every registered JSON \"type\" per registry as\n"
-      << "                Markdown (README.md embeds this) and exit.\n";
+      << "                Markdown (README.md embeds this) and exit.\n\n"
+      << "  --            End of options: the next argument is the config\n"
+      << "                file even if its name starts with \"--\".\n";
 }
 
 template <typename Registry>
@@ -98,8 +100,23 @@ int run(int argc, char** argv) {
   bool check_only = false;
   bool allow_unknown_keys = false;
   char const* config_path = nullptr;
+  bool options_ended = false;   // after "--" everything is a file name
   for (int i = 1; i < argc; ++i) {
     const std::string arg{argv[i]};
+    if (!options_ended && arg == "--") {
+      options_ended = true;
+      continue;
+    }
+    if (options_ended) {
+      if (config_path != nullptr) {
+        std::cerr << "rvegen: more than one config file given ('"
+                  << config_path << "' and '" << arg << "')\n\n";
+        print_usage(argv[0]);
+        return exit_usage;
+      }
+      config_path = argv[i];
+      continue;
+    }
     if (arg == "--list-types") return list_types();
     if (arg == "--progress") {
       show_progress = true;

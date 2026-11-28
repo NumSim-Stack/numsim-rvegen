@@ -113,14 +113,18 @@ public:
   void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
   [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
 
-  void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+  void validate(std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "vtk_legacy_writer: output_path not set; cannot run() as post-process"};
     }
     // Reject an unusable grid before the output file is created.
     (void)checked_voxel_count(_nx, _ny, effective_nz(domain_box, _nz));
+  }
+
+  void run(shape_vector const& shapes,
+           std::array<value_type, 3> const& domain_box) const override {
+    validate(domain_box);
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{

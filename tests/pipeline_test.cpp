@@ -197,7 +197,30 @@ void test_postprocess_validated_before_generation() {
 // check_config() runs only that validation.
 void test_check_config() {
   namespace fs = std::filesystem;
-  const fs::path dir = fs::path{"pipeline_check_dir"};
+  // A private directory under the system temp dir, removed on every exit
+  // path (with permissions restored first, so a failed REQUIRE cannot leave
+  // an undeletable tree behind for the next run).
+  const fs::path dir =
+      fs::temp_directory_path() /
+      ("rvegen_pipeline_check_" + std::to_string(
+#ifndef _WIN32
+                                      static_cast<long long>(::getpid())
+#else
+                                      0LL
+#endif
+                                      ));
+  struct cleanup {
+    fs::path d;
+    ~cleanup() {
+      std::error_code ec;
+      for (fs::recursive_directory_iterator it{d, ec}, end; !ec && it != end;
+           it.increment(ec)) {
+        if (!it->is_symlink(ec))
+          fs::permissions(it->path(), fs::perms::owner_all, ec);
+      }
+      fs::remove_all(d, ec);
+    }
+  } guard{dir};
   fs::remove_all(dir);
   fs::create_directory(dir);
   auto message = [](json const& cfg, bool check_only,
@@ -308,6 +331,65 @@ void test_check_config() {
   }
 #endif
 
+  // A path that names no file, and a link to nowhere.
+  out["postprocess"][0]["output_path"] = (dir / "sub").string() + "/";
+  REQUIRE(has(message(out, true), "names a directory, not a file"));
+#ifndef _WIN32
+  {
+    const fs::path link = dir / "dangling.svg";
+    fs::create_symlink(dir / "nowhere" / "target.svg", link);
+    out["postprocess"][0]["output_path"] = link.string();
+    REQUIRE(has(message(out, true), "symbolic link whose target does not exist"));
+    fs::remove(link);
+  }
+#endif
+
+  // Writer checks that need only the config and the box run before
+  // generation too (post_process_base::validate), each naming its block.
+  auto late = [&](json writer, std::array<double, 3> box, char const* needle) {
+    auto c = circles_config();
+    c["domain_box"] = box;
+    c["postprocess"] = json::array(
+        {json{{"type", "svg"}, {"canvas_width", 100},
+              {"output_path", (dir / "first.svg").string()}},
+         std::move(writer)});
+    bool ok = true;
+    for (bool check_only : {true, false}) {
+      std::vector<std::string> info;
+      const auto what = message(c, check_only, &info);
+      ok = ok && has(what, "postprocess[1] (") && has(what, needle) &&
+           info.empty() && !fs::exists(dir / "first.svg");
+      if (!ok) std::cerr << "  got: " << what << "\n";
+    }
+    return ok;
+  };
+  // A grid far beyond the voxel limit.
+  REQUIRE(late(json{{"type", "voxel"}, {"nx", 100000}, {"ny", 100000}, {"nz", 1},
+                    {"output_path", (dir / "big.vox").string()}},
+               {1.0, 1.0, 0.0}, "voxel grid"));
+  REQUIRE(late(json{{"type", "vtk_legacy"}, {"nx", 100000}, {"ny", 100000},
+                    {"nz", 1}, {"output_path", (dir / "big.vtk").string()}},
+               {1.0, 1.0, 0.0}, "voxel grid"));
+  // Statistics in a 3D box need nz.
+  REQUIRE(late(json{{"type", "statistics"}, {"nx", 16}, {"ny", 16}, {"nbins", 8},
+                    {"output_path", (dir / "s.csv").string()}},
+               {1.0, 1.0, 1.0}, "3D domain needs \"nz\""));
+  // Forced tessellation output cannot be periodic.
+  REQUIRE(late(json{{"type", "gmsh_geo"}, {"tessellation", true},
+                    {"periodic", true},
+                    {"output_path", (dir / "t.geo").string()}},
+               {1.0, 1.0, 0.0}, "periodic output is not supported"));
+  // An output path that is missing or empty.
+  REQUIRE(late(json{{"type", "svg"}, {"canvas_width", 100}}, {1.0, 1.0, 0.0},
+               "output_path"));
+  REQUIRE(late(json{{"type", "svg"}, {"canvas_width", 100}, {"output_path", ""}},
+               {1.0, 1.0, 0.0}, "output_path not set"));
+  // An entry that is not a writer block at all.
+  REQUIRE(late(json{{"type", 5}, {"output_path", "x"}}, {1.0, 1.0, 0.0},
+               "needs a \"type\" string"));
+  REQUIRE(late(json(1), {1.0, 1.0, 0.0}, "each entry must be an object"));
+  REQUIRE(late(json{{"type", "no_such_writer"}}, {1.0, 1.0, 0.0}, "no_such_writer"));
+
   // Missing or mistyped sections are named.
   auto c = circles_config();
   c.erase("generator");
@@ -346,8 +428,6 @@ void test_check_config() {
   try { rvegen::check_config(skip, off); } catch (std::exception const&) { threw = true; }
   REQUIRE(threw);
   REQUIRE(rvegen::generate(skip, off).shapes.size() == 6);
-
-  fs::remove_all(dir);
 }
 
 // progress.cancel stops the run and no writer runs afterwards.

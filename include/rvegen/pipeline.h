@@ -153,9 +153,25 @@ inline void require_section_kind(nlohmann::json const& config, char const* key,
                               v.type_name()};
 }
 
+// "postprocess[2] ('svg'): " - names one writer block in a message. Never
+// throws: the entry may be anything (a number, an object whose "type" is
+// not a string).
+[[nodiscard]] inline std::string
+post_process_label(nlohmann::json const& spec, std::size_t index) {
+  std::string type = "?";
+  if (spec.is_object()) {
+    if (auto const it = spec.find("type");
+        it != spec.end() && it->is_string())
+      type = it->get<std::string>();
+  }
+  return "postprocess[" + std::to_string(index) + "] ('" + type + "'): ";
+}
+
 // Each writer's "output_path" must be writable before any shape is placed:
-// its directory exists and accepts new files, and the path itself is not a
-// directory. Nothing is created or truncated here.
+// it names a file, its directory exists and accepts new files, and the path
+// itself is neither a directory nor a link to nowhere. Nothing is created
+// or truncated here. (An empty or missing path is the writer's own
+// validate() to reject: a custom post-process may not write a file.)
 inline void check_output_paths(nlohmann::json const& config) {
   if (!config.contains("postprocess")) return;
   std::size_t index = 0;
@@ -167,12 +183,21 @@ inline void check_output_paths(nlohmann::json const& config) {
     const auto text = spec.at("output_path").get<std::string>();
     if (text.empty()) continue;
     const std::string where =
-        "postprocess[" + std::to_string(i) + "] ('" +
-        spec.value("type", std::string{"?"}) + "'): output_path '" + text + "'";
+        post_process_label(spec, i) + "output_path '" + text + "'";
     const std::filesystem::path path{text};
     std::error_code ec;
     if (std::filesystem::is_directory(path, ec)) {
       throw std::runtime_error{where + " is a directory, not a file"};
+    }
+    if (!path.has_filename()) {   // "out/": a separator at the end
+      throw std::runtime_error{where + " names a directory, not a file"};
+    }
+    // exists() follows links: a link whose target is missing would pass as
+    // "new file" although opening it fails.
+    if (std::filesystem::is_symlink(path, ec) &&
+        !std::filesystem::exists(path, ec)) {
+      throw std::runtime_error{
+          where + " is a symbolic link whose target does not exist"};
     }
     auto dir = path.parent_path();
     if (dir.empty()) dir = ".";
@@ -199,6 +224,30 @@ inline void check_output_paths(nlohmann::json const& config) {
   }
 }
 
+// Runs `f`; an exception leaving it is rethrown with `where` in front of
+// its message (with several writers "missing required parameter" alone does
+// not say which block is wrong). The common categories keep their type, so
+// callers and the Python bindings (ValueError / IndexError / RuntimeError)
+// still see what kind of mistake it was.
+template <typename F>
+void with_context(std::string const& where, F&& f) {
+  try {
+    f();
+  } catch (std::out_of_range const& e) {
+    throw std::out_of_range{where + e.what()};
+  } catch (std::domain_error const& e) {
+    throw std::domain_error{where + e.what()};
+  } catch (std::length_error const& e) {
+    throw std::length_error{where + e.what()};
+  } catch (std::invalid_argument const& e) {
+    throw std::invalid_argument{where + e.what()};
+  } catch (std::overflow_error const& e) {
+    throw std::overflow_error{where + e.what()};
+  } catch (std::exception const& e) {
+    throw std::runtime_error{where + e.what()};
+  }
+}
+
 } // namespace detail
 
 // Builds the config's "postprocess" writers into `result` (no output yet).
@@ -209,22 +258,19 @@ inline void build_post_processes(nlohmann::json const& config,
   if (!config.contains("postprocess")) return;
   std::size_t index = 0;
   for (auto const& spec : config.at("postprocess")) {
-    // Name the entry: with several writers "missing required parameter"
-    // alone does not say which block is wrong.
-    const auto where = [&] {
-      return "postprocess[" + std::to_string(index) + "] ('" +
-             (spec.is_object() ? spec.value("type", std::string{"?"})
-                               : std::string{"?"}) +
-             "'): ";
-    };
-    try {
+    const auto where = detail::post_process_label(spec, index);
+    if (!spec.is_object()) {
+      throw std::invalid_argument{where + "each entry must be an object, got " +
+                                  spec.type_name()};
+    }
+    if (!spec.contains("type") || !spec.at("type").is_string()) {
+      throw std::invalid_argument{
+          where + "needs a \"type\" string naming the post-process"};
+    }
+    detail::with_context(where, [&] {
       result.pending_post_processes.push_back(
           build_from_json(post_process_registry_t<>::instance(), spec));
-    } catch (std::invalid_argument const& e) {   // keep the category
-      throw std::invalid_argument{where() + e.what()};
-    } catch (std::exception const& e) {
-      throw std::runtime_error{where() + e.what()};
-    }
+    });
     ++index;
   }
 }
@@ -400,6 +446,23 @@ generate_impl(nlohmann::json const& config, pipeline_options const& opts,
     assignment.emplace(phase_assignment<double>::from_json(
         config.at("phase_assignment"), *out.phases));
     if (assignment->matrix()) out.phases->set_matrix(*assignment->matrix());
+  }
+
+  // Each writer's own config-only checks (post_process_base::validate): a
+  // missing output path, a voxel grid that is too large, a 3D box without
+  // nz. They see the phases as at run time; the pointer is detached again
+  // because `out` is still going to be moved.
+  for (std::size_t i = 0; i < out.pending_post_processes.size(); ++i) {
+    auto& pp = *out.pending_post_processes[i];
+    detail::with_context(
+        post_process_label(config.at("postprocess").at(i), i), [&] {
+          if (out.phases) pp.set_phases(&*out.phases);
+          struct detach {
+            post_process_base<double>& p;
+            ~detach() { p.set_phases(nullptr); }
+          } guard{pp};
+          pp.validate(out.domain_box);
+        });
   }
 
   // Generator + termination. Deterministic generators ignore the
