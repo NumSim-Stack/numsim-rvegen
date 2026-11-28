@@ -370,6 +370,12 @@ add_executable(rvegen_voxel_stats_3d_test tests/voxel_stats_3d_test.cpp)
 target_link_libraries(rvegen_voxel_stats_3d_test PRIVATE rvegen_lib)
 add_test(NAME voxel_stats_3d_test COMMAND rvegen_voxel_stats_3d_test)
 
+# Triangle tree of mesh inclusions (#126): pair tests, point queries and
+# rotated bounds against references that visit every triangle.
+add_executable(rvegen_mesh_acceleration_test tests/mesh_acceleration_test.cpp)
+target_link_libraries(rvegen_mesh_acceleration_test PRIVATE rvegen_lib)
+add_test(NAME mesh_acceleration_test COMMAND rvegen_mesh_acceleration_test)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <vector>
 
 #include <Mathematics/DistPointSegment.h>
@@ -65,6 +66,15 @@ template <typename T>
     if (a.lo[k] > b.hi[k] || a.hi[k] < b.lo[k]) return false;
   }
   return true;
+}
+
+template <typename T>
+[[nodiscard]] constexpr bounds3<T> padded(bounds3<T> b, T pad) noexcept {
+  for (int k = 0; k < 3; ++k) {
+    b.lo[k] -= pad;
+    b.hi[k] += pad;
+  }
+  return b;
 }
 
 // Visit the centerline as segments; a single point becomes a zero-length
@@ -122,39 +132,172 @@ template <typename T>
 }
 
 // Visit placed triangles of `m` whose AABB overlaps `region`, without
-// materialising them; stops at the first `f` that returns true.
+// materialising them; stops at the first `f` that returns true. The
+// candidates come from the triangle tree of the mesh: every triangle with a
+// point in `region` is among them, the order is the tree's, and a triangle
+// whose box overlaps the region while the triangle itself stays outside may
+// be left out. `f` must therefore be false for a triangle that does not
+// reach into `region`, which holds for all distance tests below (the region
+// is the other shape's box, padded by the reach of the test).
 template <typename T, typename F>
 [[nodiscard]] inline bool any_mesh_triangle_in(mesh_inclusion<T> const& m,
                                                 bounds3<T> const& region,
                                                 F&& f) {
   auto const base = m.base_triangles();
   if (!base || !overlap(mesh_bounds(m), region)) return false;
-  for (auto const& src : *base) {
-    auto const t = placed(src, m);
+  std::vector<std::size_t> near;
+  m.triangles_near(region.lo, region.hi, near);
+  for (auto i : near) {
+    auto const t = placed((*base)[i], m);
     if (overlap(t.box, region) && f(t.tri)) return true;
   }
   return false;
 }
 
-// Placed triangles of `m` whose AABB overlaps `region`.
+// Placed triangles of `m` whose AABB overlaps `region`; candidates as in
+// any_mesh_triangle_in.
 template <typename T>
 [[nodiscard]] inline std::vector<tri_box<T>>
 mesh_triangles_in(mesh_inclusion<T> const& m, bounds3<T> const& region) {
   std::vector<tri_box<T>> out;
   auto const base = m.base_triangles();
   if (!base || !overlap(mesh_bounds(m), region)) return out;
-  for (auto const& src : *base) {
-    auto t = placed(src, m);
+  std::vector<std::size_t> near;
+  m.triangles_near(region.lo, region.hi, near);
+  out.reserve(near.size());
+  for (auto i : near) {
+    auto t = placed((*base)[i], m);
     if (overlap(t.box, region)) out.push_back(t);
   }
   return out;
 }
 
+// Whether a whole connected component of `inner`'s surface lies inside the
+// solid `outer`: one point per component is enough once the caller knows
+// that no triangles of the two cross. Testing only the first vertex of the
+// mesh would miss a second component (a mesh may be several closed
+// surfaces) sitting inside `outer` while the first one is outside.
 template <typename T>
-[[nodiscard]] inline std::array<T, 3> mesh_first_vertex(mesh_inclusion<T> const& m) {
-  auto const base = m.base_triangles();
-  if (!base || base->empty()) return {};
-  return m.to_world((*base)[0].v[0]);
+[[nodiscard]] inline bool mesh_component_inside(mesh_inclusion<T> const& inner,
+                                                mesh_inclusion<T> const& outer) {
+  for (auto const& p : inner.component_points()) {
+    if (outer.is_inside(p)) return true;
+  }
+  return false;
+}
+
+// World-space bounds of node `i` of the triangle tree of `m`: the box of
+// the eight placed corners of the node box, which contains every placed
+// triangle of the node. Widened by a rounding margin, since a placed vertex
+// and a placed corner are rounded independently.
+template <typename T>
+[[nodiscard]] inline bounds3<T> mesh_node_bounds(
+    mesh_inclusion<T> const& m, mesh_triangle_tree<T> const& tree,
+    std::size_t i) {
+  auto const& lo = tree.lo(i);
+  auto const& hi = tree.hi(i);
+  bounds3<T> b;
+  b.lo.fill(std::numeric_limits<T>::max());
+  b.hi.fill(std::numeric_limits<T>::lowest());
+  T reach = T{0};
+  for (int corner = 0; corner < 8; ++corner) {
+    const auto w = m.to_world(vec3<T>{(corner & 1) ? hi[0] : lo[0],
+                                      (corner & 2) ? hi[1] : lo[1],
+                                      (corner & 4) ? hi[2] : lo[2]});
+    for (int k = 0; k < 3; ++k) {
+      b.lo[k] = std::min(b.lo[k], w[k]);
+      b.hi[k] = std::max(b.hi[k], w[k]);
+      reach = std::max(reach, std::abs(w[k]));
+    }
+  }
+  return padded(b, reach * mesh_rounding_margin<T>);
+}
+
+// Whether `f(x, y)` holds for a placed triangle x of `a` and y of `b`
+// whose boxes are within `pad` of each other; stops at the first hit.
+//
+// The two triangle trees are walked against each other: a pair of nodes is
+// dropped as soon as their world boxes are farther apart than `pad`, the
+// larger node is split otherwise, and two leaves have their triangles
+// tested pair by pair. Every pair of triangles within `pad` is reached (a
+// node box contains its triangles), so the answer is that of the test over
+// all pairs; the cost follows the number of node pairs that are close, which
+// for two surfaces that cross or pass each other is a small part of each.
+template <typename T, typename F>
+[[nodiscard]] inline bool any_mesh_triangle_pair(mesh_inclusion<T> const& a,
+                                                 mesh_inclusion<T> const& b,
+                                                 T pad, F&& f) {
+  auto const* ta = a.triangle_tree();
+  auto const* tb = b.triangle_tree();
+  auto const base_a = a.base_triangles();
+  auto const base_b = b.base_triangles();
+  if (!ta || !tb || ta->empty() || tb->empty() || !base_a || !base_b) {
+    return false;
+  }
+  struct entry {
+    std::size_t ia, ib;
+    bounds3<T> ba;   // already padded
+    bounds3<T> bb;
+  };
+  auto size = [](bounds3<T> const& x) {
+    return (x.hi[0] - x.lo[0]) + (x.hi[1] - x.lo[1]) + (x.hi[2] - x.lo[2]);
+  };
+  auto apart = [](bounds3<T> const& x, bounds3<T> const& y) {   // centres
+    T sum = T{0};
+    for (int k = 0; k < 3; ++k) {
+      const T d = (x.lo[k] + x.hi[k]) - (y.lo[k] + y.hi[k]);
+      sum += d * d;
+    }
+    return sum;
+  };
+  std::vector<entry> stack;
+  stack.reserve(128);
+  stack.push_back({0, 0, padded(mesh_node_bounds(a, *ta, 0), pad),
+                   mesh_node_bounds(b, *tb, 0)});
+  std::vector<tri_box<T>> la, lb;
+  while (!stack.empty()) {
+    const entry e = stack.back();
+    stack.pop_back();
+    if (!overlap(e.ba, e.bb)) continue;
+    const bool leaf_a = ta->leaf(e.ia);
+    const bool leaf_b = tb->leaf(e.ib);
+    if (leaf_a && leaf_b) {
+      la.clear();
+      lb.clear();
+      for (auto i : ta->triangles(e.ia)) {
+        la.push_back(placed((*base_a)[i], a));
+        la.back().box = padded(la.back().box, pad);
+      }
+      for (auto i : tb->triangles(e.ib)) lb.push_back(placed((*base_b)[i], b));
+      for (auto const& x : la) {
+        for (auto const& y : lb) {
+          if (overlap(x.box, y.box) && f(x.tri, y.tri)) return true;
+        }
+      }
+      continue;
+    }
+    // The child whose box centre is nearer to the other node goes on the
+    // stack last and is looked at first: a hit, if there is one, is then
+    // found after a few node pairs instead of after most of them.
+    if (!leaf_a && (leaf_b || size(e.ba) >= size(e.bb))) {
+      const entry l{2 * e.ia + 1, e.ib,
+                    padded(mesh_node_bounds(a, *ta, 2 * e.ia + 1), pad), e.bb};
+      const entry r{2 * e.ia + 2, e.ib,
+                    padded(mesh_node_bounds(a, *ta, 2 * e.ia + 2), pad), e.bb};
+      const bool left_first = apart(l.ba, l.bb) <= apart(r.ba, r.bb);
+      stack.push_back(left_first ? r : l);
+      stack.push_back(left_first ? l : r);
+    } else {
+      const entry l{e.ia, 2 * e.ib + 1, e.ba,
+                    mesh_node_bounds(b, *tb, 2 * e.ib + 1)};
+      const entry r{e.ia, 2 * e.ib + 2, e.ba,
+                    mesh_node_bounds(b, *tb, 2 * e.ib + 2)};
+      const bool left_first = apart(l.ba, l.bb) <= apart(r.ba, r.bb);
+      stack.push_back(left_first ? r : l);
+      stack.push_back(left_first ? l : r);
+    }
+  }
+  return false;
 }
 
 } // namespace detail
@@ -340,49 +483,28 @@ template <typename T>
 }
 
 // ---- mesh x mesh ------------------------------------------------------------
-// Cheap accepts first (a few vertices of one mesh inside the other), then
-// triangle-triangle intersection (GTE) restricted to the AABB overlap
-// region: in-region triangles of both meshes are cached with their AABBs
-// (triangles outside the region are never copied), a pair is only tested
-// when the triangle AABBs overlap, and the loop exits on the first hit. Finally mutual containment via one vertex.
+// Two solids overlap exactly when their surfaces cross or a whole connected
+// component of one lies inside the other. The second is one point-in-mesh
+// query per component and comes first, because it also settles most deep
+// overlaps at once (a point of a component inside the other solid means an
+// overlap either way). The first is triangle-triangle intersection (GTE)
+// over the pairs the two triangle trees bring together.
 template <typename T>
 [[nodiscard]] bool collision_details(mesh_inclusion<T> const& a,
                                       mesh_inclusion<T> const& b) {
-  const auto ba = detail::mesh_bounds(a);
-  const auto bb = detail::mesh_bounds(b);
-  if (!detail::overlap(ba, bb)) return false;
-  detail::bounds3<T> region;
-  for (int k = 0; k < 3; ++k) {
-    region.lo[k] = std::max(ba.lo[k], bb.lo[k]);
-    region.hi[k] = std::min(ba.hi[k], bb.hi[k]);
-  }
-  const auto tb = detail::mesh_triangles_in(b, region);
-
-  // Sampled vertices of the in-region triangles of one mesh inside the other.
-  constexpr std::size_t samples = 2;
-  auto vertex_inside = [&](std::vector<detail::tri_box<T>> const& tris,
-                           mesh_inclusion<T> const& other) {
-    if (tris.empty()) return false;
-    const std::size_t step = std::max<std::size_t>(1, tris.size() / samples);
-    for (std::size_t i = 0; i < tris.size(); i += step) {
-      auto const& v = tris[i].tri.v[0];
-      if (other.is_inside({v[0], v[1], v[2]})) return true;
-    }
+  if (!detail::overlap(detail::mesh_bounds(a), detail::mesh_bounds(b))) {
     return false;
-  };
-  if (vertex_inside(tb, a)) return true;
-  const auto ta = detail::mesh_triangles_in(a, region);
-  if (vertex_inside(ta, b)) return true;
-
-  gte::TIQuery<T, gte::Triangle3<T>, gte::Triangle3<T>> query;
-  for (auto const& x : ta) {
-    for (auto const& y : tb) {
-      if (!detail::overlap(x.box, y.box)) continue;
-      if (query(x.tri, y.tri).intersect) return true;
-    }
   }
-  return a.is_inside(detail::mesh_first_vertex(b)) ||
-         b.is_inside(detail::mesh_first_vertex(a));
+  if (detail::mesh_component_inside(b, a) ||
+      detail::mesh_component_inside(a, b)) {
+    return true;
+  }
+  gte::TIQuery<T, gte::Triangle3<T>, gte::Triangle3<T>> query;
+  return detail::any_mesh_triangle_pair(
+      a, b, T{0},
+      [&](gte::Triangle3<T> const& x, gte::Triangle3<T> const& y) {
+        return query(x, y).intersect;
+      });
 }
 
 } // namespace rvegen
