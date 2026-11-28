@@ -384,6 +384,25 @@ install(TARGETS rvegen
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# `cmake --build build --target gallery` renders every config in examples/
+# into docs/gallery/ (PNGs plus a README.md index). Not part of `all`:
+# it needs Python 3 with numpy + matplotlib, and optionally Inkscape,
+# Chrome and gmsh for the SVG, three.js and .geo outputs.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_target(gallery
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py
+                --rvegen $<TARGET_FILE:rvegen>
+                --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery --index
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples
+        DEPENDS rvegen
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Rendering the example gallery into docs/gallery"
+        USES_TERMINAL
+        VERBATIM)
+endif()
+
 # ---------------------------------------------------------------------------
 # Install / export so downstream `find_package(rvegen)` works.
 #
@@ -604,6 +623,34 @@ set_tests_properties(cli_fe_rve_workflow_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# make_gallery.py regressions: a failing or garbage-writing renderer must
+# give a non-zero exit, and same-stem configs must not overwrite each other. Needs
+# numpy + matplotlib, like the script itself.
+if(Python3_Interpreter_FOUND)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import numpy, matplotlib"
+    RESULT_VARIABLE _rvegen_py_plot_rc
+    OUTPUT_QUIET ERROR_QUIET)
+  if(_rvegen_py_plot_rc EQUAL 0)
+    add_test(NAME gallery_script_check
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tests/gallery_script_check.py
+              --rvegen $<TARGET_FILE:rvegen>
+              --examples ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    set_tests_properties(gallery_script_check PROPERTIES TIMEOUT 900 LABELS "cli")
+    # The committed docs/gallery index and PNGs must list exactly what the
+    # script generates from examples/ (renders nothing).
+    add_test(NAME gallery_index_check
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make_gallery.py --check
+              --out ${CMAKE_CURRENT_SOURCE_DIR}/docs/gallery
+              ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    set_tests_properties(gallery_index_check PROPERTIES LABELS "cli")
+  else()
+    message(STATUS "numpy/matplotlib not found - skipping gallery_script_check")
+  endif()
+endif()
 
 endif() # NOT DEFINED BUILD_TESTING OR BUILD_TESTING (CLI smoke tests)
 
