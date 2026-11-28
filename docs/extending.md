@@ -80,6 +80,13 @@ file, so its schema normally has a required `output_path` (see
 `register_all_post_processes()` calls. A config may list any number of
 post-processes in its `postprocess` array; they run in order.
 
+Put every check that needs only the options and the domain box (a missing
+output path, a grid that is too large, an option that needs a 3D box) into
+`validate(domain_box) const` and call it at the top of `run()`. The pipeline
+calls `validate` for all post-processes before the first shape is placed, and
+`rvegen --check` runs it without generating anything, so such a mistake does
+not cost a generation run. `validate` must not create or truncate a file.
+
 ## Checking the result
 
 - `rvegen --list-types` should list the new name. Update the catalogue in
