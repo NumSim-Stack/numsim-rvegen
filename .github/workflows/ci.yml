@@ -48,11 +48,18 @@ jobs:
           # printing a diagnostic. -O1 on top of Debug (assertions stay on):
           # unoptimised sanitizer code is 10-50x slower in the Eigen / GTE
           # templates, which put the full test suite beyond the time limit.
+          # One sanitizer compile of a test needs 3 to 4 GB with full debug
+          # information (2.8 GB with line tables only, which is all a
+          # sanitizer report uses), and Ninja starts six at a time on the
+          # four-core, 16 GB runner: the build then swaps for an hour or the
+          # runner dies without a log. Hence -g1 (see Configure) and four
+          # compiles at a time.
           - name: "gcc-14 Debug (ASan + UBSan)"
             cc: gcc-14
             cxx: g++-14
             build_type: Debug
             cxx_flags: "-O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+            build_jobs: 4
             full: false
             timeout: 60
           # Clang 19 from the Ubuntu 24.04 archive (19.1.x), paired with
@@ -178,12 +185,15 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_CXX_FLAGS_DEBUG="-g1" \
             -DRVEGEN_REQUIRE_GMSH=ON
 
+      # matrix.build_jobs is empty except for the sanitizer leg; without a
+      # number --parallel leaves the count to Ninja.
       - name: Build rvegen
         if: ${{ !matrix.golden_only }}
         working-directory: numsim-rvegen/rvegen
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel ${{ matrix.build_jobs }}
 
       - name: Build and run the golden tests
         if: matrix.golden_only
