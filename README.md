@@ -326,6 +326,37 @@ embarrassingly parallel.
 
 ---
 
+## Reproducibility
+
+A config with a fixed `seed` gives the same RVE again. How far "the same"
+reaches depends on what is compared:
+
+| What | Guarantee |
+|------|-----------|
+| Same executable, same machine | Identical output files, on every run and from every thread. |
+| The drawn values: positions, sizes, angles, directions (von Mises, Bingham), uniform rotations, lognormal grain sizes, Voronoi seeds | Bit-identical on every platform with IEEE-754 doubles: any standard library (libstdc++, libc++, MSVC), any math library, with or without fused multiply-add. |
+| Shape lists that consist of drawn values (circles, spheres, ellipses: centre, size, angle) | Bit-identical on every platform as well. |
+| Geometry computed from the drawn values (tube centre lines, bounding boxes of rotated shapes, Voronoi cells, the grain-size fit, mesh inclusions) | Bit-identical across compilers and standard libraries. A build that fuses multiply-add (`-march` with FMA under GCC's default `-ffp-contract=fast`, AArch64) or a different math library can change the last bits; next to a tie that can flip one accept/reject decision, and the shape list differs from there on. |
+| A2-fitted orientation distributions (`bingham_a2`, `von_mises_a2`) | The concentration is fitted with the platform math library, so their samples are reproducible per platform only. |
+
+Not covered: `-ffast-math` / `/fp:fast`, x87 arithmetic, and different rvegen
+versions (a change that alters seeded results says so in its description).
+
+How it is done: the engines of `<random>` are fully specified, the
+distributions are not. rvegen therefore draws through its own transforms
+(`distributions/portable_random.h`) and its own `exp`, `log`, `sin`, `cos`,
+`acos` and cube root (`distributions/portable_math.h`), which use only
+operations that IEEE-754 defines exactly. `tests/golden_portable_test.cpp`,
+`tests/golden_random_test.cpp` and `tests/golden_generators_test.cpp` pin the
+results; CI runs them against libstdc++, libc++ and the MSVC standard
+library. `tests/no_std_distribution_check.py` keeps `std::*_distribution`
+and `std::shuffle` out of the library.
+
+`seed` is an integer from 0 to 2³² − 1; a larger value is rejected, not
+truncated.
+
+---
+
 ## Project layout
 
 ```
