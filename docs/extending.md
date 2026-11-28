@@ -25,6 +25,21 @@ pipeline has to change for a new type.
 
 Distributions live in `register_distributions.h` and follow the same pattern.
 
+A distribution, or anything else that draws random numbers, must give the
+same values on every platform (see "Reproducibility" in the README):
+
+- draw through `distributions/portable_random.h` (`canonical`,
+  `portable_uniform_real`, `portable_normal`, `portable_uniform_int`), never
+  through a `std::` distribution or `std::shuffle`
+  (`tests/no_std_distribution_check.py` fails on them);
+- take `exp`, `log`, `sin`, `cos`, `acos` and the cube root from
+  `distributions/portable_math.h`;
+- wrap every product that feeds an addition in `portable_detail::rounded()`,
+  so that a compiler that fuses multiply-add gives the same bits;
+- draw each value in its own statement (the order of evaluation inside one
+  expression differs between compilers);
+- pin a few values in `tests/golden_random_test.cpp` (`--dump` prints them).
+
 ## The domain
 
 The RVE box is a `domain<T>` (`domain.h`): extents plus an explicit

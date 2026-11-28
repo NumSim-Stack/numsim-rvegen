@@ -95,6 +95,41 @@ constexpr std::array<double, 15> rve_circles_xyr{
     0x1.4969a06e30a93p-1, 0x1.7c6958cbbab63p-1, 0x1.9986ed49d82f7p-5,
     0x1.9e778bc141e5ep-2, 0x1.38d481e450d2ap-3, 0x1.84308f03c5351p-5};
 
+// Samplers that go through portable_math.h (#130): von Mises angles,
+// Bingham directions, uniform rotations, lognormal grain sizes.
+constexpr std::array<double, 6> von_mises_uniform{
+    -0x1.f401b178fb325p-2, 0x1.90e2ce16db428p+1, 0x1.c1f610abedb6dp+0,
+    0x1.d6fbc36d8470ap-1, -0x1.dc7e1140aa601p+0, -0x1.dc87ff4ce841dp+0};
+constexpr std::array<double, 6> von_mises_k2_5{
+    0x1.6d7dadeb913a5p-1, -0x1.07475d98c4e9p-1, -0x1.0a4edcb68629cp-1,
+    0x1.532376363da2ap-4, -0x1.7aed7da494adp-6, -0x1.e396e51e8538p-8};
+constexpr std::array<double, 6> von_mises_k500{
+    0x1.51bfb97a8da6ep-2, 0x1.e8ef329f46521p-3, 0x1.e7e9b317ac84bp-3,
+    0x1.2355446acf9bdp-2, 0x1.1b7b57edc0cefp-2, 0x1.1ca8168ca7cdfp-2};
+constexpr std::array<double, 9> bingham_uniform{
+    -0x1.6a97dd81fe83ep-3, 0x1.45a75f9d453c1p-1, -0x1.808c0fe0eb0c4p-1,
+    0x1.9a4f69ec7f50ap-1, 0x1.5cfacbc7f27c4p-2, 0x1.f75c2a99655ap-2,
+    -0x1.456d8d36d600bp-2, -0x1.4573645c63532p-2, -0x1.c95f15759b63cp-1};
+constexpr std::array<double, 9> bingham_prolate_k5{
+    -0x1.aa1efd531949cp-2, 0x1.3627323006618p-5, -0x1.d128db56b1c22p-1,
+    0x1.72dfe74316007p-3, 0x1.205070c14aabep-1, 0x1.9cd27b1753d64p-1,
+    -0x1.b81c5459c61e8p-3, -0x1.7faa69e23c68cp-1, -0x1.40af3c95f86e2p-1};
+constexpr std::array<double, 9> bingham_oblate_km0_5{
+    0x1.b833f03503871p-1, -0x1.7876b949b5246p-2, -0x1.6af49dac856a5p-2,
+    -0x1.76bab5c61df43p-1, 0x1.5c633f86c461ep-1, 0x1.2a73ad5dce4ccp-5,
+    -0x1.152b2a111160cp-4, 0x1.dea7e4d68c506p-1, -0x1.64d4f37625e76p-2};
+constexpr std::array<double, 9> bingham_oblate_km40{
+    0x1.e80c2aee01f7ap-1, -0x1.feea0928267b9p-3, -0x1.5d9b282e518fap-3,
+    0x1.25c7f33a6e495p-1, -0x1.770abf4445212p-1, 0x1.7720b3276b3c4p-2,
+    -0x1.6737ae843aa1cp-2, 0x1.a1bbe6ce52c4ep-1, -0x1.d6ac017ee947ap-2};
+constexpr std::array<double, 8> uniform_quaternions{
+    -0x1.ed972fbd8ca6cp-3, 0x1.81a8f0dbd4f7p-1, -0x1.3756d488ea176p-1,
+    -0x1.1aff118792e5bp-4, 0x1.0d6edce848531p-1, 0x1.693168d2ae044p-2,
+    0x1.49086ab0c589dp-1, 0x1.b93c2d2b67bb6p-2};
+constexpr std::array<double, 6> lognormal_target_diameters{
+    0x1.b480f4abb8d65p-2, 0x1.080d1fa135f16p-1, 0x1.6741ca555cff5p-1,
+    0x1.144925f4fc276p-1, 0x1.a820bfd528d4p-2, 0x1.a82036f5d0693p-2};
+
 // ---- tests ------------------------------------------------------------
 
 void test_transforms() {
@@ -132,6 +167,60 @@ void test_transforms() {
       xy.push_back(s[1]);
     }
     check("cluster_seeds_xy", cluster_seeds_xy, xy);
+  }
+}
+
+void test_samplers() {
+  auto angles = [](double kappa) {
+    std::mt19937 e{42};
+    rvegen::oriented_uniform_distribution<double> d{0.3, kappa, e};
+    return take(6, [&] { return d(); });
+  };
+  check("von_mises_uniform", von_mises_uniform, angles(0.0));
+  check("von_mises_k2_5", von_mises_k2_5, angles(2.5));
+  check("von_mises_k500", von_mises_k500, angles(500.0));
+
+  auto directions = [](double kappa) {
+    std::mt19937 e{42};
+    rvegen::bingham_distribution<double> d{std::array<double, 3>{1.0, 2.0, 3.0},
+                                           kappa, e};
+    std::vector<double> v;
+    for (int i = 0; i < 3; ++i) {
+      const auto s = d();
+      v.insert(v.end(), s.begin(), s.end());
+    }
+    return v;
+  };
+  check("bingham_uniform", bingham_uniform, directions(0.0));
+  check("bingham_prolate_k5", bingham_prolate_k5, directions(5.0));
+  check("bingham_oblate_km0_5", bingham_oblate_km0_5, directions(-0.5));
+  check("bingham_oblate_km40", bingham_oblate_km40, directions(-40.0));
+
+  {
+    std::mt19937 e{42};
+    rvegen::portable_uniform_real<double> u{0.0, 1.0};
+    std::vector<double> q;
+    for (int i = 0; i < 2; ++i) {
+      const double u1 = u(e);
+      const double u2 = u(e);
+      const double u3 = u(e);
+      const auto quat = rvegen::uniform_random_quaternion(u1, u2, u3);
+      for (int k = 0; k < 4; ++k) q.push_back(quat[k]);
+    }
+    check("uniform_quaternions", uniform_quaternions, q);
+  }
+  {
+    // The requested sizes only (they are fixed before the fit starts); no
+    // iteration, no restart.
+    std::mt19937 e{42};
+    const auto r = rvegen::lognormal_grain_seeds_3d<double>(
+        1.0, 1.0, 1.0, 0.45, 0.3, e, rvegen::voronoi_backend::in_house, true,
+        0.01, 0, 0);
+    REQUIRE(r.target_diameters.size() >= 6);
+    std::vector<double> d(r.target_diameters.begin(),
+                          r.target_diameters.begin() +
+                              std::min<std::size_t>(6, r.target_diameters.size()));
+    check("lognormal_target_diameters", lognormal_target_diameters, d);
   }
 }
 
@@ -174,6 +263,7 @@ void test_end_to_end_rve() {
 int main(int argc, char** argv) {
   dump = argc > 1 && std::strcmp(argv[1], "--dump") == 0;
   test_transforms();
+  test_samplers();
   test_portable_log_accuracy();
   test_end_to_end_rve();
   if (failures != 0) {

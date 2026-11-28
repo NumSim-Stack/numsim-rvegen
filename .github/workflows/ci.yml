@@ -72,6 +72,18 @@ jobs:
             # dispatchers refuse duplicate ids (shape_id_claims.h) and
             # shape_id_unique_test checks them, so an older pin fails here.
 
+          # Cross-platform reproducibility (#130): the golden tests against
+          # LLVM's standard library (same hashes as on every other leg), and
+          # the mesh readers, which use the strtod fallback there.
+          - name: "clang-19 Release, libc++ (golden tests)"
+            cc: clang-19
+            cxx: clang++-19
+            build_type: Release
+            cxx_flags: "-stdlib=libc++"
+            full: false
+            golden_only: true
+            timeout: 20
+
           # Floating-point contraction on (#137): with FMA the compiler may
           # evaluate a*b+c differently at each place an expression is
           # inlined, so code that recomputes a floating-point key (a sort
@@ -124,6 +136,9 @@ jobs:
           if [[ "${{ matrix.cxx }}" == clang* ]]; then
             sudo apt-get install -y clang-19
           fi
+          if [[ "${{ matrix.cxx_flags }}" == *-stdlib=libc++* ]]; then
+            sudo apt-get install -y libc++-19-dev libc++abi-19-dev
+          fi
           sudo apt-get install -y g++-14 libstdc++-14-dev ninja-build \
             libboost-dev nlohmann-json3-dev libeigen3-dev \
             python3-numpy python3-matplotlib
@@ -166,10 +181,24 @@ jobs:
             -DRVEGEN_REQUIRE_GMSH=ON
 
       - name: Build rvegen
+        if: ${{ !matrix.golden_only }}
         working-directory: numsim-rvegen/rvegen
         run: cmake --build build --parallel
 
+      - name: Build and run the golden tests
+        if: matrix.golden_only
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          cmake --build build --parallel --target \
+            rvegen_golden_portable_test rvegen_golden_random_test \
+            rvegen_golden_generators_test rvegen_mesh_io_test
+          # mesh_io_test: libc++ before 20 has no floating-point from_chars,
+          # so this is the leg where the strtod fallback parses the files.
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            -R '^(golden_portable_test|golden_random_test|golden_generators_test|mesh_io_test)$'
+
       - name: Test rvegen
+        if: ${{ !matrix.golden_only }}
         working-directory: numsim-rvegen/rvegen
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
@@ -256,3 +285,68 @@ jobs:
           python -m pip install pytest numpy
           python -m pip install -v ./python
           pytest python/tests/
+
+  # Cross-platform reproducibility (#130): the golden tests with MSVC and
+  # its standard library. The hashes are the ones every Linux leg checks.
+  msvc-golden:
+    name: "MSVC 2022 (golden tests)"
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Checkout rvegen
+        uses: actions/checkout@v4
+        with:
+          path: numsim-rvegen/rvegen
+
+      - name: Checkout numsim-core (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: NumSim-Stack/numsim-core
+          ref: 61bcb7663ddd8ae9fc3fd239a716a4cacb366e6f  # v1.3.0
+          path: numsim-core-src
+
+      # The portable transforms and elementary functions on their own: two
+      # headers, no dependency. This is the core of the guarantee.
+      - name: Build and run golden_portable_test (standalone)
+        shell: cmd
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /std:c++latest /EHsc /O2 /utf-8 /W3 /I include tests\golden_portable_test.cpp /Fe:golden_portable_test.exe || exit /b 1
+          golden_portable_test.exe
+
+      - name: Install Boost, nlohmann/json and Eigen (vcpkg, header-only)
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install boost-container boost-math nlohmann-json eigen3 --triplet x64-windows
+
+      - name: Build and install numsim-core
+        shell: pwsh
+        working-directory: numsim-core-src
+        run: |
+          cmake -B build -DNUMSIM_CORE_BUILD_TESTS=OFF -DNUMSIM_CORE_BUILD_EXAMPLES=OFF
+          cmake --install build --config Release --prefix "$env:GITHUB_WORKSPACE\deps"
+
+      - name: Configure rvegen
+        shell: pwsh
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE\deps" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build the golden tests
+        shell: pwsh
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          cmake --build build --config Release --parallel --target `
+            rvegen_golden_portable_test rvegen_golden_random_test `
+            rvegen_golden_generators_test
+
+      - name: Run the golden tests
+        shell: pwsh
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          ctest --test-dir build -C Release --output-on-failure --no-tests=error `
+            -R "^(golden_portable_test|golden_random_test|golden_generators_test)$"
