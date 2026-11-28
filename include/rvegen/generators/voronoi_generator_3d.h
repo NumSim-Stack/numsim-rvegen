@@ -28,6 +28,14 @@
 // test ≈ O(N⁵). For N ≤ 50 seeds this is well under a second; beyond
 // that, switch to a real Voronoi library (Voro++, CGAL).
 //
+// Backends (#70):
+//   * `voronoi_backend::in_house` (default) — the enumeration above.
+//   * `voronoi_backend::voro_pp` — Voro++ (roughly linear in N). Only
+//     available when the build defines RVEGEN_WITH_VORO_PP (CMake
+//     option of the same name); requesting it otherwise throws
+//     std::runtime_error. Output types and the validation policy are
+//     identical for both backends.
+//
 // Numerical robustness (scale-invariant, #79):
 //   * Every half-space is normalised to a unit normal, so the 3x3
 //     determinant is dimensionless and the feasibility / merge
@@ -60,9 +68,22 @@
 
 #include "../shapes/shape_base.h"
 #include "../shapes/voronoi_cell.h"
+#include "voronoi_backend_voropp.h"
 #include "voronoi_seed_validation.h"
 
 namespace rvegen {
+
+// Tessellation backend for voronoi_generator_3d (#70).
+enum class voronoi_backend { in_house, voro_pp };
+
+// True iff this build was configured with RVEGEN_WITH_VORO_PP=ON.
+[[nodiscard]] constexpr bool voro_pp_available() noexcept {
+#ifdef RVEGEN_WITH_VORO_PP
+  return true;
+#else
+  return false;
+#endif
+}
 
 template <typename T = double>
 class voronoi_generator_3d {
@@ -71,8 +92,15 @@ public:
   using seed_type = std::array<T, 3>;
   using shape_vector = std::vector<std::unique_ptr<shape_base<T>>>;
 
-  voronoi_generator_3d(T Lx, T Ly, T Lz, std::vector<seed_type> seeds)
-      : _Lx{Lx}, _Ly{Ly}, _Lz{Lz}, _seeds{std::move(seeds)} {
+  voronoi_generator_3d(T Lx, T Ly, T Lz, std::vector<seed_type> seeds,
+                       voronoi_backend backend = voronoi_backend::in_house)
+      : _Lx{Lx}, _Ly{Ly}, _Lz{Lz}, _seeds{std::move(seeds)},
+        _backend{backend} {
+    if (backend == voronoi_backend::voro_pp && !voro_pp_available()) {
+      throw std::runtime_error{
+          "voronoi_generator_3d: Voro++ backend requested but rvegen was "
+          "built without RVEGEN_WITH_VORO_PP"};
+    }
     if (Lx <= T{0} || Ly <= T{0} || Lz <= T{0}) {
       throw std::runtime_error{
           "voronoi_generator_3d: Lx, Ly, Lz must all be positive"};
@@ -91,6 +119,11 @@ public:
 
   // Build one voronoi_cell per seed. Cell index matches seed index.
   [[nodiscard]] shape_vector build() const {
+#ifdef RVEGEN_WITH_VORO_PP
+    if (_backend == voronoi_backend::voro_pp) {
+      return detail::build_voronoi_cells_voro_pp<T>(_Lx, _Ly, _Lz, _seeds);
+    }
+#endif
     shape_vector out;
     out.reserve(_seeds.size());
 
@@ -103,6 +136,7 @@ public:
 private:
   T _Lx, _Ly, _Lz;
   std::vector<seed_type> _seeds;
+  voronoi_backend _backend;
 
   // Half-space: A·x + B·y + C·z ≤ D with a UNIT normal (A, B, C), so D is
   // a signed distance and all tolerances are plain lengths.
