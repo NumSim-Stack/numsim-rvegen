@@ -370,6 +370,14 @@ add_executable(rvegen_voxel_stats_3d_test tests/voxel_stats_3d_test.cpp)
 target_link_libraries(rvegen_voxel_stats_3d_test PRIVATE rvegen_lib)
 add_test(NAME voxel_stats_3d_test COMMAND rvegen_voxel_stats_3d_test)
 
+# voronoi_2d skips the clips that cannot cut (#154): cells identical to the
+# full sequence of clips. The time limit is the guard against a return of
+# the quadratic cost (the 40 000-seed part would then take many minutes).
+add_executable(rvegen_voronoi_2d_neighbour_test tests/voronoi_2d_neighbour_test.cpp)
+target_link_libraries(rvegen_voronoi_2d_neighbour_test PRIVATE rvegen_lib)
+add_test(NAME voronoi_2d_neighbour_test COMMAND rvegen_voronoi_2d_neighbour_test)
+set_tests_properties(voronoi_2d_neighbour_test PROPERTIES TIMEOUT 600)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
