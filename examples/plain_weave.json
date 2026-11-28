@@ -1,0 +1,17 @@
+{
+  "_comment": "Plain weave: 4 warp x 4 weft undulating yarns (deterministic; no shapes/termination needed).",
+
+  "domain_box": [1.0, 1.0, 0.25],
+
+  "generator": {
+    "type": "weave",
+    "n_warp_yarns": 4, "n_weft_yarns": 4,
+    "yarn_radius": 0.05, "amplitude": 0.06,
+    "n_segments_per_yarn": 32
+  },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 48, "ny": 48, "nz": 24,
+      "output_path": "plain_weave.vox" }
+  ]
+}

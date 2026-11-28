@@ -247,6 +247,13 @@ target_link_libraries(rvegen_full_registry_smoke PRIVATE
 )
 add_test(NAME full_registry_smoke COMMAND rvegen_full_registry_smoke)
 
+add_executable(rvegen_deterministic_generators_test tests/deterministic_generators_test.cpp)
+target_link_libraries(rvegen_deterministic_generators_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME deterministic_generators_test COMMAND rvegen_deterministic_generators_test)
+
 add_executable(rvegen_extra_types_smoke tests/extra_types_smoke.cpp)
 target_link_libraries(rvegen_extra_types_smoke PRIVATE
     rvegen_lib
@@ -512,6 +519,35 @@ set_tests_properties(cli_periodic_circles_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# Deterministic generators (#73/#84) and Bingham-oriented tubes through
+# the CLI. Each example's output must be written, not just reported.
+foreach(_ex IN ITEMS voronoi_2d voronoi_3d plain_weave tow_weave bingham_fibres)
+  add_test(
+      NAME cli_${_ex}_example
+      COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/${_ex}.json
+  )
+  set_tests_properties(cli_${_ex}_example PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes.*post-process '[a-z_]+' done"
+  )
+endforeach()
+
+# CLI validation (regression tests for the pipeline's load-time checks).
+# PASS_REGULAR_EXPRESSION overrides the exit code, so these match the message.
+function(rvegen_cli_msg_test name cfg regex)
+  add_test(NAME cli_${name}
+           COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli/${cfg})
+  set_tests_properties(cli_${name} PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+rvegen_cli_msg_test(direction_in_scalar_slot direction_in_scalar_slot.json
+    "refers to direction distribution 'd'")
+rvegen_cli_msg_test(deterministic_ignored_keys deterministic_ignored_keys.json
+    "\"shapes\" is ignored.*\"termination\" is ignored")
+rvegen_cli_msg_test(generator_unknown_key generator_unknown_key.json
+    "unknown key 'n_seedz' for generator 'voronoi_2d' is ignored")
 
 # Combined run: gmsh_geo + voxel as two post-processes from one JSON.
 add_test(

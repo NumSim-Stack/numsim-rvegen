@@ -130,8 +130,11 @@
 #include "generators/random_generator.h"
 #include "generators/voronoi_generator_2d.h"
 #include "generators/voronoi_generator_3d.h"
+#include "generators/deterministic_generator.h"
 #include "generators/grain_size_control.h"
 #include "generators/weave_generator.h"
+#include "generators/weave_generator_registered.h"
+#include "generators/voronoi_generator_registered.h"
 #include "generators/tow_weave_generator.h"
 #include "generators/cluster_seeds.h"
 

@@ -5,6 +5,8 @@
 #include "../generators/only_inside_generator.h"
 #include "../generators/periodic_generator.h"
 #include "../generators/random_generator.h"
+#include "../generators/voronoi_generator_registered.h"
+#include "../generators/weave_generator_registered.h"
 #include "../generators/rve_generator_base.h"
 #include "../types.h"
 
@@ -37,11 +39,23 @@ inline void register_random_generator() {
       .template register_type<random_generator<T>>("random");
 }
 
+// Deterministic generators (#73 / #84): ignore inputs + termination, see
+// generators/deterministic_generator.h.
+template <typename T = double>
+inline void register_deterministic_generators() {
+  auto& r = generator_registry_t<T>::instance();
+  r.template register_type<registered_weave_generator<T>>("weave");
+  r.template register_type<registered_tow_weave_generator<T>>("tow_weave");
+  r.template register_type<registered_voronoi_2d_generator<T>>("voronoi_2d");
+  r.template register_type<registered_voronoi_3d_generator<T>>("voronoi_3d");
+}
+
 template <typename T = double>
 inline void register_all_generators() {
   register_only_inside_generator<T>();
   register_periodic_generator<T>();
   register_random_generator<T>();
+  register_deterministic_generators<T>();
 }
 
 } // namespace rvegen

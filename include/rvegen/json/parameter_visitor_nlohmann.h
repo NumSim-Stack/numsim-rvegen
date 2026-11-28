@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <set>
 #include <typeindex>
 #include <type_traits>
 #include <typeinfo>
@@ -59,7 +60,19 @@ public:
       : _j{j} {}
 
   [[nodiscard]] bool contains(key_type const& key) const override {
+    _queried.insert(key);
     return _j.contains(key);
+  }
+
+  // Keys of the JSON object the schema never asked about (typos / options
+  // the type does not have). "type" is the registry discriminator, not a
+  // parameter, and is never reported. Valid after schema.accept().
+  [[nodiscard]] std::vector<std::string> unknown_keys() const {
+    std::vector<std::string> out;
+    if (!_j.is_object()) return out;
+    for (auto const& [k, v] : _j.items())
+      if (k != "type" && !_queried.contains(k)) out.push_back(k);
+    return out;
   }
 
   [[nodiscard]] std::any read(key_type const& key,
@@ -161,6 +174,7 @@ private:
   }
 
   nlohmann::json const& _j;
+  mutable std::set<std::string> _queried;
 };
 
 } // namespace rvegen

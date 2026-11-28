@@ -1572,8 +1572,8 @@ void test_polyline_tube_input_direct_ctor() {
 }
 
 void test_polyline_tube_input_missing_dist_throws() {
-  // Schema-driven ctor calls `distributions.at(...)` which throws
-  // std::out_of_range when the named distribution is absent.
+  // Schema-driven ctor throws std::out_of_range naming the key and the
+  // missing distribution when the named distribution is absent.
   rvegen::register_all_distributions<>();
   rvegen::register_all_inputs<>();
   std::mt19937 engine{1};
@@ -1593,7 +1593,12 @@ void test_polyline_tube_input_missing_dist_throws() {
   try {
     auto input = rvegen::build_from_json(
         rvegen::input_registry_t<>::instance(), input_spec, empty_dists);
-  } catch (std::out_of_range const&) { threw = true; }
+  } catch (std::out_of_range const& e) {
+    threw = true;
+    const std::string msg = e.what();
+    REQUIRE(msg.find("_dist'") != std::string::npos);  // names the key
+    REQUIRE(msg.find("'missing'") != std::string::npos);
+  }
   REQUIRE(threw);
 }
 

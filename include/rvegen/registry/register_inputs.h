@@ -8,6 +8,7 @@
 #include "../inputs/mesh_inclusion_input.h"
 #include "../inputs/polyline_tube_directional_input.h"
 #include "../inputs/polyline_tube_input.h"
+#include "../inputs/polyline_tube_oriented_registered.h"
 #include "../inputs/rectangle_input.h"
 #include "../inputs/shape_input_base.h"
 #include "../inputs/sphere_input.h"
@@ -71,6 +72,16 @@ inline void register_polyline_tube_directional_input() {
           "polyline_tube_directional_input");
 }
 
+// Direction distributions are passed through the scalar map as
+// direction_distribution_holder entries (see
+// inputs/polyline_tube_oriented_registered.h).
+template <typename T = double>
+inline void register_polyline_tube_oriented_input() {
+  input_registry_t<T>::instance()
+      .template register_type<polyline_tube_oriented_registered_input<T>>(
+          "polyline_tube_oriented_input");
+}
+
 template <typename T = double>
 inline void register_mesh_inclusion_input() {
   input_registry_t<T>::instance()
@@ -86,6 +97,7 @@ inline void register_all_inputs() {
   register_ellipse_input<T>();
   register_polyline_tube_input<T>();
   register_polyline_tube_directional_input<T>();
+  register_polyline_tube_oriented_input<T>();
   register_mesh_inclusion_input<T>();
 }
 
