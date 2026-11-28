@@ -202,6 +202,13 @@ template <typename T>
 // periodic copy at the opposite corner, a piece as small as one likes.
 // The probes are conservative: a shape that crosses an edge at a shallow
 // angle (a long fibre) may be refused although it would have been fine.
+// The edge line is probed over the whole extent of the shape, not only
+// inside the box: in a periodic tiling the edge continues, and for `random`
+// a shape that grazes the edge inside the box while crossing it outside is
+// caught at the corner in between, where the distance to a convex shape is
+// smaller still. All of this holds for convex shapes; a bent tube or a
+// non-convex mesh is judged by its bounding box at the faces and by the
+// probes at edges and corners, which is a good approximation, not a proof.
 // `may_cross` = false is the `only_inside` rule: faces only, since a shape
 // that stays `gap` inside every face is clear of edges and corners too.
 template <typename T>

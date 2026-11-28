@@ -668,6 +668,107 @@ void test_relative_gap() {
   }
 }
 
+// Two inclusions that both stay inside the box have no stored copies, yet
+// are neighbours through a periodic face. Hand-placed, so the outcome does
+// not depend on what a seed happens to produce.
+void test_periodic_images() {
+  // A at x = 0.03 and B at x = 0.97, radius 0.02, same y: 0.9 apart inside
+  // the box, 0.02 apart through the face x = 0 / 1. Neither crosses a face.
+  auto two = json::parse(R"({
+    "domain_box": [1.0, 1.0],
+    "seed": 1,
+    "distributions": {
+      "xa": {"type": "constant", "value": 0.03},
+      "xb": {"type": "constant", "value": 0.97},
+      "y": {"type": "constant", "value": 0.5},
+      "r": {"type": "constant", "value": 0.02}
+    },
+    "shapes": [
+      {"type": "circle_input", "pos_x_dist": "xa", "pos_y_dist": "y",
+       "radius_dist": "r"},
+      {"type": "circle_input", "pos_x_dist": "xb", "pos_y_dist": "y",
+       "radius_dist": "r"}
+    ],
+    "generator": {"type": "periodic", "max_attempts": 6},
+    "termination": {"type": "number_of_inclusions", "target": 2}
+  })");
+  pipeline_options quiet;
+  quiet.warn = [](std::string const&) {};
+  REQUIRE(run_pipeline(two, quiet).shapes.size() == 2);       // no gap: both fit
+  two["generator"]["min_gap"] = 0.019;
+  REQUIRE(run_pipeline(two, quiet).shapes.size() == 2);       // 0.02 apart
+  two["generator"]["min_gap"] = 0.021;
+  auto const refused = run_pipeline(two, quiet);
+  REQUIRE(refused.shapes.size() == 1);                        // B is too close
+  REQUIRE(refused.report.target_missed());
+  // The same through a corner: A near (0, 0), B near (1, 1).
+  two["distributions"]["y"] = {{"type", "constant"}, {"value", 0.03}};
+  two["distributions"]["yb"] = {{"type", "constant"}, {"value", 0.97}};
+  two["shapes"][1]["pos_y_dist"] = "yb";                      // 0.0449 apart
+  two["generator"]["min_gap"] = 0.044;
+  REQUIRE(run_pipeline(two, quiet).shapes.size() == 2);
+  two["generator"]["min_gap"] = 0.046;
+  REQUIRE(run_pipeline(two, quiet).shapes.size() == 1);
+  // In the non-periodic generators the two are 0.9 apart and both fit.
+  two["generator"]["type"] = "only_inside";
+  REQUIRE(run_pipeline(two, quiet).shapes.size() == 2);
+
+  // An inclusion and its own image: radius 0.49 in the unit box leaves
+  // 0.02 between the circle and its copy one period away.
+  auto one = json::parse(R"({
+    "domain_box": [1.0, 1.0],
+    "seed": 1,
+    "distributions": {
+      "c": {"type": "constant", "value": 0.5},
+      "r": {"type": "constant", "value": 0.49}
+    },
+    "shapes": [{"type": "circle_input", "pos_x_dist": "c", "pos_y_dist": "c",
+                "radius_dist": "r"}],
+    "generator": {"type": "periodic", "max_attempts": 4},
+    "termination": {"type": "number_of_inclusions", "target": 1}
+  })");
+  REQUIRE(run_pipeline(one, quiet).shapes.size() == 1);
+  one["generator"]["min_gap"] = 0.019;
+  REQUIRE(run_pipeline(one, quiet).shapes.size() == 1);
+  one["generator"]["min_gap"] = 0.021;
+  REQUIRE(run_pipeline(one, quiet).shapes.empty());
+  one["generator"]["min_gap"] = 0.0;
+  one["generator"]["min_gap_relative"] = 0.03;                // 0.03 * 0.98
+  REQUIRE(run_pipeline(one, quiet).shapes.empty());
+
+  // Dense periodic packs over several seeds, every pair of the tiling
+  // measured exactly: a gap this large against circles this size makes
+  // neighbours through a face the rule, not the exception.
+  int through_a_face = 0;
+  for (int seed = 1; seed <= 8; ++seed) {
+    auto cfg = circles("periodic");
+    cfg["seed"] = seed;
+    cfg["distributions"]["r"] = {{"type", "uniform_real"}, {"a", 0.03}, {"b", 0.08}};
+    cfg["termination"]["target"] = 30;
+    cfg["generator"]["min_gap"] = 0.04;
+    auto const res = run_pipeline(cfg, quiet);
+    auto const b = balls(res.shapes);
+    for (std::size_t i = 0; i < b.size(); ++i) {
+      if (!b[i].primary) continue;
+      for (std::size_t j = i; j < b.size(); ++j) {
+        if (!b[j].primary) continue;
+        for (int sx = -1; sx <= 1; ++sx)
+          for (int sy = -1; sy <= 1; ++sy) {
+            if (i == j && sx == 0 && sy == 0) continue;
+            const D dist = std::hypot(b[i].c[0] - b[j].c[0] - sx,
+                                      b[i].c[1] - b[j].c[1] - sy) -
+                           b[i].r - b[j].r;
+            REQUIRE(dist >= 0.04 * (1 - 1e-12));
+            // A pair this close only through a face, with both circles
+            // clear of that face: the case only the image test catches.
+            if (dist < 0.08 && (sx != 0 || sy != 0)) ++through_a_face;
+          }
+      }
+    }
+  }
+  REQUIRE(through_a_face > 10);
+}
+
 void test_wall_gap() {
   constexpr D g = 0.03;
   for (auto const& cfg0 : {circles("only_inside"), circles("random"),
@@ -902,6 +1003,7 @@ int main() {
   test_dispatcher();
   test_generated_packs();
   test_relative_gap();
+  test_periodic_images();
   test_wall_gap();
   test_boundary_rule();
   test_zero_gap_is_unchanged();
