@@ -1,0 +1,8 @@
+{
+  "_comment": "2D Voronoi polycrystal as a conforming gmsh geometry: the grains share their boundary curves, so the mesh has no gaps or doubled nodes between grains, and every grain is a physical group of its own.",
+  "domain_box": [1.0, 1.0],
+  "generator": {"type": "voronoi_2d", "n_seeds": 30, "seed": 9},
+  "postprocess": [
+    {"type": "gmsh_geo", "output_path": "voronoi_2d_gmsh.geo"}
+  ]
+}

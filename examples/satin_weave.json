@@ -1,0 +1,46 @@
+{
+  "_comment": "Satin 5 weave: each yarn floats over four crossing yarns and dips under the fifth, with the dips spread so that no two touch. Long floats, few interlacings. Warp and weft carry their own phase.",
+  "domain_box": [
+    1.0,
+    1.0,
+    0.2
+  ],
+  "phases": [
+    {
+      "name": "matrix"
+    },
+    {
+      "name": "warp"
+    },
+    {
+      "name": "weft"
+    }
+  ],
+  "phase_assignment": {
+    "matrix": "matrix"
+  },
+  "generator": {
+    "type": "weave",
+    "pattern": "satin_5",
+    "n_warp_yarns": 10,
+    "n_weft_yarns": 10,
+    "yarn_radius": 0.022,
+    "amplitude": 0.028,
+    "n_segments_per_yarn": 64,
+    "warp_phase_name": "warp",
+    "weft_phase_name": "weft"
+  },
+  "postprocess": [
+    {
+      "type": "voxel",
+      "nx": 96,
+      "ny": 96,
+      "nz": 24,
+      "output_path": "satin_weave.vox"
+    },
+    {
+      "type": "three_js",
+      "output_path": "satin_weave.html"
+    }
+  ]
+}
