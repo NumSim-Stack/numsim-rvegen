@@ -160,7 +160,10 @@ double max_mitre(std::vector<vec3> const& cl) {
 
 template <typename F>
 bool throws(F&& f) {
+  // runtime_error from the generator's own checks, invalid_argument from
+  // the domain type (bad box extents).
   try { f(); } catch (std::runtime_error const&) { return true; }
+  catch (std::invalid_argument const&) { return true; }
   return false;
 }
 

@@ -129,6 +129,8 @@ public:
   // The length and radius distributions are truncated to (0, inf) —
   // non-positive draws are resampled (see shape_input_base for the
   // constructor check and the redraw backstop).
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
+
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type cx = _px();
     const value_type cy = _py();

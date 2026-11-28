@@ -105,6 +105,8 @@ public:
   // The radius distribution is truncated to (0, inf): non-positive draws
   // are resampled. See shape_input_base for the constructor check
   // and the redraw backstop.
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
+
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
     const value_type sx = _sx();
     const value_type sy = _sy();

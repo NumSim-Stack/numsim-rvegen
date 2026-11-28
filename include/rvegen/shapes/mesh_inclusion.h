@@ -803,6 +803,7 @@ public:
   // construction via the divergence theorem over the validated,
   // consistently outward-wound base mesh (cavities contribute
   // negatively) — and scales with scale³.
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
   [[nodiscard]] T volume() const override {
     return _volume * _scale * _scale * _scale;
   }

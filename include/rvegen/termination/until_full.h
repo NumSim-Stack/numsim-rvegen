@@ -21,7 +21,7 @@ public:
   until_full() = default;
 
   until_full(parameter_handler_t const& /*handler*/,
-             std::array<T, 3> const& /*domain_box*/) noexcept {}
+             domain<T> const& /*domain_box*/) noexcept {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     return parameter_controller_t{};

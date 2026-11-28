@@ -159,7 +159,7 @@ public:
   // the pattern repeat, or for a configuration that would make yarns
   // interpenetrate or leave the domain (see the feasibility list in
   // the header comment).
-  weave_generator(std::array<value_type, 3> const& domain_box,
+  weave_generator(domain<value_type> const& domain_box,
                   std::size_t n_warp_yarns,
                   std::size_t n_weft_yarns,
                   value_type yarn_radius,
@@ -193,22 +193,13 @@ public:
           "weave_generator: n_segments_per_yarn must be ≤ "
           + std::to_string(max_segments_per_yarn)};
     }
-    if (!(_domain[0] > value_type{0}) || !(_domain[1] > value_type{0})
-        || !std::isfinite(_domain[0]) || !std::isfinite(_domain[1])) {
-      throw std::runtime_error{
-          "weave_generator: domain Lx and Ly must both be positive and "
-          "finite"};
-    }
-    if (!(_domain[2] >= value_type{0}) || !std::isfinite(_domain[2])) {
-      throw std::runtime_error{
-          "weave_generator: domain Lz must be ≥ 0 and finite"};
-    }
+    // (The extents themselves are validated by the domain type.)
     // 2D domains (Lz == 0) physically can't carry undulation; the
     // yarns would land at z = ±amplitude, outside a zero-extent domain.
     // Reject rather than silently producing geometrically meaningless
     // shapes — voxelization of a 2D domain collapses to a single
     // z-slice that won't capture undulation anyway.
-    if (_domain[2] <= value_type{0} && !(amplitude == value_type{0})) {
+    if (_domain.is_2d() && !(amplitude == value_type{0})) {
       throw std::runtime_error{
           "weave_generator: 2D domain (Lz == 0) requires amplitude = 0; "
           "for an undulating weave use a 3D domain with positive Lz"};
@@ -227,7 +218,7 @@ public:
     // a flat 2D weave has no crimp to resolve, but still needs the
     // in-plane spacing / box checks).
     std::size_t q_clearance = 1;
-    if (_domain[2] > value_type{0}) q_clearance = validate_clearance();
+    if (_domain.is_3d()) q_clearance = validate_clearance();
     else validate_in_plane();
     _n_seg_warp = segments_for(_n_weft, q_clearance);
     _n_seg_weft = segments_for(_n_warp, q_clearance);
@@ -340,7 +331,7 @@ public:
   }
 
 private:
-  std::array<value_type, 3> _domain;
+  domain<value_type> _domain;
   std::size_t _n_warp;
   std::size_t _n_weft;
   value_type _yarn_radius;
@@ -353,8 +344,7 @@ private:
   std::string _weft_phase;
 
   [[nodiscard]] value_type z_centre() const noexcept {
-    return (_domain[2] > value_type{0}) ? _domain[2] * value_type{0.5}
-                                        : value_type{0};
+    return _domain.is_3d() ? _domain[2] * value_type{0.5} : value_type{0};
   }
 
   // Centre of yarn `idx` of `n` evenly spaced across length `L`.

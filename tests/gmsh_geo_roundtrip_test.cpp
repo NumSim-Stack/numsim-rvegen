@@ -858,7 +858,7 @@ void test_writer_rejects_bad_input() {
   REQUIRE(threw);
   REQUIRE(buf.str().empty());
   threw = false;
-  try { writer.write(buf, {}, {1.0, std::nan(""), 0.0}); } catch (std::runtime_error const&) { threw = true; }
+  try { writer.write(buf, {}, {1.0, std::nan(""), 0.0}); } catch (std::invalid_argument const&) { threw = true; }
   REQUIRE(threw);
   REQUIRE(buf.str().empty());
   if (threw) std::remove(path.c_str());

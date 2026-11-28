@@ -82,6 +82,16 @@ public:
   // Volume (3D) — meaningful for 3D shapes; 2D shapes return 0.
   [[nodiscard]] virtual value_type volume() const = 0;
 
+  // 2 for a planar shape (circle, ellipse, rectangle, polygon), 3 for a
+  // solid. A shape belongs in a domain of the same dimension.
+  [[nodiscard]] virtual int dimension() const noexcept = 0;
+
+  // The shape's size in its own dimension: area() in 2D, volume() in 3D.
+  // Use this instead of picking "whichever of area and volume is not 0".
+  [[nodiscard]] value_type measure() const {
+    return dimension() == 3 ? volume() : area();
+  }
+
   // Maximum half-extent on each axis (used to test if a shape can fit
   // entirely inside the RVE box for OnlyInside placement).
   [[nodiscard]] virtual std::array<value_type, 3> max_expansion() const = 0;

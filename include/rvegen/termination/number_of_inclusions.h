@@ -30,7 +30,7 @@ public:
   // Schema-driven ctor. Every termination is built with the domain box;
   // counting inclusions does not need it (shape_base::is_primary).
   number_of_inclusions(parameter_handler_t const& handler,
-                       std::array<T, 3> const& /*domain_box*/)
+                       domain<T> const& /*domain_box*/)
       : _target{handler.template get<std::size_t>("target")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {

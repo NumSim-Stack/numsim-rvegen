@@ -58,7 +58,7 @@ public:
   [[nodiscard]] shape_vector
   compute(input_vector& inputs,
           termination_base<T> const& termination,
-          std::array<value_type, 3> const& domain_box,
+          domain<value_type> const& domain_box,
           progress_options const& opts = {}) override {
     this->clear_report();
     shape_vector accepted;
@@ -169,8 +169,8 @@ private:
   // i.e. the shape is so large that its periodic copy collides with the
   // original. Such a candidate cannot be placed in this domain.
   static bool self_periodic_collides(bounding_box_base<value_type> const& bb,
-                                      std::array<value_type, 3> const& domain_box) noexcept {
-    const bool is_3d = domain_box[2] > value_type{0};
+                                      domain<value_type> const& domain_box) noexcept {
+    const bool is_3d = domain_box.is_3d();
     for (int dx = -1; dx <= 1; ++dx) {
       for (int dy = -1; dy <= 1; ++dy) {
         for (int dz = -1; dz <= 1; ++dz) {

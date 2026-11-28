@@ -26,6 +26,7 @@
 // See REFACTORING_PLAN.md for the phase-by-phase migration roadmap.
 
 // shapes
+#include "domain.h"
 #include "shapes/shape_base.h"
 #include "shapes/bounding_box_base.h"
 #include "shapes/rectangle_bounding.h"

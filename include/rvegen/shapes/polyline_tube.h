@@ -75,6 +75,7 @@ public:
   // at sharp corners (Steiner-tube-like correction), but accurate to
   // a few percent for smooth centerlines and good enough for the
   // generator's volume_fraction termination.
+  [[nodiscard]] int dimension() const noexcept override { return 3; }
   [[nodiscard]] T volume() const override {
     if (_centerline.size() < 2) return T{0};
     T length = T{0};

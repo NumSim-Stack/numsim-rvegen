@@ -113,7 +113,7 @@ public:
   void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
   [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
 
-  void validate(std::array<value_type, 3> const& domain_box) const override {
+  void validate(domain<value_type> const& domain_box) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "vtk_legacy_writer: output_path not set; cannot run() as post-process"};
@@ -123,7 +123,7 @@ public:
   }
 
   void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+           domain<value_type> const& domain_box) const override {
     validate(domain_box);
     std::ofstream out{_output_path};
     if (!out) {
@@ -138,7 +138,7 @@ public:
   // Stream-based emit, kept public for tests / embedders.
   void write(std::ostream& out,
              shape_vector const& shapes,
-             std::array<value_type, 3> const& domain_box) const {
+             domain<value_type> const& domain_box) const {
     const auto grid = _phases
         ? sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz,
                             *_phases, _phase_strict)
@@ -147,7 +147,7 @@ public:
 
     const auto dx = domain_box[0] / static_cast<value_type>(_nx);
     const auto dy = domain_box[1] / static_cast<value_type>(_ny);
-    const bool is_3d = domain_box[2] > value_type{0};
+    const bool is_3d = domain_box.is_3d();
     const auto dz = is_3d
         ? domain_box[2] / static_cast<value_type>(nz_eff)
         : value_type{1};

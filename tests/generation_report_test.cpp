@@ -254,7 +254,7 @@ public:
   }
   [[nodiscard]] shape_vector
   compute(input_vector& inputs, rvegen::termination_base<T> const&,
-          std::array<T, 3> const&, rvegen::progress_options const& = {}) override {
+          rvegen::domain<T> const&, rvegen::progress_options const& = {}) override {
     shape_vector out;
     for (std::size_t i = 0; i < _count; ++i) {
       auto s = inputs.at(0)->new_shape();
@@ -306,6 +306,7 @@ void test_unrecorded_and_stale_reports() {
   struct failing_input final : rvegen::shape_input_base<double> {
     std::size_t made{0};
     std::size_t fail_at{0};
+    [[nodiscard]] int dimension() const noexcept override { return 2; }
     [[nodiscard]] std::unique_ptr<rvegen::shape_base<double>> new_shape() override {
       if (fail_at != 0 && ++made >= fail_at) throw std::runtime_error{"input failed"};
       const double c = 0.1 + 0.07 * static_cast<double>(made % 11);

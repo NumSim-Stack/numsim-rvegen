@@ -28,7 +28,7 @@ namespace rvegen {
 //   0       — matrix (no inclusion)
 //   1..N    — index (1-based) of the inclusion the voxel falls inside
 //
-// 2D RVEs (domain_box[2] == 0) collapse to a single z-slice (nz = 1).
+// 2D RVEs collapse to a single z-slice (nz = 1).
 // For a 3D RVE written with nz = 1 the single slice is the mid-plane
 // z = Lz/2 (voxel centres, as along x and y).
 //
@@ -112,7 +112,7 @@ public:
   void set_phase_strict(bool strict) noexcept { _phase_strict = strict; }
   [[nodiscard]] bool phase_strict() const noexcept { return _phase_strict; }
 
-  void validate(std::array<value_type, 3> const& domain_box) const override {
+  void validate(domain<value_type> const& domain_box) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "voxel_writer: output_path not set; cannot run() as post-process"};
@@ -122,7 +122,7 @@ public:
   }
 
   void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+           domain<value_type> const& domain_box) const override {
     validate(domain_box);
     std::ofstream out{_output_path};
     if (!out) {
@@ -138,7 +138,7 @@ public:
   // to a stringstream without round-tripping through a file.
   void write(std::ostream& out,
              shape_vector const& shapes,
-             std::array<value_type, 3> const& domain_box) const {
+             domain<value_type> const& domain_box) const {
     const auto grid = sample(shapes, domain_box);
     const std::size_t nz_eff = effective_nz(domain_box, _nz);
 
@@ -194,7 +194,7 @@ public:
   // downstream tool that wants the data without parsing the file format.
   [[nodiscard]] std::vector<phase_id>
   sample(shape_vector const& shapes,
-         std::array<value_type, 3> const& domain_box) const {
+         domain<value_type> const& domain_box) const {
     if (_phases) {
       return sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz,
                                *_phases, _phase_strict);

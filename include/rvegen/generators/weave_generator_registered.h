@@ -69,7 +69,7 @@ inline void add_weave_optionals(parameter_controller_t& s) {
 
 template <typename T>
 [[nodiscard]] weave_generator<T>
-make_weave(parameter_handler_t const& h, std::array<T, 3> const& domain) {
+make_weave(parameter_handler_t const& h, rvegen::domain<T> const& domain) {
   weave_generator<T> w{domain,
                        h.template get<std::size_t>("n_warp_yarns"),
                        h.template get<std::size_t>("n_weft_yarns"),
@@ -99,7 +99,7 @@ public:
 
 protected:
   [[nodiscard]] typename deterministic_generator<T>::shape_vector
-  build(std::array<T, 3> const& domain_box) const override {
+  build(domain<T> const& domain_box) const override {
     return detail::make_weave<T>(_handler, domain_box).build(this->cancel());
   }
 
@@ -126,7 +126,7 @@ public:
 
 protected:
   [[nodiscard]] typename deterministic_generator<T>::shape_vector
-  build(std::array<T, 3> const& domain_box) const override {
+  build(domain<T> const& domain_box) const override {
     tow_weave_generator<T> g{
         detail::make_weave<T>(_handler, domain_box),
         _handler.template get<std::size_t>("n_fibres_per_tow"),

@@ -13,7 +13,7 @@
 namespace rvegen {
 
 // Termination registry — CtorArgs are (parameter_handler_t const&,
-// std::array<T,3> const& domain_box). Some terminations (volume_fraction)
+// domain<T> const& domain_box). Some terminations (volume_fraction)
 // need the domain to compute the target; others (number_of_inclusions)
 // ignore it but accept it for uniform construction.
 template <typename T = double>
@@ -21,7 +21,7 @@ using termination_registry_t = numsim_core::object_registry<
     termination_base<T>,
     parameter_controller_t,
     parameter_handler_t const,
-    std::array<T, 3> const>;
+    domain<T> const>;
 
 template <typename T = double>
 inline void register_number_of_inclusions() {

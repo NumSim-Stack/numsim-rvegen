@@ -12,7 +12,7 @@
 //     "nz": 128,            // required for 3D domains, ignored in 2D
 //     "nbins": 32 }
 //
-// Dispatches on the domain: a 2D domain (domain_box[2] == 0) uses
+// Dispatches on the domain dimension: a 2D domain uses
 // two_point_correlation_2d / radial_distribution_2d; a 3D domain uses
 // two_point_correlation_3d (S2 over an nx × ny × nz grid) and
 // radial_distribution_3d (spherical shells, density N/V). `nz` is ignored
@@ -83,12 +83,12 @@ public:
     return s;
   }
 
-  void validate(std::array<value_type, 3> const& domain_box) const override {
+  void validate(domain<value_type> const& domain_box) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "statistics_post_process: output_path not set"};
     }
-    if (domain_box[2] > value_type{0} && _nz == 0) {
+    if (domain_box.is_3d() && _nz == 0) {
       throw std::runtime_error{
           "statistics_post_process: 3D domain needs \"nz\" (voxel-grid "
           "resolution along z for S2). Set it explicitly; 3D S2 cost scales "
@@ -97,9 +97,9 @@ public:
   }
 
   void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+           domain<value_type> const& domain_box) const override {
     validate(domain_box);
-    const bool is_3d = domain_box[2] > value_type{0};
+    const bool is_3d = domain_box.is_3d();
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{

@@ -1,0 +1,17 @@
+{
+  "_comment": "A circle (2D) in a 3D box: rejected when the config is loaded.",
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 1,
+  "distributions": {
+    "x": {"type": "uniform_real", "a": 0.2, "b": 0.8},
+    "r": {"type": "uniform_real", "a": 0.03, "b": 0.05}
+  },
+  "shapes": [
+    {"type": "sphere_input", "pos_x_dist": "x", "pos_y_dist": "x",
+     "pos_z_dist": "x", "radius_dist": "r"},
+    {"type": "circle_input", "pos_x_dist": "x", "pos_y_dist": "x",
+     "radius_dist": "r"}
+  ],
+  "generator": {"type": "only_inside", "max_attempts": 1000},
+  "termination": {"type": "number_of_inclusions", "target": 3}
+}

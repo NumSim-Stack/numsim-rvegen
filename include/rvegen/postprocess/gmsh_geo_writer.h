@@ -274,7 +274,7 @@ public:
   void set_tessellation(bool v) noexcept { _tessellation = v; }
   [[nodiscard]] bool tessellation() const noexcept { return _tessellation; }
 
-  void validate(std::array<value_type, 3> const& domain_box) const override {
+  void validate(domain<value_type> const& domain_box) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "gmsh_geo_writer: output_path not set; cannot run() as post-process"};
@@ -287,7 +287,7 @@ public:
   }
 
   void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+           domain<value_type> const& domain_box) const override {
     validate(domain_box);
     // Build the whole script first: a rejected shape must not truncate
     // an existing file.
@@ -305,8 +305,8 @@ public:
   // output to a stringstream without round-tripping through a file.
   void write(std::ostream& out,
              shape_vector const& shapes,
-             std::array<value_type, 3> const& box) const {
-    const bool is_3d = box[2] > value_type{0};
+             domain<value_type> const& box) const {
+    const bool is_3d = box.is_3d();
 
     check_options(box);
 
@@ -402,17 +402,14 @@ private:
   // original units. Boxes with L == 1 are written unchanged.
   // Set at the start of every write() (the writer is not thread-safe for
   // concurrent write() calls on one object).
-  void set_length_scale(std::array<value_type, 3> const& box) const {
+  void set_length_scale(domain<value_type> const& box) const {
     _length_scale = std::max({box[0], box[1], box[2]});
   }
 
   // Checks that need the box and the options, but no shapes.
-  void check_options(std::array<value_type, 3> const& box) const {
-    for (auto const v : box) require_finite(v, "domain size");
-    if (!(box[0] > value_type{0}) || !(box[1] > value_type{0}) || box[2] < value_type{0}) {
-      throw std::runtime_error{
-          "gmsh_geo_writer: domain size must be > 0 in x and y and >= 0 in z"};
-    }
+  void check_options(domain<value_type> const& box) const {
+  // (The box extents are validated by the domain type.)
+    (void)box;
     for (auto const v : {_char_length_min, _char_length_max}) {
       require_finite(v, "mesh size");
     }
@@ -478,7 +475,7 @@ private:
   // shape that is already inside is a no-op in gmsh); under-estimating
   // would leave geometry outside the RVE.
   static bool needs_clip(shape_base<value_type> const& s,
-                         std::array<value_type, 3> const& box) {
+                         domain<value_type> const& box) {
     return !aabb_inside(extent_of(s), box[0], box[1], box[2]);
   }
 
@@ -541,7 +538,7 @@ private:
   template <typename Topo>
   static void require_on_wall(std::vector<std::size_t> const& verts,
                               Topo const& topo,
-                              std::array<value_type, 3> const& box,
+                              domain<value_type> const& box,
                               char const* what) {
     for (std::size_t axis = 0; axis < 3; ++axis) {
       for (value_type wall : {value_type{0}, box[axis]}) {
@@ -561,7 +558,7 @@ private:
   }
 
   void write_tessellation(std::ostream& out, shape_vector const& shapes,
-                          std::array<value_type, 3> const& box,
+                          domain<value_type> const& box,
                           bool is_3d) const {
     for (std::size_t i = 0; i < shapes.size(); ++i) {
       const bool ok =
@@ -764,7 +761,7 @@ private:
 
   // Distance from `p` to the domain box (0 when inside), over `dim` axes.
   static value_type distance_to_box(std::array<value_type, 3> const& p,
-                                    std::array<value_type, 3> const& box,
+                                    domain<value_type> const& box,
                                     std::size_t dim) {
     value_type d2{0};
     for (std::size_t k = 0; k < dim; ++k) {
@@ -784,7 +781,7 @@ private:
   // images are treated identically. Everything else keeps its radius.
   value_type emitted_radius(std::array<value_type, 3> const& centre,
                             value_type r,
-                            std::array<value_type, 3> const& box) const {
+                            domain<value_type> const& box) const {
     if (!_periodic) return r;
     const value_type gap = value_type{1e-5} * _length_scale;
     if (!(r > value_type{10} * gap)) return r;
@@ -797,8 +794,8 @@ private:
     return out;
   }
 
-  static std::size_t dim_of(std::array<value_type, 3> const& box) {
-    return box[2] > value_type{0} ? 3 : 2;
+  static std::size_t dim_of(domain<value_type> const& box) {
+    return static_cast<std::size_t>(box.dimension());
   }
 
   // True when the shape provably has no volume inside the domain: it is
@@ -806,7 +803,7 @@ private:
   // zero-measure contacts). Circle / sphere: centre-to-box distance >= r;
   // every shape: the extent box lies outside / only touches the domain.
   static bool misses_domain(shape_base<value_type> const& s,
-                            std::array<value_type, 3> const& box) {
+                            domain<value_type> const& box) {
     const std::size_t dim = dim_of(box);
     if (auto const* c = dynamic_cast<circle<value_type> const*>(&s)) {
       if (distance_to_box(c->get_middle_point(), box, dim) >= c->radius) return true;
@@ -827,7 +824,7 @@ private:
   // its centre), circle / sphere penetration depth, rectangle / box extent
   // overlap. Anything else is not claimed to overlap.
   static bool clearly_overlaps(shape_base<value_type> const& s,
-                               std::array<value_type, 3> const& box) {
+                               domain<value_type> const& box) {
     const std::size_t dim = dim_of(box);
     const value_type margin =
         value_type{1e-4} * std::max({box[0], box[1], box[2]});
@@ -897,7 +894,7 @@ private:
 
   std::vector<inclusion_ref> write_entities_2d(
       std::ostream& out, shape_vector const& shapes,
-      std::array<value_type, 3> const& domain_box) const {
+      domain<value_type> const& domain_box) const {
     out << "Rectangle(1) = {0, 0, 0, "
         << num(domain_box[0]) << ", " << num(domain_box[1]) << ", 0};\n\n";
 
@@ -932,7 +929,7 @@ private:
 
   std::vector<inclusion_ref> write_entities_3d(
       std::ostream& out, shape_vector const& shapes,
-      std::array<value_type, 3> const& domain_box) const {
+      domain<value_type> const& domain_box) const {
     out << "Box(1) = {0, 0, 0, "
         << num(domain_box[0]) << ", " << num(domain_box[1]) << ", " << num(domain_box[2])
         << "};\n\n";
@@ -976,7 +973,7 @@ private:
   // and their cut curves keep matching seams. z (gmsh's default) is kept
   // unless another axis is clearly better.
   static int pole_axis(sphere<value_type> const& s,
-                       std::array<value_type, 3> const& box) {
+                       domain<value_type> const& box) {
     std::array<value_type, 3> off{};  // signed offset to nearest lattice plane
     std::array<bool, 3> cut{};
     const value_type r = s.radius;
@@ -1010,7 +1007,7 @@ private:
 
   void write_pole_rotation(std::ostream& out, sphere<value_type> const& s,
                                   std::size_t id,
-                                  std::array<value_type, 3> const& box) const {
+                                  domain<value_type> const& box) const {
     const int axis = pole_axis(s, box);
     if (axis == 2) return;
     // z -> x : rotate about y; z -> -y : rotate about x.
@@ -1095,7 +1092,7 @@ private:
   }
 
   static std::vector<std::array<value_type, 2>>
-  clipped_vertices(convex_polygon<value_type> const& p, std::array<value_type, 3> const& box) {
+  clipped_vertices(convex_polygon<value_type> const& p, domain<value_type> const& box) {
     std::vector<std::array<value_type, 2>> poly;
     for (auto const& v : p.vertices()) poly.push_back({v[0], v[1]});
     return clip_polygon_to_rect(std::move(poly), box[0], box[1]);
@@ -1134,7 +1131,7 @@ private:
   // could no longer be paired.
   std::vector<std::size_t> priorities(
       shape_vector const& shapes, std::vector<extent_box> const& extents,
-      std::array<value_type, 3> const& box) const {
+      domain<value_type> const& box) const {
     std::vector<std::size_t> prio(shapes.size());
     for (std::size_t i = 0; i < shapes.size(); ++i) prio[i] = i;
     if (!_periodic) return prio;
@@ -1172,7 +1169,7 @@ private:
   std::vector<inclusion_ref> write_clips(
       std::ostream& out, shape_vector const& shapes,
       std::vector<std::size_t> const& ids,
-      std::array<value_type, 3> const& domain_box, char const* kind) const {
+      domain<value_type> const& domain_box, char const* kind) const {
     std::vector<inclusion_ref> refs(shapes.size());
     bool header_done = false;
     std::vector<extent_box> extents;
@@ -1292,7 +1289,7 @@ private:
   // bounding box (gmsh tutorial t18). Emitted after fragmenting so the
   // constraints reference the final, split boundary entities.
   void write_periodic(std::ostream& out,
-                             std::array<value_type, 3> const& dom,
+                             domain<value_type> const& dom,
                              bool is_3d) const {
     const char* ent = is_3d ? "Surface" : "Curve";
     const int n_axes = is_3d ? 3 : 2;
