@@ -79,15 +79,6 @@ template <typename V>
   return d2;
 }
 
-template <typename T>
-[[nodiscard]] constexpr bounds3<T> padded(bounds3<T> b, T pad) noexcept {
-  for (int k = 0; k < 3; ++k) {
-    b.lo[k] -= pad;
-    b.hi[k] += pad;
-  }
-  return b;
-}
-
 // The rectangle x ellipse test of collision_details_extra.h for a plain
 // GTE ellipse (the inflated one).
 template <typename T>
@@ -467,40 +458,27 @@ template <typename T>
   return collision_details(m, t, gap);
 }
 
-// Triangle-triangle distance (GTE) over the triangles of both meshes that
-// lie within `gap` of the other mesh's bounding box; a pair is measured
-// only when its boxes are within `gap`. Containment (one mesh inside the
-// other, surfaces farther apart than gap) is caught by the vertex tests.
+// Too close when a component of one lies inside the other (the surfaces
+// may then be farther apart than the gap) or when two triangles are within
+// the gap: triangle-triangle distance (GTE) over the pairs the two triangle
+// trees bring within `gap` of each other.
 template <typename T>
 [[nodiscard]] bool collision_details(mesh_inclusion<T> const& a,
                                      mesh_inclusion<T> const& b, T gap) {
-  const auto ba = detail::mesh_bounds(a);
-  const auto bb = detail::mesh_bounds(b);
-  if (!detail::overlap(detail::padded(ba, gap), bb)) return false;
-  const auto ta = detail::mesh_triangles_in(a, detail::padded(bb, gap));
-  const auto tb = detail::mesh_triangles_in(b, detail::padded(ba, gap));
-  constexpr std::size_t samples = 2;
-  auto vertex_inside = [&](std::vector<detail::tri_box<T>> const& tris,
-                           mesh_inclusion<T> const& other) {
-    if (tris.empty()) return false;
-    const std::size_t step = std::max<std::size_t>(1, tris.size() / samples);
-    for (std::size_t i = 0; i < tris.size(); i += step) {
-      auto const& v = tris[i].tri.v[0];
-      if (other.is_inside({v[0], v[1], v[2]})) return true;
-    }
+  if (!detail::overlap(detail::padded(detail::mesh_bounds(a), gap),
+                       detail::mesh_bounds(b))) {
     return false;
-  };
-  if (vertex_inside(tb, a) || vertex_inside(ta, b)) return true;
-  gte::DCPQuery<T, gte::Triangle3<T>, gte::Triangle3<T>> query;
-  for (auto const& x : ta) {
-    const auto xbox = detail::padded(x.box, gap);
-    for (auto const& y : tb) {
-      if (!detail::overlap(xbox, y.box)) continue;
-      if (query(x.tri, y.tri).distance <= gap) return true;
-    }
   }
-  return a.is_inside(detail::mesh_first_vertex(b)) ||
-         b.is_inside(detail::mesh_first_vertex(a));
+  if (detail::mesh_component_inside(b, a) ||
+      detail::mesh_component_inside(a, b)) {
+    return true;
+  }
+  gte::DCPQuery<T, gte::Triangle3<T>, gte::Triangle3<T>> query;
+  return detail::any_mesh_triangle_pair(
+      a, b, gap,
+      [&](gte::Triangle3<T> const& x, gte::Triangle3<T> const& y) {
+        return query(x, y).distance <= gap;
+      });
 }
 
 } // namespace rvegen

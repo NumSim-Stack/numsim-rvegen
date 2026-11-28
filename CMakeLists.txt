@@ -375,6 +375,12 @@ add_executable(rvegen_termination_tally_test tests/termination_tally_test.cpp)
 target_link_libraries(rvegen_termination_tally_test PRIVATE rvegen_lib)
 add_test(NAME termination_tally_test COMMAND rvegen_termination_tally_test)
 
+# Triangle tree of mesh inclusions (#126): pair tests, point queries and
+# rotated bounds against references that visit every triangle.
+add_executable(rvegen_mesh_acceleration_test tests/mesh_acceleration_test.cpp)
+target_link_libraries(rvegen_mesh_acceleration_test PRIVATE rvegen_lib)
+add_test(NAME mesh_acceleration_test COMMAND rvegen_mesh_acceleration_test)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
