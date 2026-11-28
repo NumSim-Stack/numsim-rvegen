@@ -210,7 +210,7 @@ template <typename T>
       reach = std::max(reach, std::abs(w[k]));
     }
   }
-  return padded(b, reach * T{1e-9});
+  return padded(b, reach * mesh_rounding_margin<T>);
 }
 
 // Whether `f(x, y)` holds for a placed triangle x of `a` and y of `b`

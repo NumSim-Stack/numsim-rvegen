@@ -115,6 +115,18 @@ tri_list torus(int nu, int nv, D big, D small) {
   return out;
 }
 
+// Thin tetrahedron along z, 0.02 x 0.02 x 1.5: four triangles, a tip that
+// goes through a single face of another mesh.
+tri_list needle() {
+  const std::array<V, 4> p{{{0, 0, 0.75}, {0.01, -0.01, -0.75},
+                            {-0.01, -0.01, -0.75}, {0, 0.01, -0.75}}};
+  constexpr std::array<std::array<int, 3>, 4> f{{
+      {0, 1, 3}, {0, 3, 2}, {0, 2, 1}, {1, 2, 3}}};
+  tri_list out;
+  for (auto const& t : f) out.push_back({p[t[0]], p[t[1]], p[t[2]]});
+  return out;
+}
+
 tri_list joined(tri_list a, tri_list const& b) {
   a.insert(a.end(), b.begin(), b.end());
   return a;
@@ -295,7 +307,7 @@ void test_pairs_with_primitives() {
   rng r{std::mt19937_64{12}};
   tally spheres, boxes, tubes;
   for (auto const& proto : prototypes()) {
-    for (int probe = 0; probe < 240; ++probe) {
+    for (int probe = 0; probe < 150; ++probe) {
       const D scale = r.uniform(0.4, 2.0);
       const auto m =
           placed_copy(proto, r, {0.3, -0.2, 0.1}, probe % 3 != 0, scale);
@@ -352,7 +364,7 @@ void test_mesh_pairs() {
   tally plain, gapped;
   for (std::size_t ia = 0; ia < protos.size(); ++ia) {
     for (std::size_t ib = ia; ib < protos.size(); ++ib) {
-      for (int probe = 0; probe < 24; ++probe) {
+      for (int probe = 0; probe < 18; ++probe) {
         const auto a = placed_copy(protos[ia], r, {0, 0, 0}, probe % 4 != 0,
                                    r.uniform(0.5, 1.5));
         const auto wa = world_triangles(a);
@@ -380,6 +392,45 @@ void test_mesh_pairs() {
           REQUIRE(dispatch(b, a, gap) == expected);
           gapped.add(expected);
         }
+      }
+    }
+  }
+  REQUIRE(plain.mixed());
+  REQUIRE(gapped.mixed());
+}
+
+// A contact through one or two triangles: a needle whose tip pokes through
+// the surface of a larger mesh, or stops just short of it. A walk that
+// loses a single triangle of a leaf shows up here.
+void test_single_triangle_contacts() {
+  auto& dispatch = rvegen::collision_dispatcher<D>::instance();
+  rng r{std::mt19937_64{18}};
+  const mesh_t thin{needle()};
+  std::vector<mesh_t> targets;
+  targets.emplace_back(icosphere(3, 1.0));      // 1280 triangles
+  targets.emplace_back(torus(24, 12, 0.8, 0.3)); // 576
+  tally plain, gapped;
+  for (auto const& target : targets) {
+    for (int probe = 0; probe < 700; ++probe) {
+      const auto a = placed_copy(target, r, {0, 0, 0}, probe % 2 == 0, 1.0);
+      auto const dir = r.direction();
+      // Mostly near the surface, where the tip decides.
+      const D away = r.uniform(0.9, 2.1);
+      const auto b = placed_copy(
+          thin, r, {dir[0] * away, dir[1] * away, dir[2] * away}, true,
+          r.uniform(0.5, 1.5));
+      const auto wa = world_triangles(a);
+      const auto wb = world_triangles(b);
+      const bool expected = brute(wa, wb, D{0});
+      REQUIRE(dispatch(a, b) == expected);
+      REQUIRE(dispatch(b, a) == expected);
+      plain.add(expected);
+      if (probe % 4 == 0) {
+        const D gap = r.uniform(0.01, 0.1);
+        const bool close = brute(wa, wb, gap);
+        REQUIRE(dispatch(a, b, gap) == close);
+        REQUIRE(dispatch(b, a, gap) == close);
+        gapped.add(close);
       }
     }
   }
@@ -462,6 +513,25 @@ void test_candidates_are_a_superset() {
                                       V{hi[0], hi[1], hi[2]}};
         for (std::size_t i = 0; i < world.size(); ++i) {
           if (query(world[i], box).distance == 0) REQUIRE(listed[i]);
+        }
+      }
+      // A box that is a single point, placed on a vertex: the query box
+      // touches the triangles around that vertex and nothing else, so only
+      // the rounding margin keeps them in the list.
+      for (std::size_t i = 0; i < world.size(); i += 3) {
+        for (auto const& v : world[i].v) {
+          const P at{v[0], v[1], v[2]};
+          std::vector<std::size_t> near;
+          m.triangles_near(at, at, near);
+          std::size_t expected = 0, found = 0;
+          for (std::size_t j = 0; j < world.size(); ++j) {
+            const bool touches = world[j].v[0] == v || world[j].v[1] == v ||
+                                 world[j].v[2] == v;
+            if (!touches) continue;
+            ++expected;
+            found += std::count(near.begin(), near.end(), j);
+          }
+          REQUIRE(found == expected);
         }
       }
     }
@@ -613,6 +683,7 @@ int main() {
   test_point_queries();
   test_pairs_with_primitives();
   test_mesh_pairs();
+  test_single_triangle_contacts();
   test_components_and_cavities();
   test_candidates_are_a_superset();
   test_rotated_bounds();

@@ -868,6 +868,7 @@ public:
           "(orthonormal, det +1)"};
     }
     _rotation = r;
+    _rotation_error = err;
     _identity_rotation = (r == gte::Matrix3x3<T>::Identity());
     update_rotated_bounds();
   }
@@ -1045,13 +1046,15 @@ public:
         reach = std::max(reach, std::abs(b[k]));
       }
     }
-    // to_local and to_world each round a few times; the margin is far
-    // above that and far below anything a caller could tell apart.
+    // to_local and to_world each round a few times, and to_local uses the
+    // transpose of the rotation as its inverse, which is off by as much as
+    // the matrix is from orthonormal (set_rotation accepts 1e-6). The
+    // margin covers both.
     T margin = reach;
     for (int k = 0; k < 3; ++k) {
       margin = std::max({margin, std::abs(_base_min[k]), std::abs(_base_max[k])});
     }
-    margin *= T{1e-9};
+    margin *= detail::mesh_rounding_margin<T> + T{8} * _rotation_error;
     for (int k = 0; k < 3; ++k) {
       blo[k] -= margin;
       bhi[k] += margin;
@@ -1192,7 +1195,7 @@ private:
         // expression is evaluated for the vertices that can be extreme.
         T half = T{0};
         for (int k = 0; k < 3; ++k) half = std::max(half, _base_max[k] - c[k]);
-        const T slack = T{1e-9} * half;
+        const T slack = detail::mesh_rounding_margin<T> * half;
         for (int k = 0; k < 3; ++k) {
           for (int side = 0; side < 2; ++side) {
             const T sign = side == 0 ? T{1} : T{-1};
@@ -1252,6 +1255,7 @@ private:
   std::array<T, 3> _rel_min{};   // placed AABB relative to middle point
   std::array<T, 3> _rel_max{};
   gte::Matrix3x3<T> _rotation{gte::Matrix3x3<T>::Identity()};
+  T _rotation_error{0};   // max |RᵀR − I| of the rotation as given
   bool _identity_rotation{true};
   T _scale{1};
   T _volume{0};

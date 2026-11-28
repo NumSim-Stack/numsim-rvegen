@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include <Mathematics/AABBBVTreeOfTriangles.h>
@@ -38,6 +39,13 @@
 #include <Mathematics/Vector3.h>
 
 namespace rvegen::detail {
+
+// Relative margin by which the tree queries widen a box or lower a bound,
+// to cover the rounding of the transforms on the way: far above a few ulp
+// (also for float), far below anything a caller could tell apart.
+template <typename T>
+inline constexpr T mesh_rounding_margin =
+    std::max(static_cast<T>(1e-9), 64 * std::numeric_limits<T>::epsilon());
 
 template <typename T>
 class mesh_triangle_tree {
@@ -49,6 +57,10 @@ public:
 
   explicit mesh_triangle_tree(std::vector<gte::Triangle3<T>> const& tris) {
     if (tris.empty()) return;
+    if (tris.size() > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::length_error{
+          "mesh_inclusion: more than 2^32 - 1 triangles in one mesh"};
+    }
     std::vector<gte::Vector3<T>> vertices;
     std::vector<std::array<std::size_t, 3>> triangles;
     vertices.reserve(3 * tris.size());
