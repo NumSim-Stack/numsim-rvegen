@@ -18,9 +18,9 @@
 //   * Precedence, most specific first: by_index > by_shape_type >
 //     all_inclusions.
 //   * by_index keys address UNIQUE INCLUSIONS in generation order: "N",
-//     "N-M" (inclusive) or "N-" (to the end). When a domain box is given
-//     to apply(), periodic wrap copies (centre outside the box) are not
-//     counted: a wrap takes the index of the primary preceding it, so
+//     "N-M" (inclusive) or "N-" (to the end). Periodic copies
+//     (shape_base::is_primary() == false) are not counted: a copy takes
+//     the index of its primary, found through the shared inclusion id, so
 //     both get the same phase. Ranges must not overlap (the JSON object
 //     key order is not file order, so overlaps would be ambiguous).
 //   * Shape-type names: circle, ellipse, rectangle, sphere, box,

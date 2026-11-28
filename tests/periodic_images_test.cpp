@@ -254,6 +254,42 @@ void test_periodic_generator_links() {
   REQUIRE(std::abs(double(filled) / double(n * n * n) - vol) < 0.01 * vol + 1e-3);
 }
 
+// A centre distribution that lies entirely outside the box, several box
+// lengths away: the periodic generator must still fill THE BOX (found in
+// review: the copies reach one lattice step, so such shapes used to leave
+// nothing inside).
+void test_periodic_generator_far_centres() {
+  auto make = [](double lo, double hi) {
+    return json{
+        {"domain_box", {1.0, 1.0, 0.0}}, {"seed", 6},
+        {"distributions", {{"x", {{"type", "uniform_real"}, {"a", lo}, {"b", hi}}},
+                           {"r", {{"type", "uniform_real"}, {"a", 0.05}, {"b", 0.1}}}}},
+        {"shapes", json::array({json{{"type", "circle_input"}, {"pos_x_dist", "x"},
+                                     {"pos_y_dist", "x"}, {"radius_dist", "r"}}})},
+        {"generator", {{"type", "periodic"}, {"max_attempts", 100000}}},
+        {"termination", {{"type", "volume_fraction"}, {"target_fraction", 0.15}}}};
+  };
+  for (auto const& range : std::vector<std::array<double, 2>>{
+           {-5.0, -3.0}, {3.25, 7.5}, {-0.5, 1.5}, {0.0, 1.0}}) {
+    const auto r = rvegen::generate(make(range[0], range[1]));
+    double area = 0.0;
+    for (auto const& s : r.shapes) {
+      if (!s->is_primary()) continue;
+      area += s->area();
+      const auto c = s->get_middle_point();
+      REQUIRE(c[0] >= 0.0 && c[0] < 1.0 && c[1] >= 0.0 && c[1] < 1.0);
+    }
+    REQUIRE(area >= 0.15);
+    REQUIRE(std::abs(rvegen::current_volume_fraction<double>(r.shapes, r.domain_box) - area) < 1e-14);
+    // What is actually inside the box is that much material.
+    const std::size_t n = 400;
+    std::size_t filled = 0;
+    for (auto g : rvegen::sample_voxel_grid(r.shapes, r.domain_box, n, n, 1))
+      filled += g != 0 ? 1 : 0;
+    REQUIRE(std::abs(double(filled) / double(n * n) - area) < 3e-3);
+  }
+}
+
 // Periodic Voronoi: every grain once, and the grains fill the box exactly.
 void test_voronoi_pieces() {
   for (int dim : {2, 3}) {
@@ -290,6 +326,7 @@ int main() {
   test_distinct_ids_equal_primaries();
   test_counting_rule();
   test_periodic_generator_links();
+  test_periodic_generator_far_centres();
   test_voronoi_pieces();
   if (failures) { std::cerr << failures << " failure(s)\n"; return EXIT_FAILURE; }
   std::cout << "periodic_images_test OK\n";

@@ -10,6 +10,7 @@
 #include "../intersection/collision_dispatcher.h"
 #include "../shapes/periodic_wraps.h"
 #include "../types.h"
+#include "../util/wrap_to_box.h"
 #include "rve_generator_base.h"
 
 namespace rvegen {
@@ -79,6 +80,22 @@ public:
       input_idx = (input_idx + 1) % inputs.size();
 
       auto primary = input.new_shape();
+      // The inclusion is the same wherever its centre is drawn modulo the
+      // box, so store it at its image inside [0, L). The copies below
+      // reach one lattice step: without this a centre drawn more than a
+      // box length outside would leave no piece inside the box at all.
+      // (A centre already inside comes back unchanged, bit for bit.)
+      {
+        auto c = primary->get_middle_point();
+        bool moved = false;
+        for (std::size_t k = 0; k < 3; ++k) {
+          if (!(domain_box[k] > value_type{0})) continue;   // 2D: no z period
+          const auto w = wrap_to_box(c[k], domain_box[k]);
+          moved = moved || w != c[k];
+          c[k] = w;
+        }
+        if (moved) primary->set_middle_point(c);
+      }
       primary->make_bounding_box();
       auto const* prim_bb = primary->bounding_box();
       if (prim_bb == nullptr) continue;

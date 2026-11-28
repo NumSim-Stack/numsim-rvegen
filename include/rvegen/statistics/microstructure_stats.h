@@ -205,6 +205,7 @@ radial_distribution_2d(
     std::size_t nbins = 32) {
   // Collect one centre per inclusion (no periodic copies).
   std::vector<std::array<double, 2>> centres;
+  if (!(domain_box[0] > T{0}) || !(domain_box[1] > T{0})) return {};
   centres.reserve(accepted.size());
   for (auto const& shape : accepted) {
     if (!shape) continue;
@@ -278,7 +279,9 @@ radial_distribution_3d(
   centres.reserve(accepted.size());
   for (auto const& shape : accepted) {
     if (!shape) continue;
-    if (!(domain_box[2] > T{0})) break;   // not a 3D box: no centres
+    if (!(domain_box[0] > T{0}) || !(domain_box[1] > T{0}) ||
+        !(domain_box[2] > T{0}))
+      break;   // not a 3D box: no centres
     if (!is_counted_in_rve(*shape, domain_box)) continue;
     const auto c = shape->get_middle_point();
     centres.push_back({double(wrap_to_box(c[0], domain_box[0])),
