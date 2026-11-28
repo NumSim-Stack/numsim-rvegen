@@ -1,0 +1,9 @@
+{
+  "_comment": "Periodic 2D Voronoi polycrystal: grains that cross a face of the box continue on the opposite face, so the cell tiles the plane. Compare the left and right edge of the picture.",
+  "domain_box": [1.0, 1.0],
+  "generator": {"type": "voronoi_2d", "n_seeds": 40, "seed": 5, "periodic": true},
+  "postprocess": [
+    {"type": "svg", "canvas_width": 600.0, "output_path": "voronoi_2d_periodic.svg"},
+    {"type": "voxel", "nx": 128, "ny": 128, "nz": 1, "output_path": "voronoi_2d_periodic.vox"}
+  ]
+}

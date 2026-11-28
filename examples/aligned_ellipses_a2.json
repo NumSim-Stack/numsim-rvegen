@@ -1,0 +1,20 @@
+{
+  "_comment": "Ellipses whose long axes follow a prescribed second-order orientation tensor: von_mises_a2 takes the tensor components (here a11 = 0.85, strongly aligned with x) and fits the concentration of the angle distribution to them.",
+  "domain_box": [1.0, 1.0],
+  "seed": 8,
+  "distributions": {
+    "any": {"type": "uniform_real", "a": 0.0, "b": 1.0},
+    "radius_a": {"type": "uniform_real", "a": 0.05, "b": 0.08},
+    "radius_b": {"type": "uniform_real", "a": 0.012, "b": 0.02},
+    "angle": {"type": "von_mises_a2", "a11": 0.85, "a22": 0.15, "a12": 0.0}
+  },
+  "shapes": [
+    {"type": "ellipse_input", "pos_x_dist": "any", "pos_y_dist": "any",
+     "radius_a_dist": "radius_a", "radius_b_dist": "radius_b", "rotation_dist": "angle"}
+  ],
+  "generator": {"type": "periodic", "max_attempts": 200000},
+  "termination": {"type": "volume_fraction", "target_fraction": 0.25},
+  "postprocess": [
+    {"type": "svg", "canvas_width": 800.0, "output_path": "aligned_ellipses_a2.svg"}
+  ]
+}

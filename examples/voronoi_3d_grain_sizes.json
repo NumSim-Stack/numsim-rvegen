@@ -1,0 +1,14 @@
+{
+  "_comment": "Periodic 3D polycrystal with a prescribed grain-size distribution: the equivalent grain diameters follow a lognormal distribution with the given mean and spread (a weighted tessellation fitted to the drawn sizes), instead of whatever a plain Voronoi tessellation of random seeds happens to give.",
+  "domain_box": [1.0, 1.0, 1.0],
+  "generator": {
+    "type": "voronoi_3d",
+    "seed": 4,
+    "periodic": true,
+    "grain_diameter_mean": 0.3,
+    "grain_diameter_sigma": 0.35
+  },
+  "postprocess": [
+    {"type": "voxel", "nx": 48, "ny": 48, "nz": 48, "output_path": "voronoi_3d_grain_sizes.vox"}
+  ]
+}

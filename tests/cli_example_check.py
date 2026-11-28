@@ -92,6 +92,10 @@ class IdMode:
         gen = config.get("generator", {})
         self.tessellation = gen.get("type") in TESSELLATION_GENERATORS
         self.n_seeds = gen.get("n_seeds") if self.tessellation else None
+        # A periodic tessellation also returns the copies of the grains
+        # that cross a face; they carry the id of their grain, so the
+        # number of shapes is larger than the number of grains.
+        self.periodic = bool(self.tessellation and gen.get("periodic"))
         self.phases = None
         if "phases" in config or "phase_assignment" in config:
             phases = config.get("phases")
@@ -121,6 +125,8 @@ class IdMode:
         return (f"phase ids {sorted(distinct)} of 0..{nph}", len(distinct))
 
     def _check_tessellation(self, name, vals):
+        if self.periodic:
+            return self._check_periodic_tessellation(name, vals)
         n = self.nshapes
         if self.n_seeds is not None:
             seeds = int(self.n_seeds)
@@ -135,6 +141,23 @@ class IdMode:
         if present < 0.9 * n:
             fail(f"{name}: only {present} of {n} grain ids appear in the grid")
         return ("tessellation, no matrix voxel", present)
+
+    def _check_periodic_tessellation(self, name, vals):
+        n = self.nshapes
+        if min(vals) < 1 or max(vals) > n:
+            fail(f"{name}: grain ids outside 1..{n} "
+                 f"(found {min(vals)}..{max(vals)}); a tessellation has no matrix")
+        present = len(set(vals))
+        # Every shape is a grain or a copy of one, and a grain has at most
+        # 2^d - 1 copies; fewer distinct ids than that means grains merged.
+        if present > n or present < n / 8:
+            fail(f"{name}: {present} grain ids for {n} shapes of a periodic "
+                 "tessellation")
+        if self.n_seeds is not None:
+            seeds = int(self.n_seeds)
+            if present > seeds or present < 0.9 * seeds:
+                fail(f"{name}: {present} grains for n_seeds = {seeds}")
+        return ("periodic tessellation, no matrix voxel", present)
 
     def _check_shapes(self, name, vals):
         inclusion, present = check_ids(name, vals, self.nshapes)
@@ -451,6 +474,10 @@ def measured_fraction(rvegen, config, config_dir, work, domain):
     three_d = domain[2] > 0
     n = 96 if three_d else 512
     derived = dict(config)
+    # With phases declared the grid would hold phase ids, the matrix phase
+    # included; without them it holds 0 for matrix and a shape id otherwise.
+    derived.pop("phases", None)
+    derived.pop("phase_assignment", None)
     derived["postprocess"] = [{"type": "voxel", "nx": n, "ny": n, "nz": n if three_d else 1,
                                "output_path": "fill_check.vox"}]
     path = work / "fill_check.json"

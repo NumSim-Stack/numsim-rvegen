@@ -1,0 +1,20 @@
+{
+  "_comment": "Copies of one triangle mesh (data/octahedron.stl) with a random orientation and a random size each: orientation 'uniform' draws isotropic rotations, scale_dist the scale factor. All copies share the triangles of the file.",
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 2,
+  "distributions": {
+    "inner": {"type": "uniform_real", "a": 0.12, "b": 0.88},
+    "unit": {"type": "uniform_real", "a": 0.0, "b": 1.0},
+    "scale": {"type": "uniform_real", "a": 0.6, "b": 1.6}
+  },
+  "shapes": [
+    {"type": "mesh_inclusion_input", "mesh_path": "data/octahedron.stl",
+     "position_x_dist": "inner", "position_y_dist": "inner", "position_z_dist": "inner",
+     "orientation": "uniform", "orientation_dist": "unit", "scale_dist": "scale"}
+  ],
+  "generator": {"type": "only_inside", "max_attempts": 200000},
+  "termination": {"type": "number_of_inclusions", "target": 40},
+  "postprocess": [
+    {"type": "three_js", "output_path": "mesh_inclusions_rotated.html"}
+  ]
+}
