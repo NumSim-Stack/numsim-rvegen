@@ -215,6 +215,28 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --test-dir build --output-on-failure --no-tests=error --parallel 2
 
+      # Whole-run benchmarks (docs/performance.md). Times of a shared runner
+      # gate nothing; how the time grows with the size does: the step fails
+      # if a family grows faster than its work to the power 1.7 (a pass over
+      # everything per inclusion gives 2).
+      - name: Benchmarks (scaling check)
+        if: matrix.full
+        working-directory: numsim-rvegen/rvegen
+        run: |
+          python3 scripts/run_benchmarks.py --rvegen build/rvegen \
+            --out bench-results --repeat 3 --check-scaling
+          cat bench-results/results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the benchmark table
+        if: ${{ matrix.full && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: |
+            numsim-rvegen/rvegen/bench-results/results.md
+            numsim-rvegen/rvegen/bench-results/results.json
+          if-no-files-found: ignore
+
       # Optional Voro++ backend for voronoi_generator_3d (#70). A second
       # out-of-tree configure with RVEGEN_WITH_VORO_PP=ON (fetches the
       # pinned Voro++ commit) so the default build above stays
