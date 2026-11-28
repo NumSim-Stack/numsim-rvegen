@@ -61,6 +61,8 @@
 #include <random>
 #include <vector>
 
+#include "../distributions/portable_math.h"
+#include "../distributions/portable_random.h"
 #include "rve_generator_base.h"
 #include "../util/wrap_to_box.h"
 #include "voronoi_generator_3d.h"
@@ -84,7 +86,7 @@ struct grain_size_result {
 // Equivalent sphere diameter of volume v.
 template <typename T>
 [[nodiscard]] inline T equivalent_diameter(T v) {
-  return std::cbrt(T{6} * v / std::numbers::pi_v<T>);
+  return portable_cbrt(T{6} * v / std::numbers::pi_v<T>);
 }
 
 namespace detail {
@@ -148,8 +150,14 @@ template <typename T = double, typename Engine>
   }
   constexpr T pi = std::numbers::pi_v<T>;
   const T V = Lx * Ly * Lz;
-  const T mu = std::log(mean_diameter) - sigma_ln * sigma_ln / T{2};
-  const T mean_v = pi / T{6} * std::exp(T{3} * mu + T{4.5} * sigma_ln * sigma_ln);
+  // Platform-independent log / exp / cbrt and samplers (portable_math.h,
+  // portable_random.h): the target sizes and the start seeds depend on the
+  // engine's bit stream only, not on the standard or the math library.
+  using portable_detail::rounded;
+  const T half_sigma2 = rounded(sigma_ln * sigma_ln) / T{2};
+  const T mu = portable_log(mean_diameter) - half_sigma2;
+  const T mean_v = pi / T{6} *
+      portable_exp(rounded(T{3} * mu) + rounded(T{9} * half_sigma2));
   const T implied = V / mean_v;   // grains of the requested mean size in the box
   // A mean diameter far below the box (or an overflowing sigma) makes the
   // count infinite or NaN; it must not reach the integer conversion below.
@@ -184,15 +192,15 @@ template <typename T = double, typename Engine>
   }
 
   grain_size_result<T> res;
-  // TODO(#130): std::lognormal_distribution / uniform_real_distribution give
-  // different streams per standard library; switch to the portable samplers.
-  std::lognormal_distribution<T> dist{mu, sigma_ln};
-  std::uniform_real_distribution<T> u{T{0}, T{1}};
+  // Lognormal diameter: d = exp(mu + sigma_ln * z), z standard normal.
+  portable_normal<T> normal{T{0}, T{1}};
+  portable_uniform_real<T> u{T{0}, T{1}};
   std::vector<T> vt(n);
   T vsum{0};
   for (auto& v : vt) {
-    const T d = dist(engine);
-    v = pi / T{6} * d * d * d;
+    const T z = normal(engine);
+    const T d = portable_exp(mu + rounded(sigma_ln * z));
+    v = rounded(pi / T{6} * d * d * d);
     vsum += v;
   }
   for (auto& v : vt) v *= V / vsum;
@@ -246,7 +254,7 @@ template <typename T = double, typename Engine>
       if (opts.cancel && opts.cancel()) { cancelled = true; break; }
       // Volume responds to a weight change roughly as dV = 3 s dw, s = size.
       for (std::size_t i = 0; i < n; ++i) {
-        const T s = std::cbrt(vt[i]);
+        const T s = portable_cbrt(vt[i]);
         cur.weights[i] += T{0.7} * (vt[i] - vol[i]) / (T{3} * s);
       }
       detail::limit_weight_spread(cur.weights, cur.seeds, L, periodic);

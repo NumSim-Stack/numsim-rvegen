@@ -122,6 +122,38 @@ constexpr char const* ply_tri_header_ascii =
 // ASCII STL
 // ---------------------------------------------------------------------------
 
+// The number parser behind the mesh readers. parse_real_strtod is the
+// fallback for standard libraries without floating-point from_chars
+// (libc++ before 20); where both exist they must agree, token by token.
+void test_parse_real_and_its_fallback_agree() {
+  using rvegen::detail::parse_real;
+  using rvegen::detail::parse_real_strtod;
+  char const* const tokens[] = {
+      "0", "-0", "1", "-1", "1.5", "-2.25e3", "1e-3", "1E+3", ".5", "5.",
+      "1e308", "4.9e-324", "0.1", "123456789.125", "inf", "-inf", "nan",
+      "", " 1", "1 ", "1x", "x1", "--1", "-+1", "0x10", "-0x1p3", "1e",
+      "1e+", "e5", ".", "-", "1,5", "1e999", "-1e999", "1.0.0", "\t2",
+      "1e-999", "-1e-999", "2.5e-310", "infinity", "INF", "NaN", "-nan",
+      "1_0", "0e0", "00012", "1e0005"};
+  for (char const* t : tokens) {
+    double a = -7.0, b = -7.0;
+    const bool ok_a = parse_real(t, a);
+    const bool ok_b = parse_real_strtod(t, b);
+    if (ok_a != ok_b || (ok_a && !(a == b || (a != a && b != b)))) {
+      std::cerr << "parse_real('" << t << "'): " << ok_a << " " << a
+                << ", fallback: " << ok_b << " " << b << "\n";
+      REQUIRE(false);
+    }
+  }
+  double v = 0.0;
+  REQUIRE(parse_real("+1.5", v) && v == 1.5);          // leading '+' accepted
+  REQUIRE(!parse_real("+-1", v) && !parse_real("++1", v));
+  REQUIRE(parse_real("-2.25e3", v) && v == -2250.0);
+  REQUIRE(parse_real_strtod("-2.25e3", v) && v == -2250.0);
+  REQUIRE(!parse_real_strtod("0x10", v) && !parse_real_strtod(" 1", v));
+  REQUIRE(!parse_real_strtod("1e999", v) && !parse_real_strtod("", v));
+}
+
 void test_stl_valid_single_facet_parses() {
   std::stringstream ss{std::string{one_facet} + "endsolid t\n"};
   auto tris = rvegen::read_stl_ascii<double>(ss);
@@ -861,6 +893,7 @@ void test_parse_nits() {
 } // namespace
 
 int main() {
+  test_parse_real_and_its_fallback_agree();
   test_mesh_inclusion_corner_touching_cubes();
   test_mesh_inclusion_many_cavities_and_parts();
   test_mesh_inclusion_zero_volume_throws();

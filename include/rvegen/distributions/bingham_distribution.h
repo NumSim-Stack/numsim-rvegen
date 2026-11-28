@@ -84,6 +84,7 @@
 #include <numsim-core/input_parameter_controller.h>
 
 #include "direction_distribution_base.h"
+#include "portable_math.h"
 #include "portable_random.h"
 #include "../types.h"
 
@@ -126,7 +127,7 @@ public:
                     : _kappa <= T{-1} ? T{0.84}
                                       : T{0.37};
     _max_iterations = static_cast<std::size_t>(
-        std::ceil(T{100} / -std::log1p(-p_min)));
+        std::ceil(T{100} / -portable_log1p(-p_min)));
   }
 
   // Supported concentration range; see the header comment.
@@ -200,12 +201,12 @@ public:
         // Prolate: exponential envelope in t = 1 - |x| (see header
         // comment); acceptance >= 1/2 for every kappa > 0.
         const T u1 = _uniform(_engine.get());
-        const T t = -std::log1p(-u1 * (-std::expm1(-_kappa))) / _kappa;
+        const T t = -portable_log1p(-u1 * (-portable_expm1(-_kappa))) / _kappa;
         const T ax = T{1} - std::min(t, T{1});
         const T u0 = _uniform(_engine.get());
         x = (u0 < T{0.5}) ? -ax : ax;
         // target exp(-k t (2 - t)) / envelope exp(-k t)
-        accept = std::exp(-_kappa * t * (T{1} - t));
+        accept = portable_exp(-_kappa * t * (T{1} - t));
         sin2 = std::min(t, T{1}) * (T{2} - std::min(t, T{1}));
       } else {
         if (_kappa <= T{-1}) {
@@ -217,22 +218,28 @@ public:
           // Weakly oblate: uniform envelope, acceptance ≥ ~0.37.
           const T u1 = _uniform(_engine.get());
           x = T{2} * u1 - T{1};   // candidate cos θ in [-1, 1]
-          accept = std::exp(_kappa * (x * x));
+          accept = portable_exp(_kappa * (x * x));
         }
       }
       const T u2 = (accept >= T{1}) ? T{0} : _uniform(_engine.get());
       if (u2 <= accept) break;
     }
-    if (_kappa <= T{0}) sin2 = std::max(T{0}, T{1} - x * x);
+    using portable_detail::rounded;
+    if (_kappa <= T{0}) sin2 = std::max(T{0}, T{1} - rounded(x * x));
     const T phi = T{2} * std::numbers::pi_v<T> * _uniform(_engine.get());
     const T sin_theta = std::sqrt(sin2);
-    vector_type v_local;
-    v_local[0] = sin_theta * std::cos(phi);
-    v_local[1] = sin_theta * std::sin(phi);
-    v_local[2] = x;
-    // Rotate so the local z-axis points along the mean axis.
-    return _frame_x * v_local[0] + _frame_y * v_local[1] +
-           _mean_axis * v_local[2];
+    // Platform-independent sin / cos (portable_math.h): the same seed
+    // gives the same directions with every math library.
+    const T vx = sin_theta * portable_cos(phi);
+    const T vy = sin_theta * portable_sin(phi);
+    // Rotate so the local z-axis points along the mean axis. Every product
+    // is rounded before it is added (no FMA contraction).
+    vector_type out;
+    for (int i = 0; i < 3; ++i) {
+      out[i] = (rounded(_frame_x[i] * vx) + rounded(_frame_y[i] * vy)) +
+               rounded(_mean_axis[i] * x);
+    }
+    return out;
   }
 
   [[nodiscard]] T kappa() const noexcept { return _kappa; }
@@ -266,12 +273,20 @@ private:
       throw std::invalid_argument{
           "bingham_distribution: mean_axis must be finite"};
     }
-    // Robust normalise scales by the max |component| first, so very
-    // large or very small (but non-zero) axes still normalise cleanly.
-    if (!(gte::Normalize(axis, true) > T{0})) {
+    // Normalise after scaling by the max |component|, so very large or
+    // very small (but non-zero) axes still normalise cleanly. Written out
+    // (rather than gte::Normalize / Dot / Cross) so that no product is
+    // fused into a sum: the frame, and with it every sample, must not
+    // depend on whether the compiler contracts to FMA.
+    const T scale =
+        std::max({std::abs(axis[0]), std::abs(axis[1]), std::abs(axis[2])});
+    if (!(scale > T{0})) {
       throw std::invalid_argument{
           "bingham_distribution: mean_axis must be non-zero"};
     }
+    for (int i = 0; i < 3; ++i) axis[i] /= scale;
+    const T length = std::sqrt(dot(axis, axis));
+    for (int i = 0; i < 3; ++i) axis[i] /= length;
     _mean_axis = axis;
     // Pick the auxiliary vector farthest from `_mean_axis` to maximise
     // the cross-product magnitude. Choosing the world axis with the
@@ -285,8 +300,8 @@ private:
     if (ax <= ay && ax <= az) aux[0] = T{1};
     else if (ay <= az) aux[1] = T{1};
     else aux[2] = T{1};
-    _frame_x = gte::Cross(_mean_axis, aux);
-    const T fx = std::sqrt(gte::Dot(_frame_x, _frame_x));
+    _frame_x = cross(_mean_axis, aux);
+    const T fx = std::sqrt(dot(_frame_x, _frame_x));
     // fx ≥ √(2/3) ≈ 0.816 by construction; the tolerance below is a
     // belt-and-braces guard for non-finite inputs.
     if (fx > std::numeric_limits<T>::epsilon() * T{1024}) {
@@ -294,7 +309,22 @@ private:
     } else {
       _frame_x[0] = T{1}; _frame_x[1] = T{0}; _frame_x[2] = T{0};
     }
-    _frame_y = gte::Cross(_mean_axis, _frame_x);
+    _frame_y = cross(_mean_axis, _frame_x);
+  }
+
+  // Dot and cross product with every product rounded before it is added.
+  [[nodiscard]] static T dot(vector_type const& a, vector_type const& b) noexcept {
+    using portable_detail::rounded;
+    return (rounded(a[0] * b[0]) + rounded(a[1] * b[1])) + rounded(a[2] * b[2]);
+  }
+  [[nodiscard]] static vector_type cross(vector_type const& a,
+                                         vector_type const& b) noexcept {
+    using portable_detail::rounded;
+    vector_type c;
+    c[0] = rounded(a[1] * b[2]) - rounded(a[2] * b[1]);
+    c[1] = rounded(a[2] * b[0]) - rounded(a[0] * b[2]);
+    c[2] = rounded(a[0] * b[1]) - rounded(a[1] * b[0]);
+    return c;
   }
 
   vector_type sample_uniform_sphere() {
@@ -303,7 +333,7 @@ private:
     while (true) {
       const T u = T{2} * _uniform(_engine.get()) - T{1};
       const T v = T{2} * _uniform(_engine.get()) - T{1};
-      const T s = u * u + v * v;
+      const T s = portable_detail::rounded(u * u) + portable_detail::rounded(v * v);
       if (s < T{1} && s > T{0}) {
         const T factor = T{2} * std::sqrt(T{1} - s);
         vector_type out;

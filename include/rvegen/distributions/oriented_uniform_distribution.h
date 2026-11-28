@@ -35,6 +35,7 @@
 
 #include "../types.h"
 #include "distribution_base.h"
+#include "portable_math.h"
 #include "portable_random.h"
 
 namespace rvegen {
@@ -79,9 +80,14 @@ public:
     constexpr value_type pi = std::numbers::pi_v<value_type>;
     constexpr value_type two_pi = value_type{2} * pi;
 
+    // Platform independence (#130): cos, exp and acos come from
+    // portable_math.h, and every product that feeds a sum is rounded first
+    // (no FMA contraction), so a seed gives the same angles everywhere.
+    using portable_detail::rounded;
     if (_kappa < value_type{1e-9}) {
       // Uniform on [-π, π].
-      return _mean + (_uniform(_engine.get()) - value_type{0.5}) * two_pi;
+      return _mean +
+             rounded((_uniform(_engine.get()) - value_type{0.5}) * two_pi);
     }
     if (_kappa > value_type{1e12}) {
       // Point mass at the mean. Above ~1e15 the rejection test's
@@ -91,33 +97,35 @@ public:
       return _mean;
     }
 
-    // a = 1 + √(1 + 4κ²); hypot avoids overflowing κ² for huge κ.
+    // a = 1 + √(1 + 4κ²); κ <= 1e12 here, so κ² cannot overflow.
+    const value_type two_kappa = value_type{2} * _kappa;
     const value_type a = value_type{1}
-        + std::hypot(value_type{1}, value_type{2} * _kappa);
+        + std::sqrt(value_type{1} + rounded(two_kappa * two_kappa));
     // Best-Fisher's b = (a − √(2a)) / (2κ), rewritten cancellation-free:
     // (a − √(2a))(a + √(2a)) = a² − 2a = 4κ², so b = 2κ / (a + √(2a)).
     // The textbook form cancels to b = 0 (r = inf, NaN, endless loop) for
     // κ ≈ 1e-9 … 2e-8.
     const value_type b = value_type{2} * _kappa
         / (a + std::sqrt(value_type{2} * a));
-    const value_type r = (value_type{1} + b * b) / (value_type{2} * b);
+    const value_type r =
+        (value_type{1} + rounded(b * b)) / (value_type{2} * b);
 
     // Best-Fisher accepts ≥ ~66 % of candidates for every κ, so hitting
     // this cap means a numerical breakdown, not bad luck.
     constexpr std::size_t max_iterations = 10000;
     for (std::size_t it = 0; it < max_iterations; ++it) {
       const value_type u1 = _uniform(_engine.get());
-      const value_type z  = std::cos(pi * u1);
-      const value_type f  = (value_type{1} + r * z) / (r + z);
+      const value_type z  = portable_cos(pi * u1);
+      const value_type f  = (value_type{1} + rounded(r * z)) / (r + z);
       const value_type c  = _kappa * (r - f);
       const value_type u2 = _uniform(_engine.get());
 
       if (u2 < c * (value_type{2} - c)
-          || u2 <= c * std::exp(value_type{1} - c)) {
+          || u2 <= c * portable_exp(value_type{1} - c)) {
         const value_type u3 = _uniform(_engine.get());
         const value_type sign = (u3 - value_type{0.5}) >= value_type{0}
             ? value_type{1} : value_type{-1};
-        return _mean + sign * std::acos(f);
+        return _mean + sign * portable_acos(f);
       }
     }
     throw std::runtime_error{

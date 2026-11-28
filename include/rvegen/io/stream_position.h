@@ -30,8 +30,12 @@
 // it). "nan" / "inf" parse successfully; callers that need finite
 // values check `std::isfinite` themselves.
 
+#include <cctype>
+#include <cerrno>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <istream>
 #include <optional>
 #include <string>
@@ -91,6 +95,37 @@ inline std::optional<std::uint64_t> remaining_bytes(std::istream& in) {
   return static_cast<std::uint64_t>(end - cur);
 }
 
+// parse_real for standard libraries without floating-point from_chars
+// (libc++ before 20): strtod on a copy, restricted to what from_chars
+// accepts (no leading white space, no hexadecimal form) and to the whole
+// token. strtod reads the decimal point of the current LC_NUMERIC
+// locale: rvegen never changes it, but a host program that calls
+// setlocale(LC_NUMERIC, "de_DE") makes this fallback refuse "1.5" (the
+// from_chars path does not depend on the locale). Always compiled, so the tests compare it with from_chars
+// where both exist. `token` is non-empty and carries no leading '+'.
+inline bool parse_real_strtod(std::string_view token, double& out) {
+  if (token.empty()) return false;
+  if (std::isspace(static_cast<unsigned char>(token.front()))) return false;
+  const std::size_t digits = token.front() == '-' ? 1 : 0;
+  if (token.size() > digits + 1 && token[digits] == '0' &&
+      (token[digits + 1] == 'x' || token[digits + 1] == 'X')) {
+    return false;
+  }
+  if (token.size() > digits && token[digits] == '+') return false;   // "-+1"
+  const std::string copy{token};
+  char* end = nullptr;
+  errno = 0;
+  const double value = std::strtod(copy.c_str(), &end);
+  if (end != copy.c_str() + copy.size()) return false;
+  // from_chars reports result_out_of_range for overflow and for underflow
+  // to zero, but accepts a subnormal result (for which strtod also sets
+  // ERANGE).
+  if (errno == ERANGE && (value == 0.0 || value == HUGE_VAL || value == -HUGE_VAL))
+    return false;
+  out = value;
+  return true;
+}
+
 inline bool parse_real(std::string_view token, double& out) {
   if (!token.empty() && token.front() == '+') {
     token.remove_prefix(1);
@@ -100,10 +135,14 @@ inline bool parse_real(std::string_view token, double& out) {
     }
   }
   if (token.empty()) return false;
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
   const char* first = token.data();
   const char* last = token.data() + token.size();
   const auto [ptr, ec] = std::from_chars(first, last, out);
   return ec == std::errc{} && ptr == last;
+#else
+  return parse_real_strtod(token, out);
+#endif
 }
 
 } // namespace rvegen::detail

@@ -25,6 +25,7 @@
 #include <Mathematics/Quaternion.h>
 #include <Mathematics/Rotation.h>
 
+#include "portable_math.h"
 #include "portable_random.h"
 
 namespace rvegen {
@@ -41,8 +42,11 @@ template <typename T>
   const T two_pi = T{2} * std::numbers::pi_v<T>;
   const T a = std::sqrt(T{1} - u1);
   const T b = std::sqrt(u1);
-  return gte::Quaternion<T>(a * std::sin(two_pi * u2), a * std::cos(two_pi * u2),
-                            b * std::sin(two_pi * u3), b * std::cos(two_pi * u3));
+  // sin / cos from portable_math.h: the same samples give the same
+  // quaternion with every math library (#130).
+  return gte::Quaternion<T>(
+      a * portable_sin(two_pi * u2), a * portable_cos(two_pi * u2),
+      b * portable_sin(two_pi * u3), b * portable_cos(two_pi * u3));
 }
 
 template <typename T>

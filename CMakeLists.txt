@@ -10,6 +10,12 @@ include(FetchContent)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+  # Sources are UTF-8 (messages contain non-ASCII characters); the heavily
+  # templated translation units exceed the default object-section limit.
+  add_compile_options(/utf-8 /bigobj)
+endif()
+
 # ---------------------------------------------------------------------------
 # Compiler capability gate.
 #
@@ -20,7 +26,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 include(CheckCXXSourceCompiles)
 set(_rvegen_check_flags_save "${CMAKE_REQUIRED_FLAGS}")
-set(CMAKE_REQUIRED_FLAGS "-std=c++23")
+if(MSVC)
+  set(CMAKE_REQUIRED_FLAGS "/std:c++latest")
+else()
+  set(CMAKE_REQUIRED_FLAGS "-std=c++23")
+endif()
 check_cxx_source_compiles(
   "#include <print>
    int main() { std::print(\"x\"); }"
@@ -29,7 +39,7 @@ set(CMAKE_REQUIRED_FLAGS "${_rvegen_check_flags_save}")
 unset(_rvegen_check_flags_save)
 if(NOT RVEGEN_HAS_STD_PRINT)
   message(FATAL_ERROR
-    "rvegen requires <print> from libstdc++ 14+ / libc++ 17+; "
+    "rvegen requires <print> from libstdc++ 14+ / libc++ 17+ / MSVC 19.37+; "
     "your ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} doesn't have it. "
     "Try: cmake -DCMAKE_CXX_COMPILER=g++-14 ..")
 endif()
@@ -281,6 +291,19 @@ add_test(NAME input_validation_test COMMAND rvegen_input_validation_test)
 add_executable(rvegen_golden_random_test tests/golden_random_test.cpp)
 target_link_libraries(rvegen_golden_random_test PRIVATE rvegen_lib)
 add_test(NAME golden_random_test COMMAND rvegen_golden_random_test)
+
+# Cross-platform reproducibility (#130). golden_portable_test needs the two
+# portable_*.h headers only (no library target, no third-party include), so
+# it builds on any C++20 toolchain; golden_generators_test pins one shape
+# list per generator. CI runs all three golden tests against libstdc++,
+# libc++ and the MSVC standard library.
+add_executable(rvegen_golden_portable_test tests/golden_portable_test.cpp)
+target_include_directories(rvegen_golden_portable_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_test(NAME golden_portable_test COMMAND rvegen_golden_portable_test)
+add_executable(rvegen_golden_generators_test tests/golden_generators_test.cpp)
+target_link_libraries(rvegen_golden_generators_test PRIVATE rvegen_lib)
+add_test(NAME golden_generators_test COMMAND rvegen_golden_generators_test)
 
 add_executable(rvegen_full_registry_smoke tests/full_registry_smoke.cpp)
 target_link_libraries(rvegen_full_registry_smoke PRIVATE
@@ -857,6 +880,12 @@ if(Python3_Interpreter_FOUND)
   # only if the checker reports the shortfall (the regex decides, not the
   # exit status). cli_check_selftest covers the checker's own parsing
   # (statistics CSV with an empty g(r), the accepted fill window).
+  # No std:: distribution, shuffle or random_device in the library (#130):
+  # they give different values per standard library.
+  add_test(NAME no_std_distribution
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_std_distribution_check.py
+            ${CMAKE_CURRENT_SOURCE_DIR})
   # No "Lz > 0 means 3D" and no "whichever of area and volume is not zero"
   # outside the domain type (#122).
   add_test(NAME no_dimension_inference

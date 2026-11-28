@@ -31,6 +31,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "../distributions/portable_math.h"
 #include "../domain.h"
 #include "../distributions/portable_random.h"
 #include "../postprocess/voxel_grid.h"
@@ -93,7 +94,9 @@ two_point_correlation_2d(
 
   std::mt19937_64 engine{seed};
   // Portable transforms (see portable_random.h) so the sampled pairs do
-  // not depend on the standard library.
+  // not depend on the standard library; every product is rounded before it
+  // is added, so a build that fuses multiply-add picks the same voxels.
+  using portable_detail::rounded;
   portable_uniform_int<std::size_t> ix{0, nx - 1};
   portable_uniform_int<std::size_t> iy{0, ny - 1};
   portable_uniform_real<double> theta{0.0, 2.0 * 3.14159265358979323846};
@@ -105,8 +108,10 @@ two_point_correlation_2d(
       const std::size_t i0 = ix(engine);
       const std::size_t j0 = iy(engine);
       const double a = theta(engine);
-      const double x1 = (double(i0) + 0.5) * dx + r * std::cos(a);
-      const double y1 = (double(j0) + 0.5) * dy + r * std::sin(a);
+      const double x1 = rounded((double(i0) + 0.5) * dx) +
+                        rounded(r * portable_cos(a));
+      const double y1 = rounded((double(j0) + 0.5) * dy) +
+                        rounded(r * portable_sin(a));
       const std::size_t i1 = std::min(std::size_t(wrap_to_box(x1, Lx) / dx), nx - 1);
       const std::size_t j1 = std::min(std::size_t(wrap_to_box(y1, Ly) / dy), ny - 1);
       if (grid[j0 * nx + i0] != 0 && grid[j1 * nx + i1] != 0) ++both_in;
@@ -152,11 +157,14 @@ two_point_correlation_3d(
   out.reserve(nbins);
 
   std::mt19937_64 engine{seed};
-  std::uniform_int_distribution<std::size_t> ix{0, nx - 1};
-  std::uniform_int_distribution<std::size_t> iy{0, ny - 1};
-  std::uniform_int_distribution<std::size_t> iz{0, nz - 1};
-  std::uniform_real_distribution<double> cos_theta{-1.0, 1.0};
-  std::uniform_real_distribution<double> phi{0.0, 2.0 * std::numbers::pi};
+  using portable_detail::rounded;   // products are rounded before they are added
+  // Portable transforms (see portable_random.h), as in 2D: the sampled
+  // pairs do not depend on the standard library.
+  portable_uniform_int<std::size_t> ix{0, nx - 1};
+  portable_uniform_int<std::size_t> iy{0, ny - 1};
+  portable_uniform_int<std::size_t> iz{0, nz - 1};
+  portable_uniform_real<double> cos_theta{-1.0, 1.0};
+  portable_uniform_real<double> phi{0.0, 2.0 * std::numbers::pi};
 
   auto at = [&](std::size_t i, std::size_t j, std::size_t k) {
     return grid[(k * ny + j) * nx + i];
@@ -170,11 +178,14 @@ two_point_correlation_3d(
       const std::size_t j0 = iy(engine);
       const std::size_t k0 = iz(engine);
       const double ct = cos_theta(engine);
-      const double st = std::sqrt(std::max(0.0, 1.0 - ct * ct));
+      const double st = std::sqrt(std::max(0.0, 1.0 - rounded(ct * ct)));
+      const double rst = rounded(r * st);
       const double a = phi(engine);
-      const double x1 = (double(i0) + 0.5) * dx + r * st * std::cos(a);
-      const double y1 = (double(j0) + 0.5) * dy + r * st * std::sin(a);
-      const double z1 = (double(k0) + 0.5) * dz + r * ct;
+      const double x1 = rounded((double(i0) + 0.5) * dx) +
+                        rounded(rst * portable_cos(a));
+      const double y1 = rounded((double(j0) + 0.5) * dy) +
+                        rounded(rst * portable_sin(a));
+      const double z1 = rounded((double(k0) + 0.5) * dz) + rounded(r * ct);
       const std::size_t i1 = std::min(std::size_t(wrap_to_box(x1, Lx) / dx), nx - 1);
       const std::size_t j1 = std::min(std::size_t(wrap_to_box(y1, Ly) / dy), ny - 1);
       const std::size_t k1 = std::min(std::size_t(wrap_to_box(z1, Lz) / dz), nz - 1);
