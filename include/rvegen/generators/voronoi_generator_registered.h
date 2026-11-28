@@ -167,6 +167,9 @@ public:
     s.template insert<std::string>("backend")
         .template add<numsim_core::set_default>(std::string{"auto"})
         .template add<numsim_core::description_label<"tessellation backend: auto, in_house or voro_pp (default auto: Voro++ when built with it)">>();
+    s.template insert<bool>("allow_slow_backend")
+        .template add<numsim_core::set_default>(false)
+        .template add<numsim_core::description_label<"let the in-house backend run above its seed limit (300 bounded, 3000 periodic); it can take hours. Not with grain_diameter_mean">>();
     // Grain-size control (grain_size_control.h): giving the mean diameter
     // replaces n_seeds / seeds. The three tuning keys carry no schema
     // default so that giving one without grain_diameter_mean is an error
@@ -199,9 +202,31 @@ protected:
     const auto backend = detail::voronoi_backend_from_name(
         _handler.template get<std::string>("backend"));
     const bool periodic = _handler.template get<bool>("periodic");
+    const bool allow_slow = _handler.template get<bool>("allow_slow_backend");
+    // Which backend ran is not visible in the result: say so, and say when
+    // "auto" had no Voro++ to pick.
+    const bool by_default =
+        _handler.template get<std::string>("backend") == "auto";
+    this->note(backend == voronoi_backend::voro_pp
+                   ? std::string{"voronoi_3d: tessellated with Voro++"}
+                   : std::string{"voronoi_3d: tessellated with the in-house "
+                                 "backend"} +
+                         (by_default
+                              ? " (this build has no Voro++; the in-house "
+                                "backend is limited to " +
+                                    std::to_string(
+                                        voronoi_in_house_max_seeds(periodic)) +
+                                    (periodic ? " periodic" : " bounded") +
+                                    " seeds)"
+                              : ""));
     std::vector<std::array<T, 3>> seeds;
     std::vector<T> weights;
     if (_handler.contains("grain_diameter_mean")) {
+      if (allow_slow)
+        throw std::runtime_error{
+            "voronoi_3d: 'allow_slow_backend' is not available with "
+            "'grain_diameter_mean' (the grain-size fit repeats the "
+            "tessellation many times)"};
       grain_size_seeds(box, backend, periodic, seeds, weights);
     } else {
       for (char const* key : {"grain_diameter_sigma", "grain_size_tolerance",
@@ -217,7 +242,8 @@ protected:
     }
     auto shapes = voronoi_to_shapes<T>(
         voronoi_generator_3d<T>{box[0], box[1], box[2], std::move(seeds),
-                                backend, periodic, std::move(weights)},
+                                backend, periodic, std::move(weights),
+                                allow_slow},
         this->cancel());
     detail::tag_phase(shapes, _handler.template get<std::string>("phase_name"));
     return shapes;

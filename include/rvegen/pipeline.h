@@ -690,6 +690,9 @@ generate_impl(nlohmann::json const& given_config, pipeline_options const& opts,
   if (opts.progress.cancel()) throw pipeline_cancelled{};
   opts.info("rvegen: generated " + std::to_string(out.shapes.size()) +
             " shape" + (out.shapes.size() == 1 ? "" : "s"));
+  if (det_gen) {
+    for (auto const& line : det_gen->notes()) opts.info("rvegen: " + line);
+  }
   // A generator also returns when it exhausts max_attempts: the report
   // says what was reached. A generator that records none (a custom one)
   // is measured here with the termination predicate itself.

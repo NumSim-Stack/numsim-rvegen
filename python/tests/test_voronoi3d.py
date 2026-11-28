@@ -68,6 +68,25 @@ def test_bad_backend_and_weights():
         rvegen.VoronoiGenerator3d(1, 1, 1, [(0.5, 0.5, 0.5)], weights=[0.0, 1.0])
 
 
+def test_in_house_limit_and_override():
+    s = _seeds(301, (1, 1, 1))
+    with pytest.raises(ValueError, match="allow_slow_backend"):
+        rvegen.VoronoiGenerator3d(1, 1, 1, s, backend="in_house")
+    gen = rvegen.VoronoiGenerator3d(1, 1, 1, s, backend="in_house",
+                                    allow_slow_backend=True)
+    assert gen.seed_count == 301
+
+
+def test_ten_thousand_grains_with_voro_pp():
+    """A size the in-house backend cannot do (#123)."""
+    if not rvegen.voro_pp_available():
+        pytest.skip("built without Voro++")
+    L = (1.0, 1.0, 1.0)
+    cells = rvegen.VoronoiGenerator3d(*L, _seeds(10000, L), periodic=True).build()
+    assert len(cells) == 10000
+    assert abs(sum(c.volume() for c in cells) - 1.0) < 1e-6
+
+
 def test_voro_pp_backend_selection():
     s = _seeds(10, (1, 1, 1))
     if not rvegen.voro_pp_available():

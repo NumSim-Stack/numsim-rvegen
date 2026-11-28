@@ -1,0 +1,15 @@
+{
+  "_comment": "1000 seeds forced onto the in-house backend: refused at once, with the two ways out (#123).",
+  "domain_box": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "generator": {
+    "type": "voronoi_3d",
+    "n_seeds": 1000,
+    "seed": 1,
+    "backend": "in_house"
+  },
+  "postprocess": []
+}

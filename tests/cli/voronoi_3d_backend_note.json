@@ -1,0 +1,14 @@
+{
+  "_comment": "A small 3D tessellation: the run says which backend made it (#123).",
+  "domain_box": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "generator": {
+    "type": "voronoi_3d",
+    "n_seeds": 12,
+    "seed": 2
+  },
+  "postprocess": []
+}
