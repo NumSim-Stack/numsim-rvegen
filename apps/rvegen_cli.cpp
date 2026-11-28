@@ -10,18 +10,25 @@
 // schema, so a single run can fan out to any combination of formats —
 // .geo for FEM, .vtk / .vox for FFT, .svg / .html for visualization.
 
+#include <any>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <typeinfo>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
-#include "rvegen/rvegen.h"
+#include "rvegen/pipeline.h"
 
 namespace {
 
@@ -61,65 +68,22 @@ int run(int argc, char** argv) {
     return exit_config;
   }
 
-  // ---- 2. Register every known type in every registry --------------------
-  rvegen::register_all_distributions<>();
-  rvegen::register_all_terminations<>();
-  rvegen::register_all_generators<>();
-  rvegen::register_all_inputs<>();
-  rvegen::register_all_collision_pairs<>();   // precise dispatch in generators
-  rvegen::register_all_post_processes<>();
+  // ---- 2. Run the shared pipeline (include/rvegen/pipeline.h) ------------
+  // Registration, distributions, inputs, generator + termination, phase
+  // assignment and post-processing all live in the library so the Python
+  // bindings run exactly the same code.
+  rvegen::pipeline_options opts;
+  opts.info = [](std::string const& line) { std::cout << line << '\n'; };
+  opts.warn = [](std::string const& line) { std::cerr << line << '\n'; };
 
-  // ---- 3. Domain box + RNG seed (top-level config keys) ------------------
-  std::array<double, 3> domain_box{1.0, 1.0, 0.0};
-  if (config.contains("domain_box")) {
-    auto const& db = config.at("domain_box");
-    domain_box[0] = db.at(0).get<double>();
-    domain_box[1] = db.at(1).get<double>();
-    domain_box[2] = db.size() >= 3 ? db.at(2).get<double>() : 0.0;
-  }
-  const auto seed = config.value<std::uint64_t>("seed", 42);
-  std::mt19937 engine{seed};
-
-  // ---- 4. Build distributions -------------------------------------------
-  rvegen::distribution_map_t<double> dists;
-  if (config.contains("distributions")) {
-    for (auto const& [name, spec] : config.at("distributions").items()) {
-      auto dist = rvegen::build_from_json(
-          rvegen::distribution_registry_t<>::instance(), spec, engine);
-      dists.emplace(name,
-                    std::shared_ptr<rvegen::distribution_base<double>>{
-                        std::move(dist)});
-    }
-  }
-
-  // ---- 5. Build inputs (cross-reference distributions by name) ----------
-  rvegen::rve_generator_base<double>::input_vector inputs;
-  for (auto const& spec : config.at("shapes")) {
-    auto input = rvegen::build_from_json(
-        rvegen::input_registry_t<>::instance(), spec, dists);
-    inputs.push_back(std::move(input));
-  }
-
-  // ---- 6. Generator + termination ---------------------------------------
-  auto generator = rvegen::build_from_json(
-      rvegen::generator_registry_t<>::instance(), config.at("generator"));
-  auto termination = rvegen::build_from_json(
-      rvegen::termination_registry_t<>::instance(),
-      config.at("termination"), domain_box);
-
-  // ---- 7. Run the pipeline ----------------------------------------------
-  // Install a progress hook that prints "[N/T] φ = X.XX" lines to stderr
-  // every emit_every accepted shapes. The hook is opt-in via the
-  // `--progress` flag (disabled by default to keep CLI output stable for
-  // scripting). Quiet runs go through the legacy single "generated N
-  // shapes" line at the end.
-  rvegen::progress_options progress_opts;
+  // Optional `--progress` hook: "[progress] placed=X / N | φ=…" lines on
+  // stderr, off by default to keep CLI output stable for scripting.
   bool show_progress = false;
   for (int i = 2; i < argc; ++i) {
     if (std::string{argv[i]} == "--progress") show_progress = true;
   }
   if (show_progress) {
-    progress_opts.on_progress = [](rvegen::progress_info info) {
+    opts.progress.on_progress = [](rvegen::progress_info info) {
       std::cerr << "[progress] placed=" << info.shapes_placed;
       if (info.shapes_target > 0) {
         std::cerr << " / " << info.shapes_target;
@@ -131,28 +95,11 @@ int run(int argc, char** argv) {
     };
     // 25 is a compromise: fires often enough to show progress on the
     // small example RVEs (~10–50 shapes) while not spamming the
-    // terminal on a 1000-shape run. The user can re-tune via library
-    // API if they're embedding rvegen.
-    progress_opts.emit_every = 25;
+    // terminal on a 1000-shape run.
+    opts.progress.emit_every = 25;
   }
-  auto shapes = generator->compute(inputs, *termination, domain_box,
-                                   progress_opts);
-  std::cout << "rvegen: generated " << shapes.size() << " shape"
-            << (shapes.size() == 1 ? "" : "s") << '\n';
 
-  // ---- 8. Post-processing steps (each owns its sink) --------------------
-  if (!config.contains("postprocess")) {
-    std::cerr << "rvegen: warning — no \"postprocess\" entries in config; "
-                 "nothing was written.\n";
-  } else {
-    for (auto const& spec : config.at("postprocess")) {
-      auto pp = rvegen::build_from_json(
-          rvegen::post_process_registry_t<>::instance(), spec);
-      pp->run(shapes, domain_box);
-      std::cout << "rvegen: post-process '"
-                << spec.at("type").get<std::string>() << "' done\n";
-    }
-  }
+  (void)rvegen::run_pipeline(config, opts);
 
   return EXIT_SUCCESS;
 }

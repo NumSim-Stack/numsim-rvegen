@@ -23,17 +23,19 @@ public:
   sphere_input(distribution_base<value_type>& pos_x,
                distribution_base<value_type>& pos_y,
                distribution_base<value_type>& pos_z,
-               distribution_base<value_type>& radius) noexcept
-      : _pos_x{pos_x}, _pos_y{pos_y}, _pos_z{pos_z}, _radius{radius} {}
+               distribution_base<value_type>& radius)
+      : _pos_x{pos_x}, _pos_y{pos_y}, _pos_z{pos_z}, _radius{radius} {
+    this->require_positive_support(_radius, "sphere_input", "radius");
+  }
 
   // Schema-driven ctor.
   sphere_input(parameter_handler_t const& handler,
                distribution_map_t<value_type> const& distributions)
       : sphere_input(
-            *distributions.at(handler.template get<std::string>("pos_x_dist")),
-            *distributions.at(handler.template get<std::string>("pos_y_dist")),
-            *distributions.at(handler.template get<std::string>("pos_z_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+            lookup_distribution(distributions, handler, "pos_x_dist"),
+            lookup_distribution(distributions, handler, "pos_y_dist"),
+            lookup_distribution(distributions, handler, "pos_z_dist"),
+            lookup_distribution(distributions, handler, "radius_dist")) {
     this->read_metadata(handler);
   }
 
@@ -58,9 +60,16 @@ public:
     return s;
   }
 
+  // Draw order: x, y, z, radius.
+  // The radius distribution is truncated to (0, inf): non-positive draws
+  // are resampled. See shape_input_base for the constructor check
+  // and the redraw backstop.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
-    auto shape = std::make_unique<sphere<value_type>>(_pos_x(), _pos_y(),
-                                                       _pos_z(), _radius());
+    const value_type x = _pos_x();
+    const value_type y = _pos_y();
+    const value_type z = _pos_z();
+    const value_type r = this->draw_positive(_radius, "sphere_input", "radius");
+    auto shape = std::make_unique<sphere<value_type>>(x, y, z, r);
     this->tag(*shape);
     return shape;
   }

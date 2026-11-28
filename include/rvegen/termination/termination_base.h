@@ -28,6 +28,17 @@ public:
 
   [[nodiscard]] virtual bool operator()(shape_vector const& accepted) const = 0;
 
+  // Same predicate with explicit accounting. `count_all == false` is the
+  // operator() behaviour: only primaries (centre in the domain box) count,
+  // so periodic wrap copies are not double-counted. `count_all == true` is
+  // for generators with no domain constraint (random_generator), where
+  // every accepted shape is a distinct primary even when its centre lies
+  // outside the box. Terminations that do not distinguish ignore it.
+  [[nodiscard]] virtual bool is_met(shape_vector const& accepted,
+                                    bool /*count_all*/) const {
+    return (*this)(accepted);
+  }
+
   // Optional progress hooks consumed by the generator base when filling
   // `progress_info` for the on_progress callback. Concrete terminations
   // override whichever applies; the defaults of 0 mean "unknown" and

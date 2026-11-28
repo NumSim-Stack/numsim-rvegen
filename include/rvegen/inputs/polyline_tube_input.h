@@ -51,21 +51,23 @@ public:
                       distribution_base<value_type>& ex,
                       distribution_base<value_type>& ey,
                       distribution_base<value_type>& ez,
-                      distribution_base<value_type>& radius) noexcept
+                      distribution_base<value_type>& radius)
       : _sx{sx}, _sy{sy}, _sz{sz}, _ex{ex}, _ey{ey}, _ez{ez},
-        _radius{radius} {}
+        _radius{radius} {
+    this->require_positive_support(_radius, "polyline_tube_input", "radius");
+  }
 
   // Schema-driven ctor.
   polyline_tube_input(parameter_handler_t const& handler,
                       distribution_map_t<value_type> const& distributions)
       : polyline_tube_input(
-            *distributions.at(handler.template get<std::string>("start_x_dist")),
-            *distributions.at(handler.template get<std::string>("start_y_dist")),
-            *distributions.at(handler.template get<std::string>("start_z_dist")),
-            *distributions.at(handler.template get<std::string>("end_x_dist")),
-            *distributions.at(handler.template get<std::string>("end_y_dist")),
-            *distributions.at(handler.template get<std::string>("end_z_dist")),
-            *distributions.at(handler.template get<std::string>("radius_dist"))) {
+            lookup_distribution(distributions, handler, "start_x_dist"),
+            lookup_distribution(distributions, handler, "start_y_dist"),
+            lookup_distribution(distributions, handler, "start_z_dist"),
+            lookup_distribution(distributions, handler, "end_x_dist"),
+            lookup_distribution(distributions, handler, "end_y_dist"),
+            lookup_distribution(distributions, handler, "end_z_dist"),
+            lookup_distribution(distributions, handler, "radius_dist")) {
     this->read_metadata(handler);
   }
 
@@ -99,11 +101,22 @@ public:
     return s;
   }
 
+  // Draw order: start x, y, z, end x, y, z, radius.
+  // The radius distribution is truncated to (0, inf): non-positive draws
+  // are resampled. See shape_input_base for the constructor check
+  // and the redraw backstop.
   [[nodiscard]] std::unique_ptr<shape_base<T>> new_shape() override {
+    const value_type sx = _sx();
+    const value_type sy = _sy();
+    const value_type sz = _sz();
+    const value_type ex = _ex();
+    const value_type ey = _ey();
+    const value_type ez = _ez();
+    const value_type r =
+        this->draw_positive(_radius, "polyline_tube_input", "radius");
     std::vector<std::array<value_type, 3>> centerline{
-        {{_sx(), _sy(), _sz()}}, {{_ex(), _ey(), _ez()}}};
-    auto shape =
-        std::make_unique<polyline_tube<value_type>>(centerline, _radius());
+        {{sx, sy, sz}}, {{ex, ey, ez}}};
+    auto shape = std::make_unique<polyline_tube<value_type>>(centerline, r);
     this->tag(*shape);
     return shape;
   }
