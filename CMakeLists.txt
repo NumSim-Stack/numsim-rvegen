@@ -119,6 +119,63 @@ target_link_libraries(rvegen_lib INTERFACE
 target_compile_features(rvegen_lib INTERFACE cxx_std_23)
 
 # ---------------------------------------------------------------------------
+# Optional Voro++ backend for voronoi_generator_3d (#70). OFF by default so
+# the library stays header-only with no extra dependency; the in-house
+# tessellator remains the default backend either way. When ON, Voro++
+# (BSD-3, pinned tag) is fetched, built as a small static library, and wired
+# in through the RVEGEN_WITH_VORO_PP compile definition. Voro++ v0.4.6 ships
+# no CMake build, hence the SOURCE_SUBDIR trick (populate only) plus our own
+# target. Only the in-tree build links it; the installed package stays
+# header-only (see docs in voronoi_backend_voropp.h).
+# ---------------------------------------------------------------------------
+option(RVEGEN_WITH_VORO_PP "Enable the Voro++ backend for voronoi_generator_3d" OFF)
+if(RVEGEN_WITH_VORO_PP)
+  FetchContent_Declare(
+    voropp
+    GIT_REPOSITORY https://github.com/chr1shr/voro.git
+    GIT_TAG 43d460b83d5f33392bb599a401f05c37af3d7441   # v0.4.6 (tags are mutable; pin the commit)
+    SOURCE_SUBDIR no_cmake_here
+  )
+  FetchContent_MakeAvailable(voropp)
+  add_library(rvegen_voropp STATIC
+    ${voropp_SOURCE_DIR}/src/cell.cc
+    ${voropp_SOURCE_DIR}/src/common.cc
+    ${voropp_SOURCE_DIR}/src/container.cc
+    ${voropp_SOURCE_DIR}/src/unitcell.cc
+    ${voropp_SOURCE_DIR}/src/v_compute.cc
+    ${voropp_SOURCE_DIR}/src/c_loops.cc
+    ${voropp_SOURCE_DIR}/src/v_base.cc
+    ${voropp_SOURCE_DIR}/src/wall.cc
+    ${voropp_SOURCE_DIR}/src/pre_container.cc
+    ${voropp_SOURCE_DIR}/src/container_prd.cc
+  )
+  target_include_directories(rvegen_voropp SYSTEM PUBLIC
+    ${voropp_SOURCE_DIR}/src)
+  set_target_properties(rvegen_voropp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_options(rvegen_voropp PRIVATE -w)   # third-party code
+  # No FMA contraction in Voro++: its periodic weighted (container_poly)
+  # tessellation returns overlapping cells when the compiler fuses a*b+c
+  # (8 of 20 random cases bad with contraction, 0 of 20 without). GCC and
+  # Clang contract by default for -march with FMA (and on aarch64); MSVC
+  # uses /fp:precise by default, which does not contract.
+  if(NOT MSVC)
+    target_compile_options(rvegen_voropp PRIVATE -ffp-contract=off)
+  endif()
+  # Voro++ calls exit() on fatal errors; force-include the shim that turns
+  # that into a C++ exception (same shim the consumer-side include applies).
+  if(MSVC)
+    target_compile_options(rvegen_voropp PRIVATE
+      /FI${CMAKE_CURRENT_SOURCE_DIR}/include/rvegen/generators/voronoi_voropp_exit_shim.h)
+  else()
+    target_compile_options(rvegen_voropp PRIVATE
+      -include ${CMAKE_CURRENT_SOURCE_DIR}/include/rvegen/generators/voronoi_voropp_exit_shim.h)
+  endif()
+  target_link_libraries(rvegen_lib INTERFACE $<BUILD_INTERFACE:rvegen_voropp>)
+  target_compile_definitions(rvegen_lib INTERFACE
+    $<BUILD_INTERFACE:RVEGEN_WITH_VORO_PP=1>)
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests. Gated on BUILD_TESTING (CTest convention) so consumers that pull
 # rvegen via add_subdirectory (e.g. Tessera) can disable rvegen's tests
 # from registering into the parent CTest database with `set(BUILD_TESTING
@@ -131,9 +188,24 @@ add_executable(rvegen_new_tree_smoke tests/new_tree_smoke.cpp)
 target_link_libraries(rvegen_new_tree_smoke PRIVATE rvegen_lib)
 add_test(NAME new_tree_smoke COMMAND rvegen_new_tree_smoke)
 
+add_executable(rvegen_collision_pairs_test tests/collision_pairs_test.cpp)
+target_link_libraries(rvegen_collision_pairs_test PRIVATE rvegen_lib)
+add_test(NAME collision_pairs_test COMMAND rvegen_collision_pairs_test)
+
+add_executable(rvegen_placement_test tests/placement_test.cpp)
+target_link_libraries(rvegen_placement_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME placement_test COMMAND rvegen_placement_test)
+
 add_executable(rvegen_end_to_end_smoke tests/end_to_end_smoke.cpp)
 target_link_libraries(rvegen_end_to_end_smoke PRIVATE rvegen_lib)
 add_test(NAME end_to_end_smoke COMMAND rvegen_end_to_end_smoke)
+
+add_executable(rvegen_weave_geometry_test tests/weave_geometry_test.cpp)
+target_link_libraries(rvegen_weave_geometry_test PRIVATE rvegen_lib)
+add_test(NAME weave_geometry_test COMMAND rvegen_weave_geometry_test)
 
 add_executable(rvegen_json_visitor_smoke tests/json_visitor_smoke.cpp)
 target_link_libraries(rvegen_json_visitor_smoke PRIVATE
@@ -142,12 +214,31 @@ target_link_libraries(rvegen_json_visitor_smoke PRIVATE
 )
 add_test(NAME json_visitor_smoke COMMAND rvegen_json_visitor_smoke)
 
+add_executable(rvegen_orientation_sampler_test tests/orientation_sampler_test.cpp)
+target_link_libraries(rvegen_orientation_sampler_test PRIVATE rvegen_lib)
+add_test(NAME orientation_sampler_test COMMAND rvegen_orientation_sampler_test)
+
+add_executable(rvegen_orientation_a2_test tests/orientation_a2_test.cpp)
+target_link_libraries(rvegen_orientation_a2_test PRIVATE rvegen_lib)
+add_test(NAME orientation_a2_test COMMAND rvegen_orientation_a2_test)
+
 add_executable(rvegen_registry_smoke tests/registry_smoke.cpp)
 target_link_libraries(rvegen_registry_smoke PRIVATE
     rvegen_lib
     nlohmann_json::nlohmann_json
 )
 add_test(NAME registry_smoke COMMAND rvegen_registry_smoke)
+
+add_executable(rvegen_input_validation_test tests/input_validation_test.cpp)
+target_link_libraries(rvegen_input_validation_test PRIVATE
+    rvegen_lib
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME input_validation_test COMMAND rvegen_input_validation_test)
+
+add_executable(rvegen_golden_random_test tests/golden_random_test.cpp)
+target_link_libraries(rvegen_golden_random_test PRIVATE rvegen_lib)
+add_test(NAME golden_random_test COMMAND rvegen_golden_random_test)
 
 add_executable(rvegen_full_registry_smoke tests/full_registry_smoke.cpp)
 target_link_libraries(rvegen_full_registry_smoke PRIVATE
@@ -187,6 +278,14 @@ target_link_libraries(rvegen_concurrency_smoke PRIVATE
 )
 add_test(NAME concurrency_smoke COMMAND rvegen_concurrency_smoke)
 
+add_executable(rvegen_mesh_io_test tests/mesh_io_test.cpp)
+target_link_libraries(rvegen_mesh_io_test PRIVATE rvegen_lib)
+add_test(NAME mesh_io_test COMMAND rvegen_mesh_io_test)
+
+add_executable(rvegen_mesh_transform_test tests/mesh_transform_test.cpp)
+target_link_libraries(rvegen_mesh_transform_test PRIVATE rvegen_lib)
+add_test(NAME mesh_transform_test COMMAND rvegen_mesh_transform_test)
+
 add_executable(rvegen_post_process_smoke tests/post_process_smoke.cpp)
 target_link_libraries(rvegen_post_process_smoke PRIVATE
     rvegen_lib
@@ -194,13 +293,33 @@ target_link_libraries(rvegen_post_process_smoke PRIVATE
 )
 add_test(NAME post_process_smoke COMMAND rvegen_post_process_smoke)
 
+add_executable(rvegen_voxel_stats_3d_test tests/voxel_stats_3d_test.cpp)
+target_link_libraries(rvegen_voxel_stats_3d_test PRIVATE rvegen_lib)
+add_test(NAME voxel_stats_3d_test COMMAND rvegen_voxel_stats_3d_test)
+
 add_executable(rvegen_mesh_dispatch_test tests/mesh_dispatch_test.cpp)
 target_link_libraries(rvegen_mesh_dispatch_test PRIVATE rvegen_lib)
 add_test(NAME mesh_dispatch_test COMMAND rvegen_mesh_dispatch_test)
 
+add_executable(rvegen_visualization_writers_test tests/visualization_writers_test.cpp)
+target_link_libraries(rvegen_visualization_writers_test PRIVATE rvegen_lib Threads::Threads)
+add_test(NAME visualization_writers_test COMMAND rvegen_visualization_writers_test)
+
 add_executable(rvegen_schema_audit_test tests/schema_audit_test.cpp)
 target_link_libraries(rvegen_schema_audit_test PRIVATE rvegen_lib)
 add_test(NAME schema_audit_test COMMAND rvegen_schema_audit_test)
+
+add_executable(rvegen_voronoi_robustness_test tests/voronoi_robustness_test.cpp)
+target_link_libraries(rvegen_voronoi_robustness_test PRIVATE rvegen_lib)
+add_test(NAME voronoi_robustness_test COMMAND rvegen_voronoi_robustness_test)
+
+add_executable(rvegen_voronoi_backend_test tests/voronoi_backend_test.cpp)
+target_link_libraries(rvegen_voronoi_backend_test PRIVATE rvegen_lib)
+add_test(NAME voronoi_backend_test COMMAND rvegen_voronoi_backend_test)
+
+add_executable(rvegen_voronoi_polycrystal_test tests/voronoi_polycrystal_test.cpp)
+target_link_libraries(rvegen_voronoi_polycrystal_test PRIVATE rvegen_lib)
+add_test(NAME voronoi_polycrystal_test COMMAND rvegen_voronoi_polycrystal_test)
 
 add_executable(rvegen_progress_cancel_test tests/progress_cancel_test.cpp)
 target_link_libraries(rvegen_progress_cancel_test PRIVATE rvegen_lib)
@@ -339,6 +458,17 @@ set_tests_properties(cli_circles_example PROPERTIES
     PASS_REGULAR_EXPRESSION "generated 10 shapes"
 )
 
+# Unreachable target: the generator gives up at max_attempts and the CLI
+# warns on stderr (PASS_REGULAR_EXPRESSION matches stdout and stderr).
+add_test(
+    NAME cli_max_attempts_warning
+    COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_max_attempts.json
+)
+set_tests_properties(cli_max_attempts_warning PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PASS_REGULAR_EXPRESSION "warning .* stopped at max_attempts"
+)
+
 add_test(
     NAME cli_spheres_example
     COMMAND rvegen ${CMAKE_CURRENT_SOURCE_DIR}/examples/spheres_in_cube.json
@@ -347,6 +477,48 @@ set_tests_properties(cli_spheres_example PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     PASS_REGULAR_EXPRESSION "generated [0-9]+ shapes"
 )
+
+# Top-level "seed" / "domain_box" validation. Each case writes a minimal
+# config with the given fragment and expects the CLI to reject it (message
+# naming the key) or, for the *_ok cases, to run.
+function(rvegen_add_cli_toplevel_test name fragment regex)
+  set(cfg ${CMAKE_CURRENT_BINARY_DIR}/cli_${name}.json)
+  file(WRITE ${cfg} "{ ${fragment},
+  \"distributions\": { \"u\": { \"type\": \"uniform_real\", \"a\": 0.2, \"b\": 0.8 },
+                      \"r\": { \"type\": \"uniform_real\", \"a\": 0.03, \"b\": 0.05 } },
+  \"shapes\": [ { \"type\": \"circle_input\", \"pos_x_dist\": \"u\",
+                 \"pos_y_dist\": \"u\", \"radius_dist\": \"r\" } ],
+  \"generator\": { \"type\": \"only_inside\", \"max_attempts\": 1000 },
+  \"termination\": { \"type\": \"number_of_inclusions\", \"target\": 2 } }
+")
+  add_test(NAME cli_${name} COMMAND rvegen ${cfg})
+  set_tests_properties(cli_${name} PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+
+rvegen_add_cli_toplevel_test(seed_negative   "\"seed\": -1"
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_fractional "\"seed\": 1.5"
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_string     "\"seed\": \"7\""
+    "key 'seed' expects a non-negative integer")
+rvegen_add_cli_toplevel_test(seed_too_large  "\"seed\": 4294967296"
+    "seed must be <= 4294967295")
+rvegen_add_cli_toplevel_test(seed_max_ok     "\"seed\": 4294967295"
+    "generated 2 shapes")
+rvegen_add_cli_toplevel_test(domain_box_zero "\"domain_box\": [0, 0, 0]"
+    "domain_box x and y extents must be > 0")
+rvegen_add_cli_toplevel_test(domain_box_negative "\"domain_box\": [-1, 1, 0]"
+    "domain_box x and y extents must be > 0")
+rvegen_add_cli_toplevel_test(domain_box_negative_z "\"domain_box\": [1, 1, -1]"
+    "domain_box z extent must be >= 0")
+rvegen_add_cli_toplevel_test(domain_box_length "\"domain_box\": [1]"
+    "domain_box must be an array of 2 or 3 numbers")
+rvegen_add_cli_toplevel_test(domain_box_type "\"domain_box\": [1, \"a\"]"
+    "domain_box entries must be numbers")
+rvegen_add_cli_toplevel_test(domain_box_two_ok "\"domain_box\": [1, 1]"
+    "generated 2 shapes")
 
 add_test(
     NAME cli_periodic_circles_example
@@ -391,8 +563,6 @@ function(rvegen_cli_msg_test name cfg regex)
 endfunction()
 rvegen_cli_msg_test(direction_in_scalar_slot direction_in_scalar_slot.json
     "refers to direction distribution 'd'")
-rvegen_cli_msg_test(seed_too_large seed_too_large.json "'seed' must be an integer")
-rvegen_cli_msg_test(seed_negative seed_negative.json "'seed' must be an integer")
 rvegen_cli_msg_test(deterministic_ignored_keys deterministic_ignored_keys.json
     "\"shapes\" is ignored.*\"termination\" is ignored")
 rvegen_cli_msg_test(generator_unknown_key generator_unknown_key.json
