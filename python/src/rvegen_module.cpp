@@ -285,13 +285,17 @@ PYBIND11_MODULE(_core, m) {
       .def("build_cells",
            [](rvegen::voronoi_generator_2d<double> const& g) {
              // Iterate the raw polygons and wrap each as a value
-             // ConvexPolygon. Degenerate (<3 vertex) cells are skipped
-             // — same convention as voronoi_to_shapes on the C++ side.
+             // ConvexPolygon. Degenerate (<3 vertex) cells become empty
+             // placeholders so cell i always matches seed i (same
+             // convention as voronoi_to_shapes on the C++ side).
              auto polys = g.build();
              std::vector<rvegen::convex_polygon<double>> out;
              out.reserve(polys.size());
              for (auto& v : polys) {
-               if (v.size() < 3) continue;
+               if (v.size() < 3) {
+                 out.emplace_back();
+                 continue;
+               }
                out.emplace_back(std::move(v));
              }
              return out;

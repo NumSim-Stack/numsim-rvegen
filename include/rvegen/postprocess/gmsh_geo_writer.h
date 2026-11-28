@@ -311,8 +311,24 @@ public:
     set_length_scale(box);
     std::ostringstream buf;
     write_header(buf);
-    const auto inclusions = is_3d ? write_entities_3d(buf, shapes, box)
-                                  : write_entities_2d(buf, shapes, box);
+    // Degenerate polygons (empty / collapsed / zero-area Voronoi cells)
+    // would produce an invalid `Line Loop{}`; drop them before any entity
+    // or clip id is assigned so ids stay index-aligned with `drawable`.
+    shape_vector drawable;
+    drawable.reserve(shapes.size());
+    for (auto const& s : shapes) {
+      if (!is_3d) {
+        if (auto const* p = dynamic_cast<convex_polygon<value_type> const*>(s.get()); p) {
+          if (is_degenerate_polygon(*p)) {
+            buf << "// (degenerate polygon skipped)\n";
+            continue;
+          }
+        }
+      }
+      drawable.push_back(s->clone());
+    }
+    const auto inclusions = is_3d ? write_entities_3d(buf, drawable, box)
+                                  : write_entities_2d(buf, drawable, box);
     const char* kind = is_3d ? "Volume" : "Surface";
     write_fragments(buf, inclusions, kind);
     if (_periodic) write_periodic(buf, box, is_3d);
@@ -699,6 +715,18 @@ private:
       out << "Rotate {{0, 0, 1}, {" << num(e.center[0]) << ", " << num(e.center[1])
           << ", 0}, " << raw_num(angle) << "} { Surface{" << id << "}; }\n";
     }
+  }
+
+  static bool is_degenerate_polygon(convex_polygon<value_type> const& p) {
+    auto const& v = p.vertices();
+    if (v.size() < 3) return true;
+    value_type a2{0};
+    for (std::size_t k = 0; k < v.size(); ++k) {
+      auto const& a = v[k];
+      auto const& b = v[(k + 1) % v.size()];
+      a2 += a[0] * b[1] - b[0] * a[1];
+    }
+    return !(std::abs(a2) > value_type{0});
   }
 
   // Points / lines / loop get fresh tags from gmsh (newp / newl / newll)
