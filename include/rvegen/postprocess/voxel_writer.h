@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
-#include <iomanip>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -16,6 +15,7 @@
 #include "post_process_base.h"
 #include "../phase/phase.h"
 #include "../types.h"
+#include "../util/format_number.h"
 #include "phase_table.h"
 #include "voxel_grid.h"
 
@@ -150,15 +150,14 @@ public:
     // the comment header and explicitly identifies the file format.
     // v3: a 3D RVE written with nz = 1 samples the mid-plane z = Lz/2
     // (v2 sampled the bottom face z = 0).
-    // The extents are written with round-trip precision (17 significant
-    // digits, as the VTK SPACING line) so h = L/n is recoverable exactly;
-    // the layout, and so the format version, is unchanged.
-    const auto old_precision = out.precision();
+    // The extents are written with format_number (as the VTK SPACING
+    // line), so h = L/n is recoverable exactly; the layout, and so the
+    // format version, is unchanged.
     out << "# rvegen voxel grid [rvegen-voxel-format: v3]\n"
         << "# nx ny nz: " << _nx << ' ' << _ny << ' ' << nz_eff << '\n'
-        << "# Lx Ly Lz: " << std::setprecision(17) << domain_box[0] << ' '
-        << domain_box[1] << ' ' << domain_box[2]
-        << std::setprecision(old_precision) << '\n';
+        << "# Lx Ly Lz: " << format_number(domain_box[0]) << ' '
+        << format_number(domain_box[1]) << ' '
+        << format_number(domain_box[2]) << '\n';
     if (_phases) {
       if (_phases->has_matrix()) {
         out << "# id scheme: phase ids from phase_collection (uncovered "

@@ -62,6 +62,7 @@
 #include <vector>
 
 #include "rve_generator_base.h"
+#include "../util/wrap_to_box.h"
 #include "voronoi_generator_3d.h"
 
 namespace rvegen {
@@ -260,7 +261,7 @@ template <typename T = double, typename Engine>
           const auto c = cells[i]->get_middle_point();
           for (int k = 0; k < 3; ++k) {
             T x = cur.seeds[i][k] + T{0.5} * (c[k] - cur.seeds[i][k]);
-            if (periodic) x -= L[k] * std::floor(x / L[k]);
+            if (periodic) x = wrap_to_box(x, L[k]);
             cur.seeds[i][k] = std::clamp(x, T{0}, L[k]);
           }
         }

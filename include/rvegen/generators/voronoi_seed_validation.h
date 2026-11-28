@@ -23,6 +23,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../util/wrap_to_box.h"
+
 namespace rvegen::detail {
 
 inline constexpr double voronoi_rel_tol = 1e-9;
@@ -74,9 +76,7 @@ void validate_voronoi_seeds(std::array<T, D> const& extent,
     key_type key{};
     for (std::size_t k = 0; k < D; ++k) {
       T x = p[k];
-      if (periodic) {
-        x -= extent[k] * std::floor(x / extent[k]);   // wrap into [0, L)
-      }
+      if (periodic) x = wrap_to_box(x, extent[k]);
       long long c = static_cast<long long>(std::floor(x / tol));
       if (periodic) c = std::clamp(c, 0LL, ncell[k] - 1);
       key[k] = c;
