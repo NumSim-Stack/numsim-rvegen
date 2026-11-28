@@ -135,6 +135,11 @@ template <typename T = double, typename Engine>
     throw std::runtime_error{
         "lognormal_grain_seeds_3d: mean_diameter > 0 and sigma_ln >= 0 required"};
   }
+  if (!(tolerance > T{0}) || !std::isfinite(tolerance)) {
+    throw std::invalid_argument{
+        "lognormal_grain_seeds_3d: tolerance must be finite and > 0 (an exact "
+        "match of every cell volume cannot be reached)"};
+  }
   for (T e : {Lx, Ly, Lz}) {
     if (!std::isfinite(e) || !(e > T{0})) {
       throw std::invalid_argument{
@@ -146,6 +151,17 @@ template <typename T = double, typename Engine>
   const T mu = std::log(mean_diameter) - sigma_ln * sigma_ln / T{2};
   const T mean_v = pi / T{6} * std::exp(T{3} * mu + T{4.5} * sigma_ln * sigma_ln);
   const T implied = V / mean_v;   // grains of the requested mean size in the box
+  // A mean diameter far below the box (or an overflowing sigma) makes the
+  // count infinite or NaN; it must not reach the integer conversion below.
+  if (!std::isfinite(mean_v) || !(mean_v > T{0}) || !std::isfinite(implied) ||
+      !(implied < T{1e9})) {
+    throw std::invalid_argument{
+        "lognormal_grain_seeds_3d: mean diameter " +
+        std::to_string(mean_diameter) + " with sigma_ln " +
+        std::to_string(sigma_ln) + " does not give a usable grain count for "
+        "a box " + std::to_string(Lx) + " x " + std::to_string(Ly) + " x " +
+        std::to_string(Lz) + " (more than 1e9 grains, or not a number)"};
+  }
   if (!(implied >= T{2})) {
     throw std::invalid_argument{
         "lognormal_grain_seeds_3d: requested mean diameter " +
