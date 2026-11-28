@@ -40,16 +40,29 @@ constexpr int exit_config = 78;  // EX_CONFIG
 
 void print_usage(char const* argv0) {
   std::cerr
-      << "usage: " << argv0 << " <config.json> [--progress]\n"
+      << "usage: " << argv0 << " [options] <config.json>\n"
+      << "       " << argv0 << " --check <config.json>\n"
       << "       " << argv0 << " --list-types\n\n"
       << "  config.json   JSON file describing the RVE generation pipeline.\n"
       << "                Each entry under \"postprocess\" carries its own\n"
       << "                output_path.\n\n"
+      << "  --check       Validate the config and exit without generating:\n"
+      << "                every block is built, phases are parsed and the\n"
+      << "                output directories are checked, exactly as a run\n"
+      << "                does before it places the first shape. No file is\n"
+      << "                written. Exit status 0 means the config is valid.\n\n"
+      << "  --allow-unknown-keys\n"
+      << "                An unknown top-level key is an error (it is usually\n"
+      << "                a misspelt section, which would be skipped); with\n"
+      << "                this option it is only a warning. Keys starting\n"
+      << "                with '_' are always allowed.\n\n"
       << "  --progress    Emit live progress lines to stderr every 50\n"
       << "                accepted shapes — \"[progress] placed=X / N | φ=…\".\n"
       << "                Off by default so scripted output stays stable.\n\n"
       << "  --list-types  Print every registered JSON \"type\" per registry as\n"
-      << "                Markdown (README.md embeds this) and exit.\n";
+      << "                Markdown (README.md embeds this) and exit.\n\n"
+      << "  --            End of options: the next argument is the config\n"
+      << "                file even if its name starts with \"--\".\n";
 }
 
 template <typename Registry>
@@ -82,17 +95,57 @@ int list_types() {
 }
 
 int run(int argc, char** argv) {
-  if (argc < 2) {
+  // Options may come before or after the config file.
+  bool show_progress = false;
+  bool check_only = false;
+  bool allow_unknown_keys = false;
+  char const* config_path = nullptr;
+  bool options_ended = false;   // after "--" everything is a file name
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg{argv[i]};
+    if (!options_ended && arg == "--") {
+      options_ended = true;
+      continue;
+    }
+    if (options_ended) {
+      if (config_path != nullptr) {
+        std::cerr << "rvegen: more than one config file given ('"
+                  << config_path << "' and '" << arg << "')\n\n";
+        print_usage(argv[0]);
+        return exit_usage;
+      }
+      config_path = argv[i];
+      continue;
+    }
+    if (arg == "--list-types") return list_types();
+    if (arg == "--progress") {
+      show_progress = true;
+    } else if (arg == "--check") {
+      check_only = true;
+    } else if (arg == "--allow-unknown-keys") {
+      allow_unknown_keys = true;
+    } else if (arg.starts_with("--")) {
+      std::cerr << "rvegen: unknown option '" << arg << "'\n\n";
+      print_usage(argv[0]);
+      return exit_usage;
+    } else if (config_path != nullptr) {
+      std::cerr << "rvegen: more than one config file given ('" << config_path
+                << "' and '" << arg << "')\n\n";
+      print_usage(argv[0]);
+      return exit_usage;
+    } else {
+      config_path = argv[i];
+    }
+  }
+  if (config_path == nullptr) {
     print_usage(argv[0]);
     return exit_usage;
   }
 
-  if (std::string{argv[1]} == "--list-types") return list_types();
-
   // ---- 1. Load JSON config -----------------------------------------------
-  std::ifstream config_file{argv[1]};
+  std::ifstream config_file{config_path};
   if (!config_file) {
-    std::cerr << "rvegen: cannot open config file: " << argv[1] << '\n';
+    std::cerr << "rvegen: cannot open config file: " << config_path << '\n';
     return exit_input;
   }
 
@@ -100,7 +153,7 @@ int run(int argc, char** argv) {
   try {
     config_file >> config;
   } catch (std::exception const& e) {
-    std::cerr << "rvegen: parse error in " << argv[1] << ": " << e.what() << '\n';
+    std::cerr << "rvegen: parse error in " << config_path << ": " << e.what() << '\n';
     return exit_config;
   }
 
@@ -112,12 +165,16 @@ int run(int argc, char** argv) {
   opts.info = [](std::string const& line) { std::cout << line << '\n'; };
   opts.warn = [](std::string const& line) { std::cerr << line << '\n'; };
 
+  opts.strict_keys = !allow_unknown_keys;
+
+  if (check_only) {
+    rvegen::check_config(config, opts);
+    std::cout << "rvegen: config OK: " << config_path << '\n';
+    return EXIT_SUCCESS;
+  }
+
   // Optional `--progress` hook: "[progress] placed=X / N | φ=…" lines on
   // stderr, off by default to keep CLI output stable for scripting.
-  bool show_progress = false;
-  for (int i = 2; i < argc; ++i) {
-    if (std::string{argv[i]} == "--progress") show_progress = true;
-  }
   if (show_progress) {
     opts.progress.on_progress = [](rvegen::progress_info info) {
       std::cerr << "[progress] placed=" << info.shapes_placed;

@@ -50,10 +50,23 @@ cd build && ./rvegen ../examples/circles_in_unit_box.json
 ctest --output-on-failure
 ```
 
-The CLI takes only the config file (plus the optional `--progress` flag).
-Output files come from each `postprocess[].output_path` entry and are written
-relative to the current directory. `rvegen --list-types` prints every
-registered type.
+The CLI takes the config file and a few options (`rvegen` without arguments
+lists them). Output files come from each `postprocess[].output_path` entry and
+are written relative to the current directory. `rvegen --list-types` prints
+every registered type.
+
+The whole config is validated before the first shape is placed: every block is
+built, phases are parsed, and each writer's output directory must exist and be
+writable. A mistake in the last writer therefore costs no generation time and
+leaves no half-written set of files. An unknown top-level key is an error, with
+the key it most likely meant (`"post_process"` -> `"postprocess"`); keys
+starting with `_`, such as `_comment`, are ignored. `--allow-unknown-keys`
+turns that error into a warning.
+
+```bash
+./build/rvegen --check examples/circles_in_unit_box.json
+# -> rvegen: config OK: examples/circles_in_unit_box.json   (nothing generated or written)
+```
 
 The compiler must provide C++23 `<print>` (GCC 14+, or Clang 17+ with a recent
 libc++/libstdc++). With a system default of GCC 13 the configure step stops at

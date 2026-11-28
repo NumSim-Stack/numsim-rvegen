@@ -274,12 +274,21 @@ public:
   void set_tessellation(bool v) noexcept { _tessellation = v; }
   [[nodiscard]] bool tessellation() const noexcept { return _tessellation; }
 
-  void run(shape_vector const& shapes,
-           std::array<value_type, 3> const& domain_box) const override {
+  void validate(std::array<value_type, 3> const& domain_box) const override {
     if (_output_path.empty()) {
       throw std::runtime_error{
           "gmsh_geo_writer: output_path not set; cannot run() as post-process"};
     }
+    check_options(domain_box);
+    // Forced tessellation mode: the two options it cannot honour are known
+    // without shapes. (Tessellation chosen because the shapes are Voronoi
+    // cells is only known after generation; write() checks it again.)
+    if (_tessellation) reject_tessellation_options();
+  }
+
+  void run(shape_vector const& shapes,
+           std::array<value_type, 3> const& domain_box) const override {
+    validate(domain_box);
     // Build the whole script first: a rejected shape must not truncate
     // an existing file.
     std::ostringstream buf;
@@ -299,14 +308,7 @@ public:
              std::array<value_type, 3> const& box) const {
     const bool is_3d = box[2] > value_type{0};
 
-    for (auto const v : box) require_finite(v, "domain size");
-    if (!(box[0] > value_type{0}) || !(box[1] > value_type{0}) || box[2] < value_type{0}) {
-      throw std::runtime_error{
-          "gmsh_geo_writer: domain size must be > 0 in x and y and >= 0 in z"};
-    }
-    for (auto const v : {_char_length_min, _char_length_max}) {
-      require_finite(v, "mesh size");
-    }
+    check_options(box);
 
     set_length_scale(box);
 
@@ -320,17 +322,7 @@ public:
           "gmsh_geo_writer: voronoi_cell needs a 3D domain"};
     }
     if (any_cell3 || (_tessellation && !shapes.empty())) {
-      if (_periodic) {
-        throw std::runtime_error{
-            "gmsh_geo_writer: periodic output is not supported for "
-            "tessellations (cells are not wrapped)"};
-      }
-      if (_phases) {
-        throw std::runtime_error{
-            "gmsh_geo_writer: phases are not supported in tessellation mode "
-            "(grains get \"grain_<i>\" physical groups); detach the "
-            "phase_collection"};
-      }
+      reject_tessellation_options();
       std::ostringstream buf;
       write_tessellation(buf, shapes, box, is_3d);
       out << buf.str();
@@ -412,6 +404,32 @@ private:
   // concurrent write() calls on one object).
   void set_length_scale(std::array<value_type, 3> const& box) const {
     _length_scale = std::max({box[0], box[1], box[2]});
+  }
+
+  // Checks that need the box and the options, but no shapes.
+  void check_options(std::array<value_type, 3> const& box) const {
+    for (auto const v : box) require_finite(v, "domain size");
+    if (!(box[0] > value_type{0}) || !(box[1] > value_type{0}) || box[2] < value_type{0}) {
+      throw std::runtime_error{
+          "gmsh_geo_writer: domain size must be > 0 in x and y and >= 0 in z"};
+    }
+    for (auto const v : {_char_length_min, _char_length_max}) {
+      require_finite(v, "mesh size");
+    }
+  }
+
+  void reject_tessellation_options() const {
+    if (_periodic) {
+      throw std::runtime_error{
+          "gmsh_geo_writer: periodic output is not supported for "
+          "tessellations (cells are not wrapped)"};
+    }
+    if (_phases) {
+      throw std::runtime_error{
+          "gmsh_geo_writer: phases are not supported in tessellation mode "
+          "(grains get \"grain_<i>\" physical groups); detach the "
+          "phase_collection"};
+    }
   }
 
   // Numbers are written with format_number (shortest form that reads back

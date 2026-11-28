@@ -715,13 +715,40 @@ PYBIND11_MODULE(_core, m) {
         return r.shapes.attr("__getitem__")(idx);
       });
 
+  m.def("check",
+      [](py::object const& config, std::optional<std::uint64_t> seed,
+         bool strict) {
+        auto const cfg = load_config(config);
+        rvegen::pipeline_options opts;
+        opts.seed = seed;
+        opts.strict_keys = strict;
+        std::vector<std::string> warnings_out;
+        opts.warn = [&warnings_out](std::string const& w) {
+          warnings_out.push_back(w);
+        };
+        rvegen::check_config(cfg, opts);
+        for (auto const& w : warnings_out) {
+          if (PyErr_WarnEx(PyExc_UserWarning, w.c_str(), 1) < 0)
+            throw py::error_already_set();
+        }
+      },
+      py::arg("config"), py::arg("seed") = py::none(),
+      py::arg("strict") = true,
+      "Validate a config without generating anything: every block is built, "
+      "phases are parsed and the output directories of the writers are "
+      "checked, exactly as run() does before it places the first shape. No "
+      "file is written. Raises on the first problem, returns None when the "
+      "config is valid. strict=False turns an unknown top-level key from an "
+      "error into a UserWarning.");
+
   m.def("run",
       [](py::object const& config, std::optional<std::uint64_t> seed,
-         bool postprocess) {
+         bool postprocess, bool strict) {
         auto const cfg = load_config(config);
         rvegen::pipeline_options opts;
         opts.seed = seed;
         opts.run_postprocess = postprocess;
+        opts.strict_keys = strict;
         std::vector<std::string> warnings_out;   // surfaced as UserWarning below
         opts.warn = [&warnings_out](std::string const& w) {
           warnings_out.push_back(w);
@@ -759,11 +786,13 @@ PYBIND11_MODULE(_core, m) {
         return out;
       },
       py::arg("config"), py::arg("seed") = py::none(),
-      py::arg("postprocess") = true,
+      py::arg("postprocess") = true, py::arg("strict") = true,
       "Run a full rvegen pipeline. `config` is a dict (same schema as the "
       "CLI JSON) or a path to a JSON file; `seed` overrides the config "
       "seed. Writers under \"postprocess\" run unless postprocess=False. "
-      "Returns a RunResult (sequence of shapes + summary).");
+      "The whole config is validated before the first shape is placed; an "
+      "unknown top-level key is an error unless strict=False (then a "
+      "UserWarning). Returns a RunResult (sequence of shapes + summary).");
 
   // ---- Voxelisation ---------------------------------------------------------
   m.def("voxelize",

@@ -264,15 +264,53 @@ def test_run_not_interrupted_without_signal():
 
 def test_warnings_as_errors_propagate():
     cfg = json.loads(json.dumps(CIRCLES))
-    cfg["bogus_key"] = 1   # unknown top-level key -> UserWarning
+    cfg["bogus_key"] = 1   # unknown top-level key: UserWarning with strict=False
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(UserWarning, match="bogus_key"):
-            rvegen.run(cfg, postprocess=False)
+            rvegen.run(cfg, postprocess=False, strict=False)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        rvegen.run(cfg, postprocess=False)
+        rvegen.run(cfg, postprocess=False, strict=False)
     assert any("bogus_key" in str(w.message) for w in caught)
+
+
+def test_unknown_top_level_key_is_an_error():
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["post_process"] = []
+    with pytest.raises(ValueError, match=r"'post_process' \(did you mean 'postprocess'\?\)"):
+        rvegen.run(cfg, postprocess=False)
+    with pytest.raises(ValueError, match="post_process"):
+        rvegen.check(cfg)
+    cfg = json.loads(json.dumps(CIRCLES))
+    cfg["_comment"] = "keys starting with an underscore are annotations"
+    assert rvegen.check(cfg) is None
+
+
+def test_check_validates_without_generating(tmp_path):
+    cfg = json.loads(json.dumps(CIRCLES))
+    out = tmp_path / "a.svg"
+    cfg["postprocess"] = [
+        {"type": "svg", "canvas_width": 200, "output_path": str(out)},
+        {"type": "svg", "output_path": str(tmp_path / "b.svg")},   # no canvas_width
+    ]
+    # A missing key is a ValueError, as everywhere else in a config.
+    with pytest.raises(ValueError, match=r"postprocess\[1\] \('svg'\).*canvas_width"):
+        rvegen.check(cfg)
+    with pytest.raises(ValueError, match=r"postprocess\[1\]"):
+        rvegen.run(cfg)
+    assert not out.exists()            # the first writer did not run either
+    cfg["postprocess"][1]["canvas_width"] = 100
+    assert rvegen.check(cfg) is None
+    assert list(tmp_path.iterdir()) == []   # a check writes nothing
+    cfg["postprocess"][1]["output_path"] = str(tmp_path / "nowhere" / "b.svg")
+    with pytest.raises(RuntimeError, match="does not exist"):
+        rvegen.check(cfg)
+    # A path to a config file works as for run().
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(CIRCLES))
+    assert rvegen.check(str(path)) is None
+    assert rvegen.check(CIRCLES, seed=3) is None
 
 
 def test_run_prints_nothing_to_stdout(capfd):

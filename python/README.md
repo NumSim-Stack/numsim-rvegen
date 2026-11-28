@@ -114,6 +114,9 @@ for s in res:
 # translation (i, j, k) from the primary, and both share s.inclusion_id.
 inclusions = [s for s in res if s.is_primary]
 
+# Validate without generating: raises on the first problem, writes nothing.
+rvegen.check(config)
+
 # Writers under "postprocess" run too (set postprocess=False to skip them).
 # Deterministic generators (voronoi_2d/3d, weave, tow_weave) need no
 # "shapes" / "termination" sections.
