@@ -1,0 +1,34 @@
+{
+  "_comment": "Statistics of an anisotropic RVE: short fibres whose axes follow a Bingham distribution around +x. The statistics post-process reports the exact two-point probability S2 as a radial average and along each axis; S2_x(r) stays high over the length of a fibre while S2_y(r) and S2_z(r) fall off within its diameter.",
+
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 11,
+
+  "distributions": {
+    "pos":    { "type": "uniform_real", "a": 0.0, "b": 1.0 },
+    "length": { "type": "uniform_real", "a": 0.30, "b": 0.40 },
+    "radius": { "type": "constant", "value": 0.03 }
+  },
+
+  "direction_distributions": {
+    "fibre_dir": { "type": "bingham",
+                   "mean_axis_x": 1.0, "mean_axis_y": 0.0, "mean_axis_z": 0.0,
+                   "kappa": 30.0 }
+  },
+
+  "shapes": [
+    { "type": "polyline_tube_oriented_input",
+      "position_x_dist": "pos", "position_y_dist": "pos", "position_z_dist": "pos",
+      "direction_dist": "fibre_dir",
+      "length_dist": "length", "radius_dist": "radius" }
+  ],
+
+  "generator":   { "type": "periodic", "max_attempts": 200000 },
+  "termination": { "type": "number_of_inclusions", "target": 60 },
+
+  "postprocess": [
+    { "type": "three_js", "output_path": "fibres_statistics.html" },
+    { "type": "statistics", "output_path": "fibres_statistics.csv",
+      "nx": 96, "ny": 96, "nz": 96, "nbins": 24 }
+  ]
+}

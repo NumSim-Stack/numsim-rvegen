@@ -568,6 +568,12 @@ install(DIRECTORY include/rvegen/
     FILES_MATCHING PATTERN "*.h"
 )
 
+# The licence of the bundled pocketfft header travels with it.
+install(FILES include/rvegen/external/pocketfft/LICENSE.md
+              include/rvegen/external/pocketfft/README.md
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rvegen/external/pocketfft
+)
+
 # Vendored GTE — install under rvegen/external/ so the install-tree
 # include path matches the source-tree layout used in our headers
 # (`#include <Mathematics/...>`). Consumers who already have GTE

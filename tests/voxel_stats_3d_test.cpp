@@ -431,10 +431,14 @@ void test_statistics_post_process_3d() {
       shapes, {1.0, 1.0, 1.0}, 16, 16, 16, 8,
       rvegen::two_point_boundary::bounded);
   const auto g = rvegen::radial_distribution_3d(shapes, {1.0, 1.0, 1.0}, 8);
-  std::ostringstream first_bin;
-  first_bin << std::setprecision(12) << '\n'
-            << s2[0].r << ',' << s2[0].s2 << ',' << g[0].g << ',';
-  REQUIRE(text.find(first_bin.str()) != std::string::npos);
+  // The first bin ends where the first lag (one voxel, 1/16) begins: it
+  // holds no lag and its S2 field is empty. The second one has a value.
+  REQUIRE(std::isnan(s2[0].s2));
+  std::ostringstream bins;
+  bins << std::setprecision(12) << '\n'
+       << s2[0].r << ",," << g[0].g << ",,,\n"
+       << s2[1].r << ',' << s2[1].s2 << ',' << g[1].g << ',';
+  REQUIRE(text.find(bins.str()) != std::string::npos);
   REQUIRE(text.find("\n0,") != std::string::npos);
   REQUIRE(text.find("# columns: r, S2(r), g(r), S2_x(r), S2_y(r), S2_z(r)\n") !=
           std::string::npos);
@@ -572,17 +576,22 @@ void test_statistics_csv_with_few_inclusions() {
       const auto text = run_statistics(cfg, shapes,
                                        {1.0, 1.0, is3d ? 1.0 : 0.0}, path);
       const auto rows = data_rows(text);
-      REQUIRE(rows.size() == 4);
+      REQUIRE(rows.size() == 5);   // r = 0 and the four bins
       const bool has_note =
           text.find("# g(r) undefined") != std::string::npos;
       REQUIRE(has_note == (count < 2));
-      for (auto const& r : rows) {
+      // r, S2, g and one S2 column per axis; g is the third field and is
+      // empty at r = 0 and wherever it is undefined.
+      for (std::size_t n = 0; n < rows.size(); ++n) {
+        auto const& r = rows[n];
         const auto c1 = r.find(',');
         const auto c2 = r.find(',', c1 + 1);
-        REQUIRE(c1 != std::string::npos && c2 != std::string::npos);
-        REQUIRE(r.find(',', c2 + 1) == std::string::npos);
-        if (c2 == std::string::npos) continue;
-        REQUIRE((c2 + 1 == r.size()) == (count < 2));
+        const auto c3 = r.find(',', c2 + 1);
+        REQUIRE(c1 != std::string::npos && c2 != std::string::npos &&
+                c3 != std::string::npos);
+        REQUIRE(std::count(r.begin(), r.end(), ',') == (is3d ? 5 : 4));
+        if (c3 == std::string::npos) continue;
+        REQUIRE((c3 == c2 + 1) == (count < 2 || n == 0));
       }
       if (count == 1 && !rows.empty()) {
         // S2 is kept: the first bin (r ~ 0) equals the voxel fraction > 0.

@@ -18,11 +18,13 @@ declares, this script verifies the output file itself:
          for periodic configs, boundary nodes match on opposite faces
   .svg   valid XML <svg>; 2D: viewBox == domain; >= N shape elements
   .html  contains a script and >= N shapes
-  .csv   (statistics) header volume fraction in (0, 1), 3 columns, r
-         increasing, 0 <= S2(r) <= phi, S2 not constant, g(r) >= 0 and not 0;
-         an empty g(r) field is accepted (fewer than two inclusions leave
-         the radial distribution undefined), but not in every row if any
-         row has a value
+  .csv   (statistics) header volume fraction in (0, 1); the columns the
+         header names in every row; a first row r = 0 that holds the volume
+         fraction of the grid in every S2 column; r increasing; every S2
+         value in [0, 1] and, in a periodic box, not above the value at
+         r = 0; S2 not constant; g(r) >= 0 and not 0. A field may be empty
+         (a bin without a lag; g(r) at r = 0), but g(r) is empty in every
+         bin only when fewer than two inclusions leave it undefined
 
 Voxel ids (.vox / .vtk) are read in one of three modes:
   shapes        ids in 0..N, both matrix and inclusion voxels, at least
@@ -434,29 +436,66 @@ def check_csv(path):
     rows = [l for l in text.splitlines() if l and not l.startswith("#")]
     if len(rows) < 2:
         fail(f"{path.name}: fewer than 2 data rows")
+    m = re.search(r"^# columns: (.+)$", text, re.M)
+    if not m:
+        fail(f"{path.name}: missing '# columns' header")
+    columns = [c.strip() for c in m.group(1).split(",")]
+    if columns[:3] != ["r", "S2(r)", "g(r)"] or len(columns) < 5:
+        fail(f"{path.name}: columns must start r, S2(r), g(r) and go on "
+             f"with S2 along the axes, got {columns}")
+    if any(not c.startswith("S2") for c in columns[3:]):
+        fail(f"{path.name}: a column after g(r) is not an S2 column")
+    periodic = re.search(r"^# S2 = .*periodic box", text, re.M) is not None
     fields = [r.split(",") for r in rows]
-    if any(len(f) != 3 for f in fields):
-        fail(f"{path.name}: expected 3 columns r, S2, g")
-    if any(not f[0].strip() or not f[1].strip() for f in fields):
-        fail(f"{path.name}: empty r or S2 field")
+    if any(len(f) != len(columns) for f in fields):
+        fail(f"{path.name}: a row does not have the {len(columns)} columns "
+             "of the header")
+
+    def number(field):
+        return float(field) if field.strip() else None
+
+    if any(not f[0].strip() for f in fields):
+        fail(f"{path.name}: empty r field")
     r = [float(f[0]) for f in fields]
-    s2 = [float(f[1]) for f in fields]
-    # g(r) is empty when the pack has fewer than two inclusions.
-    g_all = [float(f[2]) if f[2].strip() else None for f in fields]
-    g = [v for v in g_all if v is not None]
-    if g and len(g) != len(g_all):
-        fail(f"{path.name}: g(r) is empty in {len(g_all) - len(g)} of {len(g_all)} rows")
+    if r[0] != 0.0:
+        fail(f"{path.name}: the first row is not r = 0")
     if any(b <= a for a, b in zip(r, r[1:])):
         fail(f"{path.name}: r is not strictly increasing")
-    # S2(r) is the probability that two points r apart are both inclusion,
-    # so it is bounded by the volume fraction.
-    if min(s2) < 0.0 or max(s2) > phi + 1e-9:
-        fail(f"{path.name}: S2(r) outside [0, phi={phi}]")
+    # r = 0: both points are the same one, so every S2 column of a set holds
+    # its volume fraction on the grid, and a pair of phases holds 0.
+    zero = [number(f) for f in fields[0]]
+    if zero[1] is None or not 0.0 < zero[1] < 1.0:
+        fail(f"{path.name}: S2(0) = {zero[1]} is not a volume fraction")
+    m = re.search(r"^# voxel_volume_fraction = (\S+)", text, re.M)
+    if not m or abs(float(m.group(1)) - zero[1]) > 1e-9:
+        fail(f"{path.name}: '# voxel_volume_fraction' is not S2(0)")
+    if zero[2] is not None:
+        fail(f"{path.name}: g(r) has a value at r = 0")
+    for c in [1] + list(range(3, len(columns))):
+        column = [number(f[c]) for f in fields]
+        if column[0] is None:
+            fail(f"{path.name}: {columns[c]} is empty at r = 0")
+        values = [v for v in column if v is not None]
+        # A probability; in a periodic box every lag has the same number of
+        # pairs, and none can beat lag 0.
+        top = column[0] + 1e-9 if periodic and "|" not in columns[c] else 1.0
+        if min(values) < 0.0 or max(values) > top:
+            fail(f"{path.name}: {columns[c]} outside [0, {top:.6g}]")
+    s2 = [number(f[1]) for f in fields]
+    s2 = [v for v in s2 if v is not None]
+    if len(s2) < 3:
+        fail(f"{path.name}: S2(r) has fewer than 3 values")
     if max(s2) - min(s2) <= 1e-9:
         fail(f"{path.name}: S2(r) is constant, statistics are trivial")
+    # g(r) is empty when the pack has fewer than two inclusions.
+    g_all = [number(f[2]) for f in fields[1:]]
+    g = [v for v in g_all if v is not None]
+    if g and len(g) != len(g_all):
+        fail(f"{path.name}: g(r) is empty in {len(g_all) - len(g)} of {len(g_all)} bins")
     if g and (min(g) < 0.0 or max(g) <= 0.0):
         fail(f"{path.name}: g(r) negative or identically zero")
-    return f"{len(rows)} bins, phi {phi:.3f}" + ("" if g else ", g(r) empty")
+    return (f"{len(rows) - 1} bins, {len(columns)} columns, phi {phi:.3f}"
+            + ("" if g else ", g(r) empty"))
 
 
 def fill_window(target):
@@ -519,7 +558,11 @@ def self_test():
     """Checks of the checker: the parts that need no CLI run."""
     with tempfile.TemporaryDirectory(prefix="rvegen_cli_selftest_") as tmp:
         csv = Path(tmp) / "s.csv"
-        head = "# volume_fraction = 0.1\n# columns: r, S2(r), g(r)\n"
+        head = ("# volume_fraction = 0.1\n"
+                "# S2 = pair counts of the 8 x 8 voxel grid, exact (FFT); "
+                "periodic box, lags wrap around\n"
+                "# voxel_volume_fraction = 0.11\n"
+                "# columns: r, S2(r), g(r), S2_x(r), S2_y(r)\n")
 
         def expect(text, ok, what):
             csv.write_text(head + text)
@@ -532,10 +575,22 @@ def self_test():
                 print(f"self-test FAILED: {what}")
                 sys.exit(1)
 
-        expect("0.1,0.10,1.0\n0.2,0.05,2.0\n", True, "full rows")
-        expect("0.1,0.10,\n0.2,0.05,\n", True, "empty g(r) in every row")
-        expect("0.1,0.10,\n0.2,0.05,2.0\n", False, "g(r) empty in only some rows")
-        expect("0.1,0.10,0\n0.2,0.05,0\n", False, "g(r) identically zero")
+        z = "0,0.11,,0.11,0.11\n"
+        expect(z + "0.1,0.10,1.0,0.1,0.1\n0.2,0.05,2.0,,0.04\n", True, "full rows")
+        expect(z + "0.1,0.10,,0.1,0.1\n0.2,0.05,,0.05,0.05\n", True,
+               "empty g(r) in every bin")
+        expect(z + "0.1,0.10,,0.1,0.1\n0.2,0.05,2.0,0.05,0.05\n", False,
+               "g(r) empty in only some bins")
+        expect(z + "0.1,0.10,0,0.1,0.1\n0.2,0.05,0,0.05,0.05\n", False,
+               "g(r) identically zero")
+        expect("0.1,0.10,1.0,0.1,0.1\n0.2,0.05,2.0,0.05,0.05\n", False,
+               "no row for r = 0")
+        expect(z + "0.1,0.10,1.0,0.1\n0.2,0.05,2.0,0.05\n", False,
+               "a column short")
+        expect(z + "0.1,0.12,1.0,0.1,0.1\n0.2,0.05,2.0,0.05,0.05\n", False,
+               "S2 above S2(0) in a periodic box")
+        expect("0,0.12,,0.12,0.12\n0.1,0.10,1.0,0.1,0.1\n0.2,0.05,2,0.05,0.05\n",
+               False, "S2(0) is not the voxel volume fraction of the header")
     lo, hi = fill_window(0.35)
     if lo > 0.35 or hi < 0.35 or 0.223 >= lo or not lo <= 0.3546 <= hi:
         print("self-test FAILED: fill window")
