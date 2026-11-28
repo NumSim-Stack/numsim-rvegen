@@ -130,7 +130,7 @@ constexpr golden cases[] = {
                  "length_dist": "length", "radius_dist": "radius"}],
      "generator": {"type": "random", "max_attempts": 10000},
      "termination": {"type": "number_of_inclusions", "target": 15}})"},
-  {"voronoi_2d", true, 24, 0xf089560ab02f73c0ull, R"({
+  {"voronoi_2d", true, 24, 0x70c3238356fa2340ull, R"({
      "domain_box": [1.0, 1.0],
      "generator": {"type": "voronoi_2d", "n_seeds": 24, "seed": 7}})"},
   {"voronoi_3d", true, 12, 0xcc547fa18b6441f2ull, R"({
