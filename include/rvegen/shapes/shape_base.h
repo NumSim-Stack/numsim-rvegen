@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <optional>
@@ -95,6 +96,19 @@ public:
   // Maximum half-extent on each axis (used to test if a shape can fit
   // entirely inside the RVE box for OnlyInside placement).
   [[nodiscard]] virtual std::array<value_type, 3> max_expansion() const = 0;
+
+  // The smallest distance across the shape (its width: the thinnest slab
+  // that contains it), which is what a voxel grid has to resolve (#115).
+  // The default is the smallest side of the axis-aligned extent in the
+  // shape's own dimensions: exact for a shape aligned with the axes, too
+  // large for a thin shape at an angle, and never too small. The built-in
+  // round, convex and tube shapes return the exact value.
+  [[nodiscard]] virtual value_type min_width() const {
+    const auto half = max_expansion();
+    value_type width = std::min(half[0], half[1]);
+    if (dimension() == 3) width = std::min(width, half[2]);
+    return value_type{2} * width;
+  }
 
   // (Re)compute the bounding box from the shape's current geometry.
   virtual void make_bounding_box() = 0;

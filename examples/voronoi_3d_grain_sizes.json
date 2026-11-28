@@ -9,6 +9,6 @@
     "grain_diameter_sigma": 0.35
   },
   "postprocess": [
-    {"type": "voxel", "nx": 48, "ny": 48, "nz": 48, "output_path": "voronoi_3d_grain_sizes.vox"}
+    {"type": "voxel", "nx": 104, "ny": 104, "nz": 104, "output_path": "voronoi_3d_grain_sizes.vox"}
   ]
 }

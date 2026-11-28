@@ -1,5 +1,5 @@
 {
-  "_comment": "Tow-level weave: every yarn of a 4x4 plain weave is a hex-packed bundle of 7 fibres.",
+  "_comment": "Tow-level weave: every yarn of a 4x4 plain weave is a hex-packed bundle of 7 fibres. The voxel grid is a preview (a fibre is 1.2 voxels thick), so its resolution check is switched off; without \"min_voxels_per_feature\": 0 the run names the grid that resolves the fibres (320 x 320 x 80).",
 
   "domain_box": [1.0, 1.0, 0.25],
 
@@ -12,7 +12,7 @@
   },
 
   "postprocess": [
-    { "type": "voxel", "nx": 48, "ny": 48, "nz": 24,
+    { "type": "voxel", "nx": 48, "ny": 48, "nz": 24, "min_voxels_per_feature": 0,
       "output_path": "tow_weave.vox" }
   ]
 }

@@ -774,10 +774,23 @@ inline void run_post_processes(nlohmann::json const& config,
     // between writers: no further file is started.
     if (opts.progress.cancel()) throw pipeline_cancelled{};
     auto& pp = writers.at(n++);
+    auto type = spec.at("type").get<std::string>();
     if (result.phases) pp->set_phases(&*result.phases);
     pp->set_run_info(&result.run_info);
+    // What the post-process says about its output goes to the run's lines.
+    const post_process_log log{
+        [&](std::string const& line) {
+          opts.info("rvegen: post-process '" + type + "': " + line);
+        },
+        [&](std::string const& line) {
+          opts.warn("rvegen: warning - post-process '" + type + "': " + line);
+        }};
+    pp->set_log(&log);
+    struct detach {
+      post_process_base<double>& p;
+      ~detach() { p.set_log(nullptr); }
+    } const detach_log{*pp};
     pp->run(result.shapes, result.domain_box);
-    auto type = spec.at("type").get<std::string>();
     opts.info("rvegen: post-process '" + type + "' done");
     result.post_processes_run.push_back(std::move(type));
   }

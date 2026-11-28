@@ -23,7 +23,7 @@
   "termination": { "type": "volume_fraction", "target_fraction": 0.05 },
 
   "postprocess": [
-    { "type": "voxel", "nx": 32, "ny": 32, "nz": 32,
+    { "type": "voxel", "nx": 64, "ny": 64, "nz": 64,
       "output_path": "spheres_in_cube.vox" }
   ]
 }

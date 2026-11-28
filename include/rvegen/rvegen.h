@@ -144,6 +144,7 @@
 // postprocess (writers + the base they inherit from)
 #include "phase/phase_assignment.h"
 #include "postprocess/post_process_base.h"
+#include "postprocess/voxel_fractions.h"
 #include "postprocess/voxel_grid.h"
 #include "postprocess/gmsh_geo_writer.h"
 #include "postprocess/svg_writer.h"

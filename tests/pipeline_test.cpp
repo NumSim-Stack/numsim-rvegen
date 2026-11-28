@@ -582,6 +582,7 @@ void test_paths_and_verbose_lines() {
     "generator": {"type": "only_inside", "max_attempts": 100000},
     "termination": {"type": "number_of_inclusions", "target": 3},
     "postprocess": [{"type": "voxel", "nx": 8, "ny": 8, "nz": 8,
+                     "min_voxels_per_feature": 0,
                      "output_path": "paths_test_out.vox"}]
   })");
   struct lines {

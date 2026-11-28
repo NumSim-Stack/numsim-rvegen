@@ -6,12 +6,16 @@ truncated or unmeshable file. For every postprocess entry the config
 declares, this script verifies the output file itself:
 
   .vox   header grid and extent match the config, data count == nx*ny*nz,
-         id checks below
+         id checks below; with "subsamples" > 1 (format v4) the composite
+         voxel lines: count as announced, indices ascending, ids ascending,
+         samples adding up, the voxel's value the id with the largest share
   .vtk   POINT_DATA layout (one point per voxel, DIMENSIONS == grid,
          SPACING*DIMENSIONS == domain) or CELL_DATA layout (one cell per
          voxel, DIMENSIONS == grid+1, SPACING*(DIMENSIONS-1) == domain);
          a flat 2D axis has DIMENSIONS 1 in both; ORIGIN 0, value count ==
-         the data count, id checks below
+         the data count, id checks below; with "subsamples" > 1 the
+         volume_fraction array: components, one line per voxel adding up
+         to 1, the voxel's id among the largest shares
   .geo   gmsh meshes it; the mesh has >= 2 top-dimension volumes/surfaces
          (matrix + inclusions), its elements tile the domain exactly (total
          area/volume == domain, so no gaps or overlapping fragments) and,
@@ -196,12 +200,24 @@ def check_vox(path, mode, pp, domain):
     nx = ny = nz = None
     extent = None
     scheme = None
-    vals = []
+    samples = composite = None
+    rows = []
     for line in path.read_text().splitlines():
         if line.startswith("#"):
+            if rows:
+                fail(f"{path.name}: comment line after the first value")
             m = re.match(r"# id scheme:\s*(.*)", line)
             if m:
                 scheme = m.group(1)
+            m = re.match(r"# subsamples:\s*(\d+) \((\d+) sample points per voxel\)", line)
+            if m:
+                samples = int(m.group(2))
+                if int(m.group(1)) != pp.get("subsamples", 1):
+                    fail(f"{path.name}: {line!r}, config asks for "
+                         f"{pp.get('subsamples', 1)}")
+            m = re.match(r"# composite voxels:\s*(\d+) ", line)
+            if m:
+                composite = int(m.group(1))
             m = re.match(r"# nx ny nz:\s+(\d+) (\d+) (\d+)", line)
             if m:
                 nx, ny, nz = map(int, m.groups())
@@ -209,9 +225,43 @@ def check_vox(path, mode, pp, domain):
             if m:
                 extent = list(map(float, m.groups()))
         elif line.strip():
-            vals.append(int(line))
+            rows.append(line)
     if nx is None:
         fail(f"{path.name}: missing '# nx ny nz:' header")
+    # Partial volumes (format v4, "subsamples" > 1): the values are followed
+    # by one line per composite voxel.
+    partial = pp.get("subsamples", 1) > 1
+    if partial != (samples is not None) or partial != (composite is not None):
+        fail(f"{path.name}: subsamples = {pp.get('subsamples', 1)} in the config, "
+             f"header has subsamples: {samples is not None}, "
+             f"composite voxels: {composite is not None}")
+    try:
+        vals = [int(line) for line in rows[:nx * ny * nz]]
+    except ValueError:
+        fail(f"{path.name}: fewer than {nx * ny * nz} plain values")
+    shares = rows[nx * ny * nz:] if partial else []
+    if not partial and len(rows) != nx * ny * nz:
+        fail(f"{path.name}: {len(rows)} voxels, header says {nx * ny * nz}")
+    if partial:
+        if len(shares) != composite:
+            fail(f"{path.name}: {len(shares)} composite lines, header says {composite}")
+        if composite == 0:
+            fail(f"{path.name}: subsamples > 1 and not one composite voxel")
+        last = -1
+        for line in shares:
+            t = [int(v) for v in line.split()]
+            ids, counts = t[1::2], t[2::2]
+            if len(t) < 5 or len(t) % 2 == 0:
+                fail(f"{path.name}: composite line {line!r}")
+            if not last < t[0] < len(vals):
+                fail(f"{path.name}: composite voxel index {t[0]} out of order or range")
+            last = t[0]
+            if ids != sorted(set(ids)) or min(counts) < 1 or sum(counts) != samples:
+                fail(f"{path.name}: composite line {line!r}: ids not ascending "
+                     f"or samples not adding up to {samples}")
+            if vals[t[0]] != ids[counts.index(max(counts))]:
+                fail(f"{path.name}: voxel {t[0]} has value {vals[t[0]]}, "
+                     f"its largest share is id {ids[counts.index(max(counts))]}")
     want = expected_grid(pp)
     if want and [nx, ny, nz] != want:
         fail(f"{path.name}: grid {nx}x{ny}x{nz}, config asks for {want}")
@@ -223,7 +273,8 @@ def check_vox(path, mode, pp, domain):
         fail(f"{path.name}: {len(vals)} voxels, header says {nx * ny * nz}")
     check_id_scheme(path.name, scheme, mode)
     what, present = mode.check(path.name, vals)
-    return f"{len(vals)} voxels, {what}, {present} ids"
+    extra = f", {composite} composite voxels" if partial else ""
+    return f"{len(vals)} voxels, {what}, {present} ids{extra}"
 
 
 def check_vtk(path, mode, pp, domain):
@@ -283,11 +334,54 @@ def check_vtk(path, mode, pp, domain):
                  f"domain is {domain[axis]}")
     if field in ("phase_id", "shape_index"):
         check_id_scheme(path.name, field, mode)
-    vals = [int(x) for x in " ".join(lines[start:]).split()]
+    # The scalar: `count` lines. With "subsamples" > 1 (format v4) the
+    # array volume_fraction follows, one line of shares per voxel.
+    partial = pp.get("subsamples", 1) > 1
+    rest = [l for l in lines[start:] if l.strip()]
+    try:
+        vals = [int(x) for x in rest[:count]]
+    except ValueError:
+        fail(f"{path.name}: fewer than {count} scalar values")
     if len(vals) != count:
         fail(f"{path.name}: {len(vals)} values, {layout} says {count}")
+    extra = ""
+    if not partial:
+        if len(rest) != count:
+            fail(f"{path.name}: {len(rest) - count} lines after the {count} values")
+    else:
+        if len(rest) < count + 2 or rest[count] != "FIELD FieldData 1":
+            fail(f"{path.name}: subsamples > 1 but no 'FIELD FieldData 1' after the scalar")
+        head = rest[count + 1].split()
+        if len(head) != 4 or head[0] != "volume_fraction" or head[3] != "float":
+            fail(f"{path.name}: field header {rest[count + 1]!r}")
+        comps, tuples = int(head[1]), int(head[2])
+        want_comps = (len(mode.phases) + 1) if mode.phases is not None else 2
+        if comps != want_comps or tuples != count:
+            fail(f"{path.name}: volume_fraction {comps} x {tuples}, "
+                 f"expected {want_comps} x {count}")
+        body = rest[count + 2:]
+        if len(body) != count:
+            fail(f"{path.name}: {len(body)} volume_fraction lines for {count} voxels")
+        mixed = 0
+        for voxel, line in enumerate(body):
+            row = [float(v) for v in line.split()]
+            if len(row) != comps or min(row) < 0 or abs(sum(row) - 1.0) > 1e-4:
+                fail(f"{path.name}: volume_fraction line {voxel}: {line!r}")
+            # With phases the voxel's id is the largest component. Without,
+            # the second component adds up all shapes, so matrix can be the
+            # largest single id of a voxel that two shapes cover most of:
+            # the id only has to have a share at all.
+            own = vals[voxel] if mode.phases is not None else min(vals[voxel], 1)
+            if (row[own] < max(row) - 1e-6 if mode.phases is not None
+                    else row[own] <= 0.0):
+                fail(f"{path.name}: voxel {voxel} has id {vals[voxel]}, "
+                     f"but its shares are {row}")
+            mixed += max(row) < 1.0
+        if mixed == 0:
+            fail(f"{path.name}: subsamples > 1 and not one shared voxel")
+        extra = f", {mixed} composite voxels"
     what, present = mode.check(path.name, vals)
-    return f"{layout} {'x'.join(map(str, grid))}, {what}, {present} ids"
+    return f"{layout} {'x'.join(map(str, grid))}, {what}, {present} ids{extra}"
 
 
 # gmsh MSH 2.2 element type -> (dimension, number of corner nodes).

@@ -9,6 +9,9 @@ Python surface:
   file path; returns a ``RunResult`` (sequence of shapes + ``.summary``);
 * ``check(config)`` -- validate a config without generating anything;
 * ``voxelize(shapes, domain, nx, ny, nz)`` -- numpy ``uint32`` grid;
+* ``voxel_fractions(shapes, domain, nx, ny, nz, subsamples)`` -- the grid
+  with partial volumes; ``voxel_resolution(...)`` -- voxels across the
+  thinnest shape and the grid that would resolve it;
 * registry introspection: ``rvegen.distributions``,
   ``direction_distributions``, ``inputs`` (alias ``shapes``), ``generators``,
   ``terminations``, ``post_processes``, each with ``keys()`` and
@@ -43,6 +46,8 @@ from ._core import (
     run,
     shapes,
     terminations,
+    voxel_fractions,
+    voxel_resolution,
     voxelize,
 )
 
@@ -74,6 +79,8 @@ __all__ = [
     "run",
     "shapes",
     "terminations",
+    "voxel_fractions",
+    "voxel_resolution",
     "voxelize",
 ]
 __version__ = "0.1.0"

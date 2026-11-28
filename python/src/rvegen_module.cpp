@@ -42,6 +42,7 @@
 #include "rvegen/generators/grain_size_control.h"
 #include "rvegen/phase/phase_assignment.h"
 #include "rvegen/pipeline.h"
+#include "rvegen/postprocess/voxel_fractions.h"
 #include "rvegen/postprocess/voxel_grid.h"
 #include "rvegen/schema/schema_to_json.h"
 #include "rvegen/generators/voronoi_generator_2d.h"
@@ -291,6 +292,10 @@ PYBIND11_MODULE(_core, m) {
       .def_property_readonly("dimension",
           &rvegen::shape_base<double>::dimension,
           "2 for a planar shape, 3 for a solid.")
+      .def("min_width", &rvegen::shape_base<double>::min_width,
+           "Smallest distance across the shape (what a voxel grid has to "
+           "resolve): exact for round, convex and tube shapes, otherwise the "
+           "smallest side of the axis-aligned extent.")
       .def("measure", &rvegen::shape_base<double>::measure,
            "area() of a 2D shape, volume() of a 3D shape.")
       .def("is_inside",
@@ -983,4 +988,124 @@ PYBIND11_MODULE(_core, m) {
       "(F-contiguous, x fastest; zero-copy view of the sampled buffer): "
       "use numpy.ascontiguousarray() if you need C order. Voxel value = 1-based index of the first containing shape "
       "(0 = outside). 2D domains (z == 0) collapse to nz = 1.");
+
+  // Partial-volume voxels (#115).
+  m.def("voxel_fractions",
+      [](std::vector<rvegen::shape_base<double> const*> const& shapes,
+         std::array<double, 3> extents, std::size_t nx, std::size_t ny,
+         std::size_t nz, std::size_t subsamples) {
+        rvegen::domain<double> domain;
+        try {
+          domain = rvegen::domain<double>{extents};
+          rvegen::validate_voxel_sampling(domain, nx, ny, nz, subsamples);
+        } catch (std::invalid_argument const& e) {
+          throw py::value_error(std::string{"rvegen.voxel_fractions: "} +
+                                e.what());
+        }
+        std::vector<shape_ptr> owned;
+        owned.reserve(shapes.size());
+        for (auto const* s : shapes) owned.push_back(s->clone());
+        rvegen::voxel_fractions f;
+        interrupt_watch watch;
+        rvegen::cancel_fn const cancel = watch.hook();
+        try {
+          py::gil_scoped_release release;
+          f = rvegen::sample_voxel_fractions<double>(owned, domain, nx, ny, nz,
+                                                     subsamples, &cancel);
+        } catch (rvegen::generation_cancelled const&) {
+          watch.rethrow_if_interrupted();
+          throw;
+        }
+        // The dominant ids in the layout of voxelize(): indexed [i, j, k].
+        constexpr auto sz = static_cast<py::ssize_t>(sizeof(std::uint32_t));
+        py::array_t<std::uint32_t> dominant(
+            {static_cast<py::ssize_t>(f.nx), static_cast<py::ssize_t>(f.ny),
+             static_cast<py::ssize_t>(f.nz)},
+            {sz, sz * static_cast<py::ssize_t>(f.nx),
+             sz * static_cast<py::ssize_t>(f.nx * f.ny)});
+        std::copy(f.dominant.begin(), f.dominant.end(),
+                  dominant.mutable_data());
+        const auto mixed = static_cast<py::ssize_t>(f.mixed.size());
+        const auto entries = static_cast<py::ssize_t>(f.shares.size());
+        py::array_t<std::int64_t> voxel(mixed), offset(mixed + 1);
+        py::array_t<std::uint32_t> id(entries);
+        py::array_t<double> fraction(entries);
+        for (py::ssize_t n = 0; n < mixed; ++n)
+          voxel.mutable_at(n) = static_cast<std::int64_t>(f.mixed[n]);
+        for (py::ssize_t n = 0; n <= mixed; ++n)
+          offset.mutable_at(n) = static_cast<std::int64_t>(f.first[n]);
+        for (py::ssize_t n = 0; n < entries; ++n) {
+          id.mutable_at(n) = f.shares[n].id;
+          fraction.mutable_at(n) =
+              static_cast<double>(f.shares[n].samples) /
+              static_cast<double>(f.samples_per_voxel);
+        }
+        py::array_t<double> of_id(
+            static_cast<py::ssize_t>(f.samples_of_id.size()));
+        for (std::size_t n = 0; n < f.samples_of_id.size(); ++n)
+          of_id.mutable_at(static_cast<py::ssize_t>(n)) =
+              f.fraction_of(static_cast<rvegen::phase_id>(n));
+        py::dict out;
+        out["dominant"] = dominant;
+        out["voxel"] = voxel;
+        out["offset"] = offset;
+        out["id"] = id;
+        out["fraction"] = fraction;
+        out["volume_fraction"] = of_id;
+        out["subsamples"] = f.subsamples;
+        out["samples_per_voxel"] = f.samples_per_voxel;
+        return out;
+      },
+      py::arg("shapes"), py::arg("domain"), py::arg("nx"), py::arg("ny"),
+      py::arg("nz") = 1, py::arg("subsamples") = 4,
+      "Partial-volume voxel grid: every voxel is sampled at subsamples points "
+      "per axis instead of its centre. Returns a dict: 'dominant', the id "
+      "with the largest share of each voxel, laid out as voxelize() returns "
+      "its grid (ids as there; the smallest id on a tie); the voxels that "
+      "hold more than one id in compressed rows: 'voxel' (flat index "
+      "(k*ny + j)*nx + i, ascending), 'offset' (len(voxel) + 1 row starts) "
+      "into 'id' and 'fraction' (ids ascending per voxel, fractions adding "
+      "up to 1); 'volume_fraction', the share of every id in the whole grid "
+      "(index = id); 'subsamples' and 'samples_per_voxel'. A voxel that is "
+      "not listed belongs to its dominant id entirely. A 3D domain is also "
+      "sampled along z.");
+
+  m.def("voxel_resolution",
+      [](std::vector<rvegen::shape_base<double> const*> const& shapes,
+         std::array<double, 3> extents, std::size_t nx, std::size_t ny,
+         std::size_t nz, double min_voxels) {
+        std::vector<shape_ptr> owned;
+        owned.reserve(shapes.size());
+        for (auto const* s : shapes) owned.push_back(s->clone());
+        rvegen::voxel_resolution r;
+        try {
+          const rvegen::domain<double> domain{extents};
+          r = rvegen::check_voxel_resolution<double>(owned, domain, nx, ny, nz,
+                                                     min_voxels);
+        } catch (std::invalid_argument const& e) {
+          throw py::value_error(std::string{"rvegen.voxel_resolution: "} +
+                                e.what());
+        }
+        py::dict out;
+        out["resolved"] = r.resolved();
+        out["shapes"] = r.shapes;
+        out["under"] = r.under;
+        out["smallest_width"] = r.smallest_width;
+        out["voxel"] = r.voxel;
+        out["voxels_across"] = r.voxels_across();
+        out["suggested"] = py::make_tuple(r.suggested[0], r.suggested[1],
+                                          r.suggested[2]);
+        out["message"] = r.message();
+        return out;
+      },
+      py::arg("shapes"), py::arg("domain"), py::arg("nx"), py::arg("ny"),
+      py::arg("nz") = 1, py::arg("min_voxels") = 8.0,
+      "How well an nx*ny*nz grid resolves the shapes. Returns a dict: "
+      "'resolved' (no shape is fewer than min_voxels voxels across), "
+      "'shapes' and 'under' (shapes looked at, and those under the "
+      "threshold; periodic copies are not counted), 'smallest_width' "
+      "(Shape.min_width() of the thinnest), 'voxel' (the largest voxel "
+      "edge), 'voxels_across', 'suggested' (the (nx, ny, nz) that give the "
+      "thinnest shape min_voxels voxels) and 'message' (empty when "
+      "resolved).");
 }

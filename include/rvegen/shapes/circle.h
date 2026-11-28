@@ -73,6 +73,7 @@ public:
     return this->radius * this->radius * std::numbers::pi_v<T>;
   }
   [[nodiscard]] int dimension() const noexcept override { return 2; }
+  [[nodiscard]] T min_width() const override { return T{2} * this->radius; }
   [[nodiscard]] T volume() const override { return T{0}; }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {

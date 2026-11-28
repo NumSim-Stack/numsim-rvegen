@@ -7,7 +7,8 @@ a PNG:
 
   .svg   (svg, svg_3d)        -> Inkscape, falling back to ImageMagick
   .html  (three_js)           -> headless Chrome/Chromium screenshot
-  .vox   (voxel)              -> matplotlib voxel slice(s)
+  .vox   (voxel)              -> matplotlib voxel slice(s); composite voxels of a
+                                 v4 file in the mixed colour of their ids
   .vtk   (vtk_legacy)         -> matplotlib voxel slice(s), v2 and v3 layouts
   .geo   (gmsh_geo)           -> gmsh meshes it, matplotlib draws the mesh
   .csv   (statistics)         -> matplotlib S2(r) and g(r) plots
@@ -300,9 +301,12 @@ def render(src: Path, dst: Path, kind: str, is_3d: bool, work: Path, tools: Tool
     if ext == ".html":
         return render_html(src, dst, tools)
     if ext == ".vox":
-        grid, extent, names = read_vox(src)
-        plot_grid(grid, extent, names, dst, "voxel grid")
-        return "voxel grid (.vox)"
+        grid, extent, names, shares = read_vox(src)
+        if shares is None:
+            plot_grid(grid, extent, names, dst, "voxel grid")
+            return "voxel grid (.vox)"
+        plot_grid(grid, extent, names, dst, "voxel grid, partial volumes", shares)
+        return "voxel grid with partial volumes (.vox)"
     if ext == ".vtk":
         grid, extent = read_vtk(src)
         plot_grid(grid, extent, {}, dst, "VTK voxel grid")
@@ -383,9 +387,12 @@ def png_blank_reason(path: Path) -> str | None:
 # Voxel grids
 # ---------------------------------------------------------------------------
 def read_vox(path: Path):
-    n = extent = None
+    """Grid (z, y, x), extent, phase names and, for a file with partial
+    volumes (format v4), the shares of the composite voxels:
+    {flat voxel index: [(id, share), ...]}; None for a v3 file."""
+    n = extent = samples = None
     names: dict[int, str] = {}
-    values = []
+    rows = []
     with path.open() as f:
         for line in f:
             if line.startswith("#"):
@@ -395,12 +402,26 @@ def read_vox(path: Path):
                     extent = tuple(float(g) for g in m.groups())
                 elif m := re.match(r"#\s*phase\s+(\d+)\s*=\s*(.+)", line):
                     names[int(m.group(1))] = m.group(2).strip()
+                elif m := re.match(r"#\s*subsamples:\s*\d+\s*\((\d+) sample points", line):
+                    samples = int(m.group(1))
             elif line.strip():
-                values.append(int(line))
+                rows.append(line)
     if n is None or extent is None:
         raise ValueError("missing nx/ny/nz or Lx/Ly/Lz header")
-    grid = np.asarray(values, dtype=np.int64).reshape(n[2], n[1], n[0])
-    return grid, extent, names
+    count = n[0] * n[1] * n[2]
+    grid = np.asarray([int(v) for v in rows[:count]], dtype=np.int64).reshape(n[2], n[1], n[0])
+    if samples is None:
+        if len(rows) != count:
+            raise ValueError(f"{len(rows)} values for {count} voxels")
+        return grid, extent, names, None
+    shares = {}
+    for line in rows[count:]:
+        t = [int(v) for v in line.split()]
+        pairs = list(zip(t[1::2], t[2::2]))
+        if sum(c for _, c in pairs) != samples:
+            raise ValueError(f"composite voxel {t[0]}: samples do not add up to {samples}")
+        shares[t[0]] = [(i, c / samples) for i, c in pairs]
+    return grid, extent, names, shares
 
 
 def read_vtk(path: Path):
@@ -450,9 +471,18 @@ def project(grid, lut, axis: int):
     return rgb
 
 
-def plot_grid(grid, extent, names: dict[int, str], dst: Path, title: str) -> None:
-    lut = np.array([colour(k) for k in range(int(grid.max()) + 1)])
+def plot_grid(grid, extent, names: dict[int, str], dst: Path, title: str,
+              shares: dict | None = None) -> None:
+    top = int(grid.max())
+    if shares:
+        top = max(top, max(i for row in shares.values() for i, _ in row))
+    lut = np.array([colour(k) for k in range(top + 1)])
     rgb = lut[grid]
+    if shares:
+        # A composite voxel takes the colours of its ids, mixed by share.
+        flat = rgb.reshape(-1, 3)
+        for voxel, row in shares.items():
+            flat[voxel] = sum(share * lut[i] for i, share in row)
     nz, ny, nx = grid.shape
     Lx, Ly, Lz = extent
     if nz == 1:

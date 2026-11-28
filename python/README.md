@@ -145,6 +145,17 @@ res = rvegen.run(config, log=logging.getLogger("rvegen").info)
 # numpy.ascontiguousarray(grid) when C order is required. nx/ny/nz >= 1.
 grid = rvegen.voxelize(list(res), [1.0, 1.0, 0.0], nx=64, ny=64, nz=1)
 
+# Partial volumes: 4 x 4 sample points per voxel. "dominant" is laid out
+# like the grid above; the voxels an interface runs through are listed in
+# compressed rows ("voxel", "offset", "id", "fraction").
+f = rvegen.voxel_fractions(list(res), [1.0, 1.0, 0.0], nx=64, ny=64, subsamples=4)
+print(1.0 - f["volume_fraction"][0])       # inclusion fraction of the grid
+
+# Voxels across the thinnest shape, and the grid that gives it 8.
+r = rvegen.voxel_resolution(list(res), [1.0, 1.0, 0.0], nx=64, ny=64)
+if not r["resolved"]:
+    print(r["message"], r["suggested"])
+
 # Registry introspection: distributions, direction_distributions,
 # inputs (alias: shapes), generators, terminations, post_processes.
 print(rvegen.generators.keys())

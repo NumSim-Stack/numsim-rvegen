@@ -81,6 +81,25 @@ public:
   }
 
   [[nodiscard]] int dimension() const noexcept override { return 2; }
+  // Width of a convex polygon: it is reached with one side lying on the
+  // slab, so the smallest, over the sides, of the largest vertex distance
+  // from the side's line.
+  [[nodiscard]] T min_width() const override {
+    const std::size_t n = _vertices.size();
+    T width = std::numeric_limits<T>::infinity();
+    for (std::size_t k = 0; k < n; ++k) {
+      auto const& a = _vertices[k];
+      auto const& b = _vertices[(k + 1) % n];
+      const T ex = b[0] - a[0], ey = b[1] - a[1];
+      const T len = std::hypot(ex, ey);
+      if (!(len > T{0})) continue;
+      T far = T{0};
+      for (auto const& v : _vertices)
+        far = std::max(far, std::abs(ex * (v[1] - a[1]) - ey * (v[0] - a[0])));
+      width = std::min(width, far / len);
+    }
+    return std::isfinite(width) ? width : T{0};
+  }
   [[nodiscard]] T volume() const override { return T{0}; }
 
   [[nodiscard]] std::array<T, 3> max_expansion() const override {

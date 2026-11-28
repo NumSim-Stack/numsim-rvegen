@@ -4,6 +4,6 @@
   "generator": {"type": "voronoi_2d", "n_seeds": 40, "seed": 5, "periodic": true},
   "postprocess": [
     {"type": "svg", "canvas_width": 600.0, "output_path": "voronoi_2d_periodic.svg"},
-    {"type": "voxel", "nx": 128, "ny": 128, "nz": 1, "output_path": "voronoi_2d_periodic.vox"}
+    {"type": "voxel", "nx": 160, "ny": 160, "nz": 1, "output_path": "voronoi_2d_periodic.vox"}
   ]
 }

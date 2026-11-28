@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <fstream>
 #include <ios>
 #include <ostream>
@@ -16,6 +18,7 @@
 #include "../types.h"
 #include "../util/format_number.h"
 #include "phase_table.h"
+#include "voxel_fractions.h"
 #include "voxel_grid.h"
 
 namespace rvegen {
@@ -39,6 +42,14 @@ namespace rvegen {
 // extension is conventionally ".vtk".
 //
 // Sampling is shared with voxel_writer via sample_voxel_grid.
+//
+// Partial volumes (#115, rvegen-vtk-format v4): with `subsamples` k > 1
+// every cell is sampled at k points per axis. The scalar is then the id
+// with the largest share of the cell, and a second cell array
+// `volume_fraction` (a FIELD array) gives the shares: with phases one
+// component per phase id (component c = phase id c, so component 0 is
+// "no phase"), without phases two components (no shape, any shape). With
+// k = 1 the file is the v3 file, byte for byte.
 //
 // Output is NOT bit-stable for a given shape list: the SCALARS field
 // name and the title-line suffix depend on whether `set_phases()` was
@@ -65,7 +76,9 @@ public:
       : _nx{handler.template get<std::size_t>("nx")},
         _ny{handler.template get<std::size_t>("ny")},
         _nz{handler.template get<std::size_t>("nz")},
-        _output_path{handler.template get<std::string>("output_path")} {}
+        _output_path{handler.template get<std::string>("output_path")},
+        _subsamples{handler.template get<std::size_t>("subsamples")},
+        _min_voxels{handler.template get<value_type>("min_voxels_per_feature")} {}
 
   [[nodiscard]] static parameter_controller_t parameters() {
     parameter_controller_t s;
@@ -83,6 +96,7 @@ public:
         .template add<numsim_core::description_label<"voxel-grid resolution along z (collapses to 1 for 2D RVEs)">>();
     s.template insert<std::string>("output_path").template add<numsim_core::is_required>()
         .template add<numsim_core::description_label<"destination path for the legacy VTK file (.vtk)">>();
+    add_voxel_sampling_parameters<value_type>(s);
     return s;
   }
 
@@ -92,6 +106,24 @@ public:
   [[nodiscard]] std::string const& output_path() const noexcept {
     return _output_path;
   }
+
+  // Sample points per cell and axis (1: the cell centre).
+  void set_subsamples(std::size_t subsamples) noexcept {
+    _subsamples = subsamples;
+  }
+  [[nodiscard]] std::size_t subsamples() const noexcept { return _subsamples; }
+  // Voxels a shape should be across before run() warns; 0: no check.
+  void set_min_voxels_per_feature(value_type voxels) noexcept {
+    _min_voxels = voxels;
+  }
+  [[nodiscard]] value_type min_voxels_per_feature() const noexcept {
+    return _min_voxels;
+  }
+
+  // Most components the volume_fraction array may have: a dense array of
+  // one number per phase and cell is the wrong container for hundreds of
+  // phases (the voxel writer lists only the cells that are shared).
+  static constexpr std::size_t max_fraction_components = 255;
 
   // Same phase-collection plumbing as voxel_writer: when attached, the
   // emitted `phase` scalar is the real phase id (matrix=0 / untagged,
@@ -119,30 +151,78 @@ public:
           "vtk_legacy_writer: output_path not set; cannot run() as post-process"};
     }
     // Reject an unusable grid before the output file is created.
-    (void)checked_voxel_count(_nx, _ny, effective_nz(domain_box, _nz));
+    validate_voxel_sampling(domain_box, _nx, _ny, _nz, _subsamples);
   }
 
   void run(shape_vector const& shapes,
            domain<value_type> const& domain_box) const override {
     validate(domain_box);
+    if (_subsamples != 1) (void)fraction_components();   // may refuse
     std::ofstream out{_output_path};
     if (!out) {
       throw std::runtime_error{
           "vtk_legacy_writer: cannot open '" + _output_path + "' for writing"};
     }
-    write(out, shapes, domain_box);
+    const auto samples_of_id = write_counted(out, shapes, domain_box);
     out.close();
     if (_phases) write_phase_table_sidecar(_output_path, *_phases);
+    if (this->has_log()) {
+      report_voxel_sampling<value_type>(
+          shapes, domain_box, _nx, _ny, _nz, _subsamples,
+          static_cast<double>(_min_voxels), _phases, _phase_strict,
+          samples_of_id,
+          [this](std::string const& line) { this->log_info(line); },
+          [this](std::string const& line) { this->log_warn(line); });
+    }
   }
 
   // Stream-based emit, kept public for tests / embedders.
   void write(std::ostream& out,
              shape_vector const& shapes,
              domain<value_type> const& domain_box) const {
-    const auto grid = _phases
-        ? sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz,
-                            *_phases, _phase_strict)
-        : sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz);
+    (void)write_counted(out, shapes, domain_box);
+  }
+
+  // Components of the volume_fraction array: one per phase id up to the
+  // largest (0 included) with phases, else 2 (no shape, any shape).
+  [[nodiscard]] std::size_t fraction_components() const {
+    if (_phases == nullptr) return 2;
+    std::size_t largest = _phases->matrix_id();
+    for (auto const* p : _phases->ordered()) largest = std::max(largest, p->id);
+    if (largest + 1 > max_fraction_components) {
+      throw std::runtime_error{
+          "vtk_legacy_writer: subsamples > 1 writes one volume-fraction "
+          "component per phase id, and " + std::to_string(largest + 1) +
+          " are more than the " + std::to_string(max_fraction_components) +
+          " this writer accepts. Use the voxel writer, which lists only the "
+          "voxels shared between phases."};
+    }
+    return largest + 1;
+  }
+
+private:
+  // write(), returning the sample points per id of what was written.
+  [[nodiscard]] std::vector<std::uint64_t>
+  write_counted(std::ostream& out, shape_vector const& shapes,
+                domain<value_type> const& domain_box) const {
+    const bool partial = _subsamples != 1;
+    // Too many phases for the fraction array: refuse before anything is
+    // sampled or written (run() has checked already, write() has not).
+    const std::size_t components = partial ? fraction_components() : 0;
+    voxel_fractions fractions;
+    if (partial) {
+      fractions = _phases
+          ? sample_voxel_fractions(shapes, domain_box, _nx, _ny, _nz,
+                                   _subsamples, *_phases, _phase_strict)
+          : sample_voxel_fractions(shapes, domain_box, _nx, _ny, _nz,
+                                   _subsamples);
+    }
+    const auto grid = partial
+        ? std::move(fractions.dominant)
+        : (_phases
+               ? sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz,
+                                   *_phases, _phase_strict)
+               : sample_voxel_grid(shapes, domain_box, _nx, _ny, _nz));
     const std::size_t nz_eff = effective_nz(domain_box, _nz);
 
     const auto dx = domain_box[0] / static_cast<value_type>(_nx);
@@ -182,8 +262,15 @@ public:
 
     // SPACING is written with format_number (reads back to the same
     // value), so L = n · spacing holds in the reader.
+    //   v4: written for subsamples > 1 only. The scalar is the id with
+    // the largest share of the cell, and the FIELD array volume_fraction
+    // follows it (see the class comment).
     out << "# vtk DataFile Version 3.0\n"
-        << "rvegen voxel grid [rvegen-vtk-format: v3]" << title_suffix << "\n"
+        << "rvegen voxel grid [rvegen-vtk-format: "
+        << (partial ? "v4]" : "v3]") << title_suffix
+        << (partial ? "; largest share per cell, shares in volume_fraction"
+                    : "")
+        << "\n"
         << "ASCII\n"
         << "DATASET STRUCTURED_POINTS\n"
         << "DIMENSIONS " << (_nx + 1) << ' ' << (_ny + 1) << ' ' << pz << '\n'
@@ -201,13 +288,66 @@ public:
         }
       }
     }
+    if (!partial) return count_voxel_ids(grid);
+
+    // One line of shares per cell. A share is samples / samples per cell;
+    // its text is looked up, the line of a cell with a single id cached.
+    const bool by_phase = _phases != nullptr;
+    auto component_of = [&](phase_id id) -> std::size_t {
+      return by_phase ? std::size_t{id} : (id == 0 ? 0 : 1);
+    };
+    std::vector<std::string> share_text(fractions.samples_per_voxel + 1);
+    for (std::size_t n = 0; n < share_text.size(); ++n) {
+      char buffer[32];
+      std::snprintf(buffer, sizeof buffer, "%.6g",
+                    static_cast<double>(n) /
+                        static_cast<double>(fractions.samples_per_voxel));
+      share_text[n] = buffer;
+    }
+    auto line_of = [&](std::vector<std::uint32_t> const& samples) {
+      std::string line;
+      for (std::size_t c = 0; c < components; ++c) {
+        if (c > 0) line += ' ';
+        line += share_text[samples[c]];
+      }
+      line += '\n';
+      return line;
+    };
+    std::vector<std::string> pure_line(components);
+    std::vector<std::uint32_t> samples(components);
+    for (std::size_t c = 0; c < components; ++c) {
+      std::fill(samples.begin(), samples.end(), 0u);
+      samples[c] = static_cast<std::uint32_t>(fractions.samples_per_voxel);
+      pure_line[c] = line_of(samples);
+    }
+    out << "FIELD FieldData 1\n"
+        << "volume_fraction " << components << ' ' << grid.size()
+        << " float\n";
+    std::size_t next_mixed = 0;
+    for (std::size_t voxel = 0; voxel < grid.size(); ++voxel) {
+      if (next_mixed < fractions.mixed.size() &&
+          fractions.mixed[next_mixed] == voxel) {
+        std::fill(samples.begin(), samples.end(), 0u);
+        for (std::size_t e = fractions.first[next_mixed];
+             e < fractions.first[next_mixed + 1]; ++e) {
+          samples[component_of(fractions.shares[e].id)] +=
+              fractions.shares[e].samples;
+        }
+        out << line_of(samples);
+        ++next_mixed;
+      } else {
+        out << pure_line[component_of(grid[voxel])];
+      }
+    }
+    return fractions.samples_of_id;
   }
 
-private:
   std::size_t _nx{32};
   std::size_t _ny{32};
   std::size_t _nz{32};
   std::string _output_path{};
+  std::size_t _subsamples{1};
+  value_type _min_voxels{8};
   phase_collection<value_type> const* _phases{nullptr};
   bool _phase_strict{false};
 };

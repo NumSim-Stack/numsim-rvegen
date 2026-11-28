@@ -33,9 +33,9 @@
   "postprocess": [
     {
       "type": "voxel",
-      "nx": 96,
-      "ny": 96,
-      "nz": 24,
+      "nx": 184,
+      "ny": 184,
+      "nz": 40,
       "output_path": "satin_weave.vox"
     },
     {
