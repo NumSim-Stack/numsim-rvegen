@@ -42,12 +42,8 @@ namespace rvegen {
 namespace detail {
 
 inline std::string lowercased_extension(std::string const& path) {
-  const auto ext = std::filesystem::path{path}.extension().string();
-  std::string lower;
-  lower.reserve(ext.size());
-  for (char c : ext) lower.push_back(static_cast<char>(std::tolower(
-      static_cast<unsigned char>(c))));
-  return lower;
+  // ASCII-only fold: locale-independent, unlike std::tolower.
+  return ascii_to_lower(std::filesystem::path{path}.extension().string());
 }
 
 inline std::string trim_path(std::string const& path) {
@@ -64,11 +60,11 @@ inline std::string trim_path(std::string const& path) {
 
 template <typename T = double>
 [[nodiscard]] std::vector<gte::Triangle3<T>> read_mesh_file(
-    std::string const& path) {
+    std::string const& path, ply_read_limits const& ply_limits = {}) {
   const auto trimmed = detail::trim_path(path);
   const auto ext = detail::lowercased_extension(trimmed);
   if (ext == ".stl") return read_stl_file<T>(trimmed);
-  if (ext == ".ply") return read_ply_file<T>(trimmed);
+  if (ext == ".ply") return read_ply_file<T>(trimmed, ply_limits);
   if (ext.empty()) {
     throw std::runtime_error{
         "read_mesh_file: '" + path +

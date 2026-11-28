@@ -7,18 +7,69 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# A new push to a PR branch cancels the run it supersedes; main keeps every run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
-    name: Build, test, install, smoke-consume
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    # Pinned image: the tool versions below (GCC 14, clang 19, gmsh, Boost,
+    # numpy) are those of Ubuntu 24.04. `ubuntu-latest` moves to a newer
+    # release on GitHub's schedule and changes all of them at once.
+    runs-on: ubuntu-24.04
     # Hard cap: a stuck FetchContent download or pathological test
-    # shouldn't hold a runner for the GitHub default 6h.
-    timeout-minutes: 30
+    # shouldn't hold a runner for the GitHub default 6h. Sanitizer builds
+    # run several times slower, so they get more headroom.
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Release is what ships; it also runs the install + smoke-consumer
+          # and Python-bindings steps (`full`).
+          - name: "gcc-14 Release (install, smoke-consume, python)"
+            cc: gcc-14
+            cxx: g++-14
+            build_type: Release
+            cxx_flags: ""
+            full: true
+            timeout: 30
+          # Debug keeps assertions and the dynamic_cast checks in
+          # collision_dispatcher::dispatch alive, and ASan + UBSan flag the
+          # UB class behind #75 (uniform_real a > b) and #80 (PLY
+          # double -> size_t casts). UBSan failures are fatal
+          # (-fno-sanitize-recover) so they fail the job instead of just
+          # printing a diagnostic.
+          - name: "gcc-14 Debug (ASan + UBSan)"
+            cc: gcc-14
+            cxx: g++-14
+            build_type: Debug
+            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+            full: false
+            timeout: 60
+          # Clang 19 from the Ubuntu 24.04 archive (19.1.x), paired with
+          # libstdc++-14, which provides <print>. A second front end catches argument-order /
+          # evaluation-order dependence (#76) and clang-only template errors.
+          - name: "clang-19 Release (libstdc++-14)"
+            cc: clang-19
+            cxx: clang++-19
+            build_type: Release
+            cxx_flags: ""
+            full: false
+            timeout: 30
+            # Runs the full test suite. Needs numsim-core at or after
+            # v1.3.0 (lazy ids, NumSim-Stack/numsim-core#30): before it,
+            # static_indexing copied an unordered inline static that clang
+            # initialised first, so shape types shared id 0. The
+            # dispatchers refuse duplicate ids (shape_id_claims.h) and
+            # shape_id_unique_test checks them, so an older pin fails here.
 
     steps:
-      # rvegen depends on numsim-core via sibling-tree includes
-      # (../../numsim-core/include). We check both repos out so the
-      # checkout layout matches what rvegen's CMakeLists.txt expects.
       - name: Checkout rvegen
         uses: actions/checkout@v4
         with:
@@ -26,36 +77,73 @@ jobs:
 
       # numsim-core is pinned to a known-good SHA so a breaking change
       # on numsim-core's main doesn't cascade into every rvegen PR.
-      # Bump deliberately — see CONTRIBUTING.md for the procedure.
-      - name: Checkout numsim-core (sibling, pinned)
+      # Bump deliberately - see CONTRIBUTING.md for the procedure.
+      # The pin must be at or after ef6d2ac ("make the installed package
+      # consumable"): rvegen consumes numsim-core through its installed
+      # CMake package (numsim-core::numsim-core), and at or after v1.3.0
+      # (lazy static_indexing ids) for the clang job.
+      - name: Checkout numsim-core (pinned)
         uses: actions/checkout@v4
         with:
           repository: NumSim-Stack/numsim-core
-          ref: a56bc466f8cfbbdc79936f140166fb60fcaabb90
-          path: numsim-core
+          ref: 61bcb7663ddd8ae9fc3fd239a716a4cacb366e6f  # v1.3.0
+          # Not `numsim-core`: that is the sibling path rvegen falls back to,
+          # so a missing installed package would go unnoticed.
+          path: numsim-core-src
 
-      # GCC 14 for `<print>` (numsim-core needs C++23 lib support).
-      # libboost-dev for `Boost::headers` (collision_dispatcher's
-      # boost::container::flat_map). nlohmann-json3-dev for
-      # `nlohmann_json::nlohmann_json` — without it the build falls
-      # back to FetchContent, but the FetchContent'd target isn't in
-      # any export set, so `install(EXPORT rvegenTargets)` fails.
-      # libeigen3-dev keeps Eigen3 on the same find_package-only path.
-      # gmsh enables gmsh_geo_roundtrip_test, which meshes the writer's
-      # .geo output with a real gmsh (#74).
+      # GCC 14 for `<print>` (numsim-core needs C++23 lib support); the
+      # Clang job reuses its libstdc++-14. libboost-dev for `Boost::headers`.
+      # nlohmann-json3-dev / libeigen3-dev keep those two on the
+      # find_package path: FetchContent'd targets aren't in any export set,
+      # so `install(EXPORT rvegenTargets)` would fail. gmsh enables the
+      # .geo meshing checks (gmsh_geo_roundtrip_test and the per-example CLI
+      # checks); numpy + matplotlib enable the gallery smoke test.
       - name: Install toolchain + system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-14 ninja-build \
-            libboost-dev nlohmann-json3-dev libeigen3-dev
+          if [[ "${{ matrix.cxx }}" == clang* ]]; then
+            sudo apt-get install -y clang-19
+          fi
+          sudo apt-get install -y g++-14 libstdc++-14-dev ninja-build \
+            libboost-dev nlohmann-json3-dev libeigen3-dev \
+            python3-numpy python3-matplotlib
           sudo apt-get install -y --no-install-recommends gmsh
+
+      - name: Print tool versions
+        run: |
+          cmake --version | head -n1
+          ninja --version
+          ${{ matrix.cxx }} --version | head -n1
+          if [[ "${{ matrix.cxx }}" == clang* ]]; then
+            ${{ matrix.cxx }} -v 2>&1 | grep 'Selected GCC'
+          fi
+          gmsh --version
+          python3 --version
+          python3 -c 'import numpy, matplotlib; print("numpy", numpy.__version__, "matplotlib", matplotlib.__version__)'
+          dpkg-query -W -f='${Package} ${Version}\n' libboost-dev libeigen3-dev nlohmann-json3-dev
+
+      # Build + install numsim-core so rvegen finds it with
+      # find_package(numsim-core CONFIG), exactly as a downstream user would.
+      - name: Build and install numsim-core
+        working-directory: numsim-core-src
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -G Ninja -B build -DNUMSIM_CORE_BUILD_TESTS=OFF -DNUMSIM_CORE_BUILD_EXAMPLES=OFF
+          cmake --install build --prefix "$GITHUB_WORKSPACE/deps"
 
       - name: Configure rvegen
         working-directory: numsim-rvegen/rvegen
         env:
-          CXX: g++-14
-          CC: gcc-14
-        run: cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -G Ninja -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DRVEGEN_REQUIRE_GMSH=ON
 
       - name: Build rvegen
         working-directory: numsim-rvegen/rvegen
@@ -63,58 +151,88 @@ jobs:
 
       - name: Test rvegen
         working-directory: numsim-rvegen/rvegen
-        run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure --no-tests=error --parallel 2
+
+      # Optional Voro++ backend for voronoi_generator_3d (#70). A second
+      # out-of-tree configure with RVEGEN_WITH_VORO_PP=ON (fetches the
+      # pinned Voro++ commit) so the default build above stays
+      # dependency-free. Release job only.
+      - name: Configure rvegen with Voro++ backend
+        if: matrix.full
+        working-directory: numsim-rvegen/rvegen
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -G Ninja -B build-voropp \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps" \
+            -DRVEGEN_WITH_VORO_PP=ON
+
+      - name: Build rvegen with Voro++ backend
+        if: matrix.full
+        working-directory: numsim-rvegen/rvegen
+        run: cmake --build build-voropp --parallel
+
+      - name: Test rvegen with Voro++ backend
+        if: matrix.full
+        working-directory: numsim-rvegen/rvegen
+        run: ctest --test-dir build-voropp --output-on-failure --no-tests=error --parallel 2
 
       # Install + smoke-consume: verifies the CMake export works
       # end-to-end. A separate consumer project does
       # find_package(rvegen CONFIG REQUIRED) and links via
-      # rvegen::rvegen, then compiles a minimal program.
+      # rvegen::rvegen, then compiles a minimal program. numsim-core comes
+      # in transitively through rvegenConfig.cmake (find_dependency).
       - name: Install rvegen to a temp prefix
+        if: matrix.full
         working-directory: numsim-rvegen/rvegen
         run: |
           cmake --install build --prefix "$GITHUB_WORKSPACE/install"
 
       - name: Configure smoke consumer
+        if: matrix.full
         working-directory: numsim-rvegen/rvegen/tests/install_smoke
         env:
           CXX: g++-14
         run: |
           cmake -G Ninja -B build \
-            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/install" \
-            -DCMAKE_CXX_FLAGS="-I$GITHUB_WORKSPACE/numsim-core/include"
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/install;$GITHUB_WORKSPACE/deps"
 
       - name: Build smoke consumer
+        if: matrix.full
         working-directory: numsim-rvegen/rvegen/tests/install_smoke
         run: cmake --build build
 
       - name: Run smoke consumer
+        if: matrix.full
         working-directory: numsim-rvegen/rvegen/tests/install_smoke
         run: ./build/install_smoke
 
-      # Python bindings test — guarded on the existence of the test
+      # Python bindings test - guarded on the existence of the test
       # file so this workflow degrades gracefully on branches that
-      # haven't yet picked up the pytest fixture (PR #28). Once that
-      # PR lands on main the guard always passes.
+      # haven't yet picked up the pytest fixture (PR #28).
       - name: Set up Python
-        if: hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
+        if: matrix.full && hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Build & test Python bindings
-        if: hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
+        if: matrix.full && hashFiles('numsim-rvegen/rvegen/python/tests/test_shapes.py') != ''
         working-directory: numsim-rvegen/rvegen
         env:
           CXX: g++-14
-          # scikit-build-core forwards CMAKE_ARGS through to the
-          # rvegen CMake configure during `pip install`. We reuse the
-          # same numsim-core include trick as the smoke consumer, plus
-          # `-DBUILD_TESTING=OFF` to skip re-configuring rvegen's ctest
-          # binaries (already built + tested above) — saves ~30s of
-          # redundant configure work in CI.
-          CMAKE_ARGS: "-DCMAKE_CXX_FLAGS=-I${{ github.workspace }}/numsim-core/include -DBUILD_TESTING=OFF"
+          # scikit-build-core forwards CMAKE_ARGS through to the rvegen
+          # CMake configure during `pip install`. Point it at the installed
+          # numsim-core, and skip rvegen's ctest binaries (already built and
+          # tested above) with -DBUILD_TESTING=OFF.
+          CMAKE_ARGS: "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps -DBUILD_TESTING=OFF"
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest
+          python -m pip install pytest numpy
           python -m pip install -v ./python
           pytest python/tests/

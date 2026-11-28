@@ -51,13 +51,14 @@ about:
   license_file:
     - LICENSE
     - THIRD_PARTY_NOTICES.md
-  summary: RVE geometry generator
+  summary: Geometry generator for representative volume elements (RVEs)
   description: |
     rvegen is a C++23 header-only library for generating Representative
     Volume Elements (random packings of circles, rectangles, ellipses,
-    spheres, boxes, polyline tubes, weaves and Voronoi polycrystals) and
-    their geometric statistics. It produces gmsh .geo, voxel grids, VTK,
-    SVG and three.js outputs for downstream FE/FFT tools.
+    spheres, boxes and polyline tubes, weaves and Voronoi polycrystals)
+    together with geometric statistics. It writes the geometry as gmsh
+    .geo, voxel grids, VTK, SVG, and three.js; materials and solvers are
+    out of scope.
 
 extra:
   recipe-maintainers:

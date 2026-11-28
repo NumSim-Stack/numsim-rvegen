@@ -1,0 +1,18 @@
+{
+  "_comment": "Tow-level weave: every yarn of a 4x4 plain weave is a hex-packed bundle of 7 fibres.",
+
+  "domain_box": [1.0, 1.0, 0.25],
+
+  "generator": {
+    "type": "tow_weave",
+    "n_warp_yarns": 4, "n_weft_yarns": 4,
+    "yarn_radius": 0.05, "amplitude": 0.06,
+    "n_segments_per_yarn": 24,
+    "n_fibres_per_tow": 7, "fibre_radius_factor": 0.25
+  },
+
+  "postprocess": [
+    { "type": "voxel", "nx": 48, "ny": 48, "nz": 24,
+      "output_path": "tow_weave.vox" }
+  ]
+}

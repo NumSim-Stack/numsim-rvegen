@@ -22,6 +22,7 @@
 
 #include <numsim-core/object_registry.h>
 
+#include "../distributions/bingham_a2_distribution.h"
 #include "../distributions/bingham_distribution.h"
 #include "../distributions/direction_distribution_base.h"
 #include "../types.h"
@@ -41,9 +42,19 @@ inline void register_bingham_distribution() {
       .template register_type<bingham_distribution<T, Engine>>("bingham");
 }
 
+// Watson / axisymmetric Bingham parameterised by the 3D orientation
+// tensor A2 (#6).
+template <typename T = double, typename Engine = std::mt19937>
+inline void register_bingham_a2_distribution() {
+  direction_distribution_registry_t<T, Engine>::instance()
+      .template register_type<bingham_a2_distribution<T, Engine>>(
+          "bingham_a2");
+}
+
 template <typename T = double, typename Engine = std::mt19937>
 inline void register_all_direction_distributions() {
   register_bingham_distribution<T, Engine>();
+  register_bingham_a2_distribution<T, Engine>();
 }
 
 } // namespace rvegen

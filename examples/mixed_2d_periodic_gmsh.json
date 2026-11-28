@@ -1,0 +1,33 @@
+{
+  "_comment": "Periodic 2D RVE mixing circles, ellipses and rectangles, written as a gmsh .geo with periodic boundary constraints. Inclusions that cross the boundary are clipped and their wrap copies appear on the opposite face.",
+
+  "domain_box": [1.0, 1.0, 0.0],
+  "seed": 21,
+
+  "distributions": {
+    "any":       { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "circle_r":  { "type": "uniform_real", "a": 0.04, "b": 0.07 },
+    "ellipse_a": { "type": "uniform_real", "a": 0.07, "b": 0.10 },
+    "ellipse_b": { "type": "uniform_real", "a": 0.025, "b": 0.04 },
+    "angle":     { "type": "uniform_real", "a": 0.0,  "b": 3.14159 },
+    "rect_w":    { "type": "uniform_real", "a": 0.06, "b": 0.12 },
+    "rect_h":    { "type": "uniform_real", "a": 0.04, "b": 0.08 }
+  },
+
+  "shapes": [
+    { "type": "circle_input",  "pos_x_dist": "any", "pos_y_dist": "any", "radius_dist": "circle_r" },
+    { "type": "ellipse_input", "pos_x_dist": "any", "pos_y_dist": "any",
+      "radius_a_dist": "ellipse_a", "radius_b_dist": "ellipse_b", "rotation_dist": "angle" },
+    { "type": "rectangle_input", "pos_x_dist": "any", "pos_y_dist": "any",
+      "width_dist": "rect_w", "height_dist": "rect_h" }
+  ],
+
+  "generator":   { "type": "periodic",        "max_attempts": 200000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.25 },
+
+  "postprocess": [
+    { "type": "svg", "canvas_width": 800.0, "output_path": "mixed_2d_periodic_gmsh.svg" },
+    { "type": "gmsh_geo", "output_path": "mixed_2d_periodic_gmsh.geo",
+      "periodic": true, "char_length_min": 0.006, "char_length_max": 0.02, "algorithm": 6 }
+  ]
+}

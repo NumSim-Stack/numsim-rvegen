@@ -391,10 +391,13 @@ void test_vtk_legacy_writer_header_and_size() {
   const auto txt = out.str();
   REQUIRE(txt.find("# vtk DataFile Version 3.0")  != std::string::npos);
   REQUIRE(txt.find("DATASET STRUCTURED_POINTS")    != std::string::npos);
-  REQUIRE(txt.find("DIMENSIONS 16 16 1")           != std::string::npos);
-  // Title carries an `rvegen-vtk-format: v2` marker so downstream
-  // tools can detect the SCALARS field-name change unambiguously.
-  REQUIRE(txt.find("[rvegen-vtk-format: v2]")     != std::string::npos);
+  // v3 layout: voxels are cells, DIMENSIONS counts points (n + 1 in x/y,
+  // a single z point for a 2D RVE), scalars are CELL_DATA.
+  REQUIRE(txt.find("DIMENSIONS 17 17 1")           != std::string::npos);
+  REQUIRE(txt.find("CELL_DATA 256")                != std::string::npos);
+  // Title carries an `rvegen-vtk-format: v3` marker so downstream
+  // tools can detect the layout / field-name changes unambiguously.
+  REQUIRE(txt.find("[rvegen-vtk-format: v3]")     != std::string::npos);
   // Field name encodes id scheme — `shape_index` when no
   // phase_collection is attached, `phase_id` when it is.
   REQUIRE(txt.find("SCALARS shape_index int 1")    != std::string::npos);
@@ -1569,8 +1572,8 @@ void test_polyline_tube_input_direct_ctor() {
 }
 
 void test_polyline_tube_input_missing_dist_throws() {
-  // Schema-driven ctor calls `distributions.at(...)` which throws
-  // std::out_of_range when the named distribution is absent.
+  // Schema-driven ctor throws std::out_of_range naming the key and the
+  // missing distribution when the named distribution is absent.
   rvegen::register_all_distributions<>();
   rvegen::register_all_inputs<>();
   std::mt19937 engine{1};
@@ -1590,7 +1593,12 @@ void test_polyline_tube_input_missing_dist_throws() {
   try {
     auto input = rvegen::build_from_json(
         rvegen::input_registry_t<>::instance(), input_spec, empty_dists);
-  } catch (std::out_of_range const&) { threw = true; }
+  } catch (std::out_of_range const& e) {
+    threw = true;
+    const std::string msg = e.what();
+    REQUIRE(msg.find("_dist'") != std::string::npos);  // names the key
+    REQUIRE(msg.find("'missing'") != std::string::npos);
+  }
   REQUIRE(threw);
 }
 
@@ -2158,15 +2166,16 @@ void test_direction_distribution_registry_schema_has_descriptions() {
 // ----------------------------------------------------------------------------
 // weave_generator (#109 / #3 headline): deterministic plain weave of
 // polyline_tubes — N warp yarns along +x and N weft yarns along +y with
-// sinusoidal z-undulation 180° out of phase.
+// sinusoidal z-undulation; over/under alternates at every crossing.
+// (Crossing clearance, periodicity and validation: weave_geometry_test.)
 // ----------------------------------------------------------------------------
 void test_weave_generator_tube_count_matches_warp_plus_weft() {
   rvegen::weave_generator<double> gen{
       /*domain=*/{1.0, 1.0, 0.2},
-      /*n_warp=*/4, /*n_weft=*/3,
-      /*yarn_radius=*/0.04, /*amplitude=*/0.03};
+      /*n_warp=*/4, /*n_weft=*/2,
+      /*yarn_radius=*/0.04, /*amplitude=*/0.05};
   auto shapes = gen.build();
-  REQUIRE(shapes.size() == 7);
+  REQUIRE(shapes.size() == 6);
   // Every produced shape is a polyline_tube.
   for (auto const& s : shapes) {
     REQUIRE(dynamic_cast<rvegen::polyline_tube<double>*>(s.get()) != nullptr);
@@ -2177,7 +2186,7 @@ void test_weave_generator_warp_yarns_run_along_x() {
   // For 2 warp + 2 weft, the first 2 entries are warp (along +x).
   // A warp yarn's centerline spans x ∈ [0, Lx] at fixed y.
   rvegen::weave_generator<double> gen{
-      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.05, /*segments=*/16};
+      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.06, /*segments=*/16};
   auto shapes = gen.build();
   REQUIRE(shapes.size() == 4);
   auto* warp0 = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
@@ -2197,7 +2206,7 @@ void test_weave_generator_warp_yarns_run_along_x() {
 
 void test_weave_generator_weft_yarns_run_along_y() {
   rvegen::weave_generator<double> gen{
-      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.05, 16};
+      {2.0, 1.0, 0.4}, 2, 2, 0.05, 0.06, 16};
   auto shapes = gen.build();
   // Weft yarns are shapes[2] and shapes[3].
   auto* weft0 = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[2].get());
@@ -2214,32 +2223,30 @@ void test_weave_generator_weft_yarns_run_along_y() {
 }
 
 void test_weave_generator_warp_and_weft_interlace_180_out_of_phase() {
-  // At the intersection (x_weft, y_warp), the warp's z and the weft's
-  // z must straddle z_centre symmetrically — that's what makes them
-  // interlock. With amplitude > 0, warp_z - z_centre = -weft_z + z_centre.
+  // At a crossing (x_weft, y_warp) the warp's z and the weft's z must
+  // straddle z_centre symmetrically at ±amplitude — that's what makes
+  // them interlock. 2 warp + 2 weft on the unit square: warp 0 at
+  // y = 0.25, weft 0 at x = 0.25, so (0.25, 0.25) is crossing (0, 0)
+  // and (i+j) = 0 is even → warp over, weft under.
   rvegen::weave_generator<double> gen{
-      {1.0, 1.0, 0.3}, 1, 1, 0.05, 0.05, 32};
+      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.06, 32};
   auto shapes = gen.build();
   auto* warp = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[0].get());
-  auto* weft = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[1].get());
+  auto* weft = dynamic_cast<rvegen::polyline_tube<double>*>(shapes[2].get());
 
-  // 1 warp + 1 weft → warp at y = 0.5, weft at x = 0.5. Sample at
-  // x = 0.25 (k=8 of 32 segments on Lx=1) — an exact control point.
-  // Warp z at x = 0.25: z_centre + 0.05·sin(2π·0.25/1) = z_centre + 0.05.
-  // Weft z at y = 0.25 (k=8 of 32 segments on Ly=1): z_centre - 0.05.
   const double z_centre = 0.15;
   const auto& wcl = warp->centerline();
   const auto& xcl = weft->centerline();
   REQUIRE(wcl.size() == 33 && xcl.size() == 33);
   REQUIRE(std::abs(wcl[8][0] - 0.25) < 1e-12);
   REQUIRE(std::abs(xcl[8][1] - 0.25) < 1e-12);
-  REQUIRE(std::abs(wcl[8][2] - (z_centre + 0.05)) < 1e-12);
-  REQUIRE(std::abs(xcl[8][2] - (z_centre - 0.05)) < 1e-12);
+  REQUIRE(std::abs(wcl[8][2] - (z_centre + 0.06)) < 1e-12);
+  REQUIRE(std::abs(xcl[8][2] - (z_centre - 0.06)) < 1e-12);
 }
 
 void test_weave_generator_phase_tagging() {
   rvegen::weave_generator<double> gen{
-      {1.0, 1.0, 0.2}, 2, 2, 0.04, 0.03};
+      {1.0, 1.0, 0.2}, 2, 2, 0.04, 0.05};
   gen.set_warp_phase_name("warp");
   gen.set_weft_phase_name("weft");
   auto shapes = gen.build();
@@ -2251,22 +2258,22 @@ void test_weave_generator_phase_tagging() {
 
 void test_weave_generator_validation_throws_on_bad_input() {
   bool threw_zero_warp = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 0, 1, 0.05, 0.03}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 0, 2, 0.04, 0.05}; }
   catch (std::runtime_error const&) { threw_zero_warp = true; }
   REQUIRE(threw_zero_warp);
 
   bool threw_zero_weft = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 1, 0, 0.05, 0.03}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 0, 0.04, 0.05}; }
   catch (std::runtime_error const&) { threw_zero_weft = true; }
   REQUIRE(threw_zero_weft);
 
   bool threw_neg_radius = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, -0.01, 0.03}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, -0.01, 0.05}; }
   catch (std::runtime_error const&) { threw_neg_radius = true; }
   REQUIRE(threw_neg_radius);
 
   bool threw_too_few_segments = false;
-  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.05, 0.03, 1}; }
+  try { rvegen::weave_generator<double>{{1,1,0.2}, 2, 2, 0.04, 0.05, 1}; }
   catch (std::runtime_error const&) { threw_too_few_segments = true; }
   REQUIRE(threw_too_few_segments);
 
@@ -2291,8 +2298,8 @@ void test_weave_generator_validation_throws_on_bad_input() {
 // N hex-packed finer fibres sharing the yarn's undulation.
 void test_tow_weave_generator_expands_each_yarn_to_n_fibres() {
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, /*n_warp=*/2, /*n_weft=*/2,
-      /*yarn_radius=*/0.05, /*amplitude=*/0.03};
+      {1.0, 1.0, 0.3}, /*n_warp=*/2, /*n_weft=*/2,
+      /*yarn_radius=*/0.05, /*amplitude=*/0.06};
   rvegen::tow_weave_generator<double> gen{base, /*n_fibres=*/7,
                                           /*radius_factor=*/0.2};
   auto shapes = gen.build();
@@ -2308,21 +2315,21 @@ void test_tow_weave_generator_expands_each_yarn_to_n_fibres() {
 
 void test_tow_weave_generator_propagates_phase_names() {
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, 1, 1, 0.05, 0.03};
+      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.06};
   base.set_warp_phase_name("warp_fibre");
   base.set_weft_phase_name("weft_fibre");
   rvegen::tow_weave_generator<double> gen{base, 3, 0.2};
   auto shapes = gen.build();
-  // 1 warp + 1 weft × 3 fibres = 6 tubes; first 3 are warp_fibre.
-  REQUIRE(shapes.size() == 6);
+  // 2 warp + 2 weft × 3 fibres = 12 tubes; first 6 are warp_fibre.
+  REQUIRE(shapes.size() == 12);
   REQUIRE(shapes[0]->phase_name() == "warp_fibre");
-  REQUIRE(shapes[2]->phase_name() == "warp_fibre");
-  REQUIRE(shapes[3]->phase_name() == "weft_fibre");
-  REQUIRE(shapes[5]->phase_name() == "weft_fibre");
+  REQUIRE(shapes[5]->phase_name() == "warp_fibre");
+  REQUIRE(shapes[6]->phase_name() == "weft_fibre");
+  REQUIRE(shapes[11]->phase_name() == "weft_fibre");
 }
 
 void test_tow_weave_generator_validation_throws() {
-  rvegen::weave_generator<double> base{{1,1,0.2}, 2, 2, 0.05, 0.03};
+  rvegen::weave_generator<double> base{{1,1,0.3}, 2, 2, 0.05, 0.06};
 
   bool threw_zero_fibres = false;
   try { rvegen::tow_weave_generator<double>{base, 0, 0.2}; }
@@ -2391,13 +2398,13 @@ void test_cluster_seeds_2d_seeds_cluster_around_centers() {
 void test_cluster_seeds_2d_validation_throws() {
   std::mt19937 e{1};
   bool t1 = false; try { rvegen::cluster_seeds_2d<double>(0.0, 1.0, 2, 5, 0.1, e); }
-                   catch (std::runtime_error const&) { t1 = true; } REQUIRE(t1);
+                   catch (std::invalid_argument const&) { t1 = true; } REQUIRE(t1);
   bool t2 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 0, 5, 0.1, e); }
-                   catch (std::runtime_error const&) { t2 = true; } REQUIRE(t2);
+                   catch (std::invalid_argument const&) { t2 = true; } REQUIRE(t2);
   bool t3 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 2, 0, 0.1, e); }
-                   catch (std::runtime_error const&) { t3 = true; } REQUIRE(t3);
+                   catch (std::invalid_argument const&) { t3 = true; } REQUIRE(t3);
   bool t4 = false; try { rvegen::cluster_seeds_2d<double>(1.0, 1.0, 2, 5, 0.0, e); }
-                   catch (std::runtime_error const&) { t4 = true; } REQUIRE(t4);
+                   catch (std::invalid_argument const&) { t4 = true; } REQUIRE(t4);
 }
 
 // voronoi_generator_3d (#114 phase 2): bounded 3D Voronoi by
@@ -2449,7 +2456,7 @@ void test_voronoi_generator_3d_partition_invariant() {
 void test_voronoi_generator_3d_validation_throws() {
   bool t1 = false;
   try { rvegen::voronoi_generator_3d<double>{0, 1, 1, {{0.5, 0.5, 0.5}}}; }
-  catch (std::runtime_error const&) { t1 = true; }
+  catch (std::invalid_argument const&) { t1 = true; }   // non-positive extent
   REQUIRE(t1);
 
   bool t2 = false;
@@ -2477,10 +2484,10 @@ void test_tow_weave_generator_n_fibres_1_collapses_to_yarn_centerline() {
   // (offset {0,0}). Just a smaller-radius copy of the yarn. Useful
   // smoke check that the hex_pack_offsets degenerate path works.
   rvegen::weave_generator<double> base{
-      {1.0, 1.0, 0.2}, 1, 1, 0.05, 0.03};
+      {1.0, 1.0, 0.3}, 2, 2, 0.05, 0.06};
   rvegen::tow_weave_generator<double> gen{base, 1, 0.5};
   auto shapes = gen.build();
-  REQUIRE(shapes.size() == 2);   // 1 warp + 1 weft
+  REQUIRE(shapes.size() == 4);   // 2 warp + 2 weft
   // Each fibre has the same centerline as the yarn (offset is 0).
   auto base_shapes = base.build();
   auto* yarn = dynamic_cast<rvegen::polyline_tube<double>*>(base_shapes[0].get());
@@ -2595,12 +2602,12 @@ void test_voronoi_generator_2d_validation_throws() {
 
   bool threw_zero_Lx = false;
   try { rvegen::voronoi_generator_2d<double>{0.0, 1.0, {{0.5, 0.5}}}; }
-  catch (std::runtime_error const&) { threw_zero_Lx = true; }
+  catch (std::invalid_argument const&) { threw_zero_Lx = true; }
   REQUIRE(threw_zero_Lx);
 
   bool threw_zero_Ly = false;
   try { rvegen::voronoi_generator_2d<double>{1.0, 0.0, {{0.5, 0.5}}}; }
-  catch (std::runtime_error const&) { threw_zero_Ly = true; }
+  catch (std::invalid_argument const&) { threw_zero_Ly = true; }
   REQUIRE(threw_zero_Ly);
 }
 
@@ -2881,14 +2888,12 @@ void test_svg_writer_emits_polygon_element_for_convex_polygon() {
 }
 
 // ----------------------------------------------------------------------------
-// phase + phase_collection: name + opaque material_config; ids start at 1.
+// phase + phase_collection: named labels; ids start at 1.
 // ----------------------------------------------------------------------------
 void test_phase_collection_basics_and_ids() {
   rvegen::phase_collection<double> phases;
-  auto const& matrix = phases.add("matrix",
-      nlohmann::json{{"type", "linear_elasticity"}, {"K", 1.6e9}, {"G", 0.8e9}});
-  auto const& fibre  = phases.add("fibre",
-      nlohmann::json{{"type", "linear_elasticity"}, {"K", 5.0e10}, {"G", 3.0e10}});
+  auto const& matrix = phases.add("matrix");
+  auto const& fibre  = phases.add("fibre");
 
   REQUIRE(matrix.id == 1);
   REQUIRE(fibre.id == 2);
@@ -2897,9 +2902,6 @@ void test_phase_collection_basics_and_ids() {
   REQUIRE(phases.id_of("fibre") == 2);
   REQUIRE(phases.contains("matrix"));
   REQUIRE(!phases.contains("void"));
-
-  // Material config is opaque pass-through.
-  REQUIRE(phases.at("fibre").material_config["K"].get<double>() == 5.0e10);
 }
 
 void test_phase_collection_duplicate_throws() {
@@ -3029,6 +3031,43 @@ void test_mesh_inclusion_input_accepts_canonical_mesh_path() {
   auto shape = input->new_shape();
   REQUIRE(shape != nullptr);
   REQUIRE(shape->is_inside({0.0, 0.0, 0.0}));
+  std::remove(tmp_path.c_str());
+}
+
+void test_mesh_inclusion_input_max_triangles_key() {
+  rvegen::register_all_distributions<>();
+  rvegen::register_all_inputs<>();
+  const std::string tmp_path = "/tmp/rvegen_test_mesh_max_tris.ply";
+  {
+    std::ofstream out{tmp_path};
+    out << "ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\n"
+           "property float y\nproperty float z\nelement face 1\n"
+           "property list uchar int vertex_indices\nend_header\n"
+           "0 0 0\n1 0 0\n1 1 0\n0 1 0\n4 0 1 2 3\n";
+  }
+  std::mt19937 engine{33};
+  const auto dist_specs = nlohmann::json::parse(R"({
+    "p": {"type": "constant", "value": 0.0}
+  })");
+  rvegen::distribution_map_t<double> dists;
+  for (auto const& [name, spec] : dist_specs.items()) {
+    auto d = rvegen::build_from_json(
+        rvegen::distribution_registry_t<>::instance(), spec, engine);
+    dists.emplace(name, std::shared_ptr<rvegen::distribution_base<double>>{
+                            std::move(d)});
+  }
+  const auto spec = nlohmann::json::parse(std::string{R"({
+    "type": "mesh_inclusion_input", "max_triangles": 1,
+    "mesh_path": ")"} + tmp_path + R"(",
+    "position_x_dist": "p", "position_y_dist": "p", "position_z_dist": "p"
+  })");
+  bool threw = false;
+  std::string what;
+  try {
+    (void)rvegen::build_from_json(rvegen::input_registry_t<>::instance(), spec, dists);
+  } catch (std::runtime_error const& e) { threw = true; what = e.what(); }
+  REQUIRE(threw);
+  REQUIRE(what.find("triangles") != std::string::npos);
   std::remove(tmp_path.c_str());
 }
 
@@ -3393,15 +3432,16 @@ void test_load_phases_from_json_rejects_non_array() {
 }
 
 void test_load_phases_from_json_rejects_missing_name() {
-  const auto cfg = nlohmann::json::parse(R"([{"material": {"K": 1.0}}])");
+  const auto cfg = nlohmann::json::parse(R"([{"id": 1}])");
   bool threw = false;
   try { rvegen::load_phases_from_json<double>(cfg); }
   catch (std::runtime_error const&) { threw = true; }
   REQUIRE(threw);
 }
 
-void test_load_phases_from_json_rejects_non_object_material() {
-  const auto cfg = nlohmann::json::parse(R"([{"name": "x", "material": 42}])");
+// Phases are geometry labels only: a "material" entry is rejected.
+void test_load_phases_from_json_rejects_material() {
+  const auto cfg = nlohmann::json::parse(R"([{"name": "x", "material": {"K": 1.0}}])");
   bool threw = false;
   try { rvegen::load_phases_from_json<double>(cfg); }
   catch (std::runtime_error const&) { threw = true; }
@@ -3410,14 +3450,13 @@ void test_load_phases_from_json_rejects_non_object_material() {
 
 void test_load_phases_from_json_round_trip() {
   const auto cfg = nlohmann::json::parse(R"([
-    {"name": "matrix", "material": {"type": "linear_elasticity", "K": 1.6e9, "G": 0.8e9}},
-    {"name": "fibre",  "material": {"type": "linear_elasticity", "K": 5.0e10, "G": 3.0e10}}
+    {"name": "matrix"},
+    {"name": "fibre"}
   ])");
   auto phases = rvegen::load_phases_from_json<double>(cfg);
   REQUIRE(phases.size() == 2);
   REQUIRE(phases.id_of("matrix") == 1);
   REQUIRE(phases.id_of("fibre") == 2);
-  REQUIRE(phases.at("matrix").material_config["G"].get<double>() == 0.8e9);
 
   // Insertion order preserved in ordered() view.
   auto const& ord = phases.ordered();
@@ -3770,7 +3809,7 @@ void test_vtk_legacy_writer_emits_phase_ids_from_phase_collection() {
   // Format-version marker must be reachable in BOTH the phase-id and
   // shape-index branches — a refactor that suppressed it in either
   // would silently break downstream consumers' scheme detection.
-  REQUIRE(text.find("[rvegen-vtk-format: v2]") != std::string::npos);
+  REQUIRE(text.find("[rvegen-vtk-format: v3]") != std::string::npos);
   // Center voxel (8, 8) for a centered radius-0.2 circle in a 16x16 grid
   // is inside the fibre and must read as `fibre_id` (== 2).
   REQUIRE(text.find('\n' + std::to_string(fibre_id) + '\n') !=
@@ -3852,7 +3891,7 @@ void test_voxel_writer_header_lists_phase_names_when_attached() {
   // as vtk_legacy_writer's title-line marker, so a single regex in a
   // downstream multi-format reader can pick out the version of any
   // rvegen-emitted file.
-  REQUIRE(text.find("[rvegen-voxel-format: v2]") != std::string::npos);
+  REQUIRE(text.find("[rvegen-voxel-format: v3]") != std::string::npos);
 }
 
 } // namespace
@@ -3916,6 +3955,7 @@ int main() {
   test_stl_ascii_reader_parse_error_includes_position();
   test_mesh_inclusion_input_via_registry();
   test_mesh_inclusion_input_accepts_canonical_mesh_path();
+  test_mesh_inclusion_input_max_triangles_key();
   test_mesh_inclusion_input_rejects_both_mesh_and_stl_path();
   test_mesh_inclusion_input_rejects_neither_mesh_nor_stl_path();
   test_mesh_inclusion_input_missing_file_throws();
@@ -4015,7 +4055,7 @@ int main() {
   test_info_generic_metadata_round_trip();
   test_load_phases_from_json_rejects_non_array();
   test_load_phases_from_json_rejects_missing_name();
-  test_load_phases_from_json_rejects_non_object_material();
+  test_load_phases_from_json_rejects_material();
   test_voxel_writer_emits_phase_ids_from_phase_collection();
   test_vtk_legacy_writer_emits_phase_ids_from_phase_collection();
   test_voxel_writer_unknown_phase_name_throws();

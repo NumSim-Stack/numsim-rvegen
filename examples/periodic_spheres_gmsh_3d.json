@@ -1,0 +1,24 @@
+{
+  "_comment": "Periodic 3D sphere pack written as a gmsh .geo with periodic surface constraints, ready for a tetrahedral FE mesh. Spheres that cross a face are clipped and their wrap copies appear on the opposite face.",
+
+  "domain_box": [1.0, 1.0, 1.0],
+  "seed": 8,
+
+  "distributions": {
+    "any":      { "type": "uniform_real", "a": 0.0,  "b": 1.0  },
+    "sphere_r": { "type": "uniform_real", "a": 0.12, "b": 0.16 }
+  },
+
+  "shapes": [
+    { "type": "sphere_input", "pos_x_dist": "any", "pos_y_dist": "any",
+      "pos_z_dist": "any", "radius_dist": "sphere_r" }
+  ],
+
+  "generator":   { "type": "periodic",        "max_attempts": 200000 },
+  "termination": { "type": "volume_fraction", "target_fraction": 0.15 },
+
+  "postprocess": [
+    { "type": "gmsh_geo", "output_path": "periodic_spheres_gmsh_3d.geo",
+      "periodic": true, "char_length_min": 0.04, "char_length_max": 0.07, "algorithm": 6 }
+  ]
+}
