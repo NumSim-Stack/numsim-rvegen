@@ -28,7 +28,8 @@
 //
 // The equivalent diameter of a shape is the diameter of the circle (2D) or
 // sphere (3D) with the same area or volume; it does not depend on the
-// orientation, unlike a bounding-box extent.
+// orientation, unlike a bounding-box extent. The cube root is the portable
+// one (portable_math.h), so a relative gap is the same number everywhere.
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,7 @@
 
 #include <numsim-core/input_parameter_controller.h>
 
+#include "../distributions/portable_math.h"
 #include "../domain.h"
 #include "../intersection/aabb_grid.h"
 #include "../intersection/collision_dispatcher.h"
@@ -96,7 +98,7 @@ struct placement_gap {
     const T m = shape.measure();
     if (!(m > T{0})) return T{0};
     return shape.dimension() == 3
-               ? std::cbrt(T{6} * m / std::numbers::pi_v<T>)
+               ? portable_cbrt(T{6} * m / std::numbers::pi_v<T>)
                : T{2} * std::sqrt(m / std::numbers::pi_v<T>);
   }
 
