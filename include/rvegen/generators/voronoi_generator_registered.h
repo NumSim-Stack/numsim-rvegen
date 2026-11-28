@@ -168,19 +168,21 @@ public:
         .template add<numsim_core::set_default>(std::string{"auto"})
         .template add<numsim_core::description_label<"tessellation backend: auto, in_house or voro_pp (default auto: Voro++ when built with it)">>();
     // Grain-size control (grain_size_control.h): giving the mean diameter
-    // replaces n_seeds / seeds.
+    // replaces n_seeds / seeds. The three tuning keys carry no schema
+    // default so that giving one without grain_diameter_mean is an error
+    // instead of being ignored; their defaults are grain_defaults below.
     s.template insert<T>("grain_diameter_mean")
         .template add<min_only<T{0}>>()
-        .template add<numsim_core::description_label<"optional mean equivalent grain diameter. When given, seeds and Laguerre weights are generated so the cell volumes follow a lognormal diameter distribution; the grain count follows from the box volume, and n_seeds / seeds must not be given">>();
-    s.template optional<T>("grain_diameter_sigma", T{0.3})
+        .template add<numsim_core::description_label<"optional mean equivalent grain diameter. When given, seeds and Laguerre weights are generated so the cell volumes follow a lognormal diameter distribution; the grain count follows from the box volume, and n_seeds / seeds must not be given. Use periodic: true for grains that are not cut by the box faces">>();
+    s.template insert<T>("grain_diameter_sigma")
         .template add<min_only<T{0}>>()
-        .template add<numsim_core::description_label<"standard deviation of ln(diameter) for grain-size control (default 0.3; convergence is expected up to about 0.8)">>();
-    s.template optional<T>("grain_size_tolerance", T{0.01})
+        .template add<numsim_core::description_label<"standard deviation of ln(diameter) for grain-size control (default 0.3; convergence is expected up to about 0.8). Needs grain_diameter_mean">>();
+    s.template insert<T>("grain_size_tolerance")
         .template add<min_only<T{0}>>()
-        .template add<numsim_core::description_label<"largest allowed relative error of a cell volume against its target in grain-size control (default 0.01); the run fails if it is not reached">>();
-    s.template optional<std::size_t>("grain_size_max_iterations", std::size_t{1000})
+        .template add<numsim_core::description_label<"largest allowed relative error of a cell volume against its target in grain-size control (> 0, default 0.01); the run fails if it is not reached. Needs grain_diameter_mean">>();
+    s.template insert<std::size_t>("grain_size_max_iterations")
         .template add<min_only<std::size_t{1}>>()
-        .template add<numsim_core::description_label<"weight iterations per attempt in grain-size control (default 1000)">>();
+        .template add<numsim_core::description_label<"weight iterations per attempt in grain-size control (default 1000). Needs grain_diameter_mean">>();
     return s;
   }
 
@@ -202,6 +204,12 @@ protected:
     if (_handler.contains("grain_diameter_mean")) {
       grain_size_seeds(box, backend, periodic, seeds, weights);
     } else {
+      for (char const* key : {"grain_diameter_sigma", "grain_size_tolerance",
+                              "grain_size_max_iterations"}) {
+        if (_handler.contains(key))
+          throw std::runtime_error{"voronoi_3d: '" + std::string{key} +
+                                   "' needs 'grain_diameter_mean'"};
+      }
       auto const flat =
           detail::voronoi_seed_coords<T>(_handler, 3, box, _pipeline_seed);
       for (std::size_t i = 0; i + 2 < flat.size(); i += 3)
@@ -242,14 +250,22 @@ private:
     if (auto const* cancel = this->cancel(); cancel && *cancel) {
       opts.cancel = *cancel;
     }
-    const T tolerance = _handler.template get<T>("grain_size_tolerance");
+    const T sigma = _handler.contains("grain_diameter_sigma")
+                        ? _handler.template get<T>("grain_diameter_sigma")
+                        : T{0.3};
+    const T tolerance = _handler.contains("grain_size_tolerance")
+                            ? _handler.template get<T>("grain_size_tolerance")
+                            : T{0.01};
+    const std::size_t max_iterations =
+        _handler.contains("grain_size_max_iterations")
+            ? _handler.template get<std::size_t>("grain_size_max_iterations")
+            : std::size_t{1000};
+    if (!(tolerance > T{0}))
+      throw std::runtime_error{"voronoi_3d: 'grain_size_tolerance' must be > 0"};
     auto r = lognormal_grain_seeds_3d<T>(
         box[0], box[1], box[2],
-        _handler.template get<T>("grain_diameter_mean"),
-        _handler.template get<T>("grain_diameter_sigma"), engine, backend,
-        periodic, tolerance,
-        _handler.template get<std::size_t>("grain_size_max_iterations"), 2,
-        opts);
+        _handler.template get<T>("grain_diameter_mean"), sigma, engine,
+        backend, periodic, tolerance, max_iterations, 2, opts);
     if (r.cancelled) throw generation_cancelled{};
     if (!r.converged) {
       throw std::runtime_error{

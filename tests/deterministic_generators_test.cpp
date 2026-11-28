@@ -179,9 +179,13 @@ void test_voronoi_periodic_and_backend_keys() {
 // generate seeds + Laguerre weights for a lognormal diameter distribution.
 // Returns the equivalent diameter of every grain (one entry per grain_id).
 std::vector<double> grain_diameters(gen_t::shape_vector const& shapes) {
+  // A periodic grain appears once per wrapped copy; every copy carries the
+  // volume of the whole grain, which is checked rather than assumed.
   std::map<std::size_t, double> volume;
   for (auto const& s : shapes) {
-    volume[s->info().template get<std::size_t>("grain_id")] = s->volume();
+    const auto [it, fresh] = volume.try_emplace(
+        s->info().template get<std::size_t>("grain_id"), s->volume());
+    if (!fresh) REQUIRE(std::abs(it->second - s->volume()) <= 1e-12 * it->second);
   }
   std::vector<double> d;
   for (auto const& [id, v] : volume) d.push_back(rvegen::equivalent_diameter(v));
@@ -219,11 +223,25 @@ void test_voronoi_grain_size_keys() {
                {"grain_diameter_sigma", 0.4}, {"periodic", true},
                {"seed", 1}, {"backend", "in_house"}};
   // A handful of grains with the built-in backend (its cost grows steeply
-  // with the count): they must tile the box; 8 draws say nothing about a
-  // distribution, so the bounds only reject a plain, unweighted result
-  // being returned for a far-off request.
+  // with the count). 8 draws say nothing about a distribution, so the
+  // statistical bounds are wide; what proves that the keys reach the
+  // grain-size code is the comparison with a direct call below.
   const std::array<double, 3> small{1.9, 1.9, 1.9};
   const auto a = check_lognormal_grains(spec, 1.9, 1.0, 0.4, 5, 0.5, 0.35);
+  {
+    std::mt19937 eng{1};
+    const auto direct = rvegen::lognormal_grain_seeds_3d<double>(
+        1.9, 1.9, 1.9, 1.0, 0.4, eng, rvegen::voronoi_backend::in_house, true);
+    REQUIRE(direct.converged);
+    REQUIRE(direct.diameters.size() == a.size());
+    for (std::size_t i = 0; i < a.size() && i < direct.diameters.size(); ++i) {
+      REQUIRE(std::abs(a[i] - direct.diameters[i]) <= 1e-9 * a[i]);
+      // ...and those are the requested sizes, not those of an unweighted
+      // tessellation of the same seeds.
+      REQUIRE(std::abs(a[i] - direct.target_diameters[i]) <=
+              0.01 * direct.target_diameters[i]);
+    }
+  }
   if (rvegen::voro_pp_available()) {
     // Acceptance of #8: 100+ grains reproduce the requested distribution.
     json big = spec;
@@ -257,6 +275,27 @@ void test_voronoi_grain_size_keys() {
   strict["grain_size_tolerance"] = 1e-10;
   strict["grain_size_max_iterations"] = 3;
   REQUIRE(message(strict, small).find("did not reach the tolerance") !=
+          std::string::npos);
+  // An exact match cannot be asked for.
+  strict = spec;
+  strict["grain_size_tolerance"] = 0.0;
+  REQUIRE(message(strict, small).find("must be > 0") != std::string::npos);
+  // A grain size that implies an unrepresentable count is refused before
+  // any conversion to an integer.
+  json tiny = spec;
+  tiny["grain_diameter_mean"] = 1e-200;
+  REQUIRE(message(tiny, small).find("usable grain count") != std::string::npos);
+  tiny["grain_diameter_mean"] = 1e-4;   // 6.9e12 grains
+  REQUIRE(message(tiny, small).find("usable grain count") != std::string::npos);
+  // The tuning keys mean nothing without grain_diameter_mean.
+  for (char const* key : {"grain_diameter_sigma", "grain_size_tolerance"}) {
+    json stray = {{"type", "voronoi_3d"}, {"n_seeds", 6}, {"seed", 3}, {key, 0.2}};
+    REQUIRE(message(stray, {1.0, 1.0, 1.0}).find("needs 'grain_diameter_mean'") !=
+            std::string::npos);
+  }
+  json stray = {{"type", "voronoi_3d"}, {"n_seeds", 6}, {"seed", 3},
+                {"grain_size_max_iterations", 5}};
+  REQUIRE(message(stray, {1.0, 1.0, 1.0}).find("needs 'grain_diameter_mean'") !=
           std::string::npos);
   // Without the key the plain mode is unchanged (no weights).
   json plain = {{"type", "voronoi_3d"}, {"n_seeds", 6}, {"seed", 3}};

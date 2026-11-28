@@ -172,7 +172,9 @@ void adjust(json& cfg, std::string const& type) {
   } else if (type == "voronoi_2d" || type == "voronoi_3d") {
     cfg["n_seeds"] = 6;   // defaults to 0 = "use the explicit seeds list"
     // Grain-size control replaces n_seeds; it gets its own run below.
-    cfg.erase("grain_diameter_mean");
+    for (char const* key : {"grain_diameter_mean", "grain_diameter_sigma",
+                            "grain_size_tolerance", "grain_size_max_iterations"})
+      cfg.erase(key);
   }
 }
 
@@ -282,6 +284,9 @@ int main() {
       auto cfg = make_config(reg.schema("voronoi_3d"), "voronoi_3d");
       cfg.erase("n_seeds");
       cfg["grain_diameter_mean"] = 0.5;
+      cfg["grain_diameter_sigma"] = 0.2;
+      cfg["grain_size_tolerance"] = 0.01;
+      cfg["grain_size_max_iterations"] = 1000;
       auto gen = rvegen::build_from_json(reg, cfg);
       rvegen::rve_generator_base<double>::input_vector none;
       rvegen::number_of_inclusions<double> one{1};
